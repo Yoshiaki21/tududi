@@ -125,6 +125,27 @@ module.exports = (sequelize) => {
                 comment:
                     'Comma-separated list of allowed Telegram usernames or user IDs',
             },
+            matrix_homeserver_url: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            matrix_access_token: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            matrix_room_id: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            matrix_bot_user_id: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            matrix_allowed_users: {
+                type: DataTypes.TEXT,
+                allowNull: true,
+                comment: 'Comma-separated list of allowed Matrix user IDs',
+            },
             task_intelligence_enabled: {
                 type: DataTypes.BOOLEAN,
                 allowNull: false,

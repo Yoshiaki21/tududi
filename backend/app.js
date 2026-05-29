@@ -11,6 +11,9 @@ const { sequelize } = require('./models');
 const {
     initializeTelegramPolling,
 } = require('./modules/telegram/telegramInitializer');
+const {
+    initializeMatrixPolling,
+} = require('./modules/matrix/matrixInitializer');
 const taskScheduler = require('./modules/tasks/taskScheduler');
 const { initializeEmailService } = require('./services/emailService');
 const { setConfig, getConfig } = require('./config/config');
@@ -229,6 +232,7 @@ const sharesModule = require('./modules/shares');
 const tagsModule = require('./modules/tags');
 const tasksModule = require('./modules/tasks');
 const telegramModule = require('./modules/telegram');
+const matrixModule = require('./modules/matrix');
 const urlModule = require('./modules/url');
 const usersModule = require('./modules/users');
 const viewsModule = require('./modules/views');
@@ -311,6 +315,7 @@ const registerApiRoutes = (basePath) => {
     app.use(basePath, inboxModule.routes);
     app.use(basePath, urlModule.routes);
     app.use(basePath, telegramModule.routes);
+    app.use(basePath, matrixModule.routes);
     app.use(basePath, quotesModule.routes);
     app.use(basePath, backupModule.routes);
     app.use(basePath, searchModule.routes);
@@ -360,6 +365,9 @@ async function startServer() {
 
         // Initialize Telegram polling after database is ready
         await initializeTelegramPolling();
+
+        // Initialize Matrix polling after database is ready
+        await initializeMatrixPolling();
 
         // Initialize task scheduler
         await taskScheduler.initialize();
