@@ -59,7 +59,10 @@ module.exports = {
 
         let updatedCount = 0;
         for (const user of usersWithPrefs) {
-            const prefs = user.notification_preferences;
+            let prefs = user.notification_preferences;
+            while (typeof prefs === 'string') {
+                prefs = JSON.parse(prefs);
+            }
             let needsUpdate = false;
 
             // Check if all required keys exist
