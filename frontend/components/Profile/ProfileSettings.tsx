@@ -23,6 +23,7 @@ import {
     CalendarIcon,
 } from '@heroicons/react/24/outline';
 import TelegramIcon from '../Shared/Icons/TelegramIcon';
+import MatrixIcon from '../Shared/Icons/MatrixIcon';
 import { useToast } from '../Shared/ToastContext';
 import { dispatchTelegramStatusChange } from '../../contexts/TelegramStatusContext';
 import ConfirmDialog from '../Shared/ConfirmDialog';
@@ -46,6 +47,7 @@ import OIDCTab from './tabs/OIDCTab';
 import ApiKeysTab from './tabs/ApiKeysTab';
 import ProductivityTab from './tabs/ProductivityTab';
 import TelegramTab from './tabs/TelegramTab';
+import MatrixTab from './tabs/MatrixTab';
 import AiTab from './tabs/AiTab';
 import NotificationsTab from './tabs/NotificationsTab';
 import KeyboardShortcutsTab from './tabs/KeyboardShortcutsTab';
@@ -97,6 +99,7 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({
             'api-keys',
             'productivity',
             'telegram',
+            'matrix',
             'ai',
             'notifications',
             'keyboard-shortcuts',
@@ -1162,6 +1165,11 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({
             icon: <TelegramIcon className="w-5 h-5" />,
         },
         {
+            id: 'matrix',
+            name: t('profile.tabs.matrix', 'Matrix'),
+            icon: <MatrixIcon className="w-5 h-5" />,
+        },
+        {
             id: 'ai',
             name: t('profile.tabs.ai', 'AI Features'),
             icon: <LightBulbIcon className="w-5 h-5" />,
@@ -1362,6 +1370,8 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({
                                     onSendTestSummary={handleSendTestSummary}
                                     formatFrequency={formatFrequency}
                                 />
+
+                                <MatrixTab isActive={activeTab === 'matrix'} />
 
                                 <AiTab
                                     isActive={activeTab === 'ai'}

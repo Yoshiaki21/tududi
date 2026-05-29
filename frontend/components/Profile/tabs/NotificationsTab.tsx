@@ -17,16 +17,17 @@ interface NotificationsTabProps {
 }
 
 const DEFAULT_PREFERENCES: NotificationPreferences = {
-    dueTasks: { inApp: true, email: false, push: false, telegram: false },
-    overdueTasks: { inApp: true, email: false, push: false, telegram: false },
-    dueProjects: { inApp: true, email: false, push: false, telegram: false },
+    dueTasks: { inApp: true, email: false, push: false, telegram: false, matrix: false },
+    overdueTasks: { inApp: true, email: false, push: false, telegram: false, matrix: false },
+    dueProjects: { inApp: true, email: false, push: false, telegram: false, matrix: false },
     overdueProjects: {
         inApp: true,
         email: false,
         push: false,
         telegram: false,
+        matrix: false,
     },
-    deferUntil: { inApp: true, email: false, push: false, telegram: false },
+    deferUntil: { inApp: true, email: false, push: false, telegram: false, matrix: false },
 };
 
 interface NotificationTypeRowProps {
@@ -38,12 +39,14 @@ interface NotificationTypeRowProps {
         email: boolean;
         push: boolean;
         telegram: boolean;
+        matrix: boolean;
     };
     onToggle: (
-        channel: 'inApp' | 'email' | 'push' | 'telegram',
+        channel: 'inApp' | 'email' | 'push' | 'telegram' | 'matrix',
         value: boolean
     ) => void;
     telegramConfigured: boolean;
+    matrixConfigured: boolean;
 }
 
 const NotificationTypeRow: React.FC<NotificationTypeRowProps> = ({
@@ -53,9 +56,10 @@ const NotificationTypeRow: React.FC<NotificationTypeRowProps> = ({
     preferences,
     onToggle,
     telegramConfigured,
+    matrixConfigured,
 }) => {
     const renderToggle = (
-        channel: 'inApp' | 'email' | 'push' | 'telegram',
+        channel: 'inApp' | 'email' | 'push' | 'telegram' | 'matrix',
         isEnabled: boolean,
         isAvailable: boolean
     ) => (
@@ -112,6 +116,13 @@ const NotificationTypeRow: React.FC<NotificationTypeRowProps> = ({
                     telegramConfigured
                 )}
             </td>
+            <td className="py-4 px-4 text-center">
+                {renderToggle(
+                    'matrix',
+                    preferences.matrix,
+                    matrixConfigured
+                )}
+            </td>
         </tr>
     );
 };
@@ -151,9 +162,16 @@ const NotificationsTab: React.FC<NotificationsTabProps> = ({
         profile?.telegram_bot_token && profile?.telegram_chat_id
     );
 
+    // Check if Matrix is configured
+    const matrixConfigured = !!(
+        profile?.matrix_homeserver_url &&
+        profile?.matrix_access_token &&
+        profile?.matrix_room_id
+    );
+
     const handleToggle = (
         notificationType: keyof NotificationPreferences,
-        channel: 'inApp' | 'email' | 'push' | 'telegram',
+        channel: 'inApp' | 'email' | 'push' | 'telegram' | 'matrix',
         value: boolean
     ) => {
         const updatedPreferences = {
@@ -269,6 +287,9 @@ const NotificationsTab: React.FC<NotificationsTabProps> = ({
                                     'Telegram'
                                 )}
                             </th>
+                            <th className="py-3 px-4 text-center text-sm font-semibold text-gray-700 dark:text-gray-300">
+                                {t('notifications.channels.matrix', 'Matrix')}
+                            </th>
                         </tr>
                     </thead>
                     <tbody>
@@ -287,6 +308,7 @@ const NotificationsTab: React.FC<NotificationsTabProps> = ({
                                 handleToggle('dueTasks', channel, value)
                             }
                             telegramConfigured={telegramConfigured}
+                            matrixConfigured={matrixConfigured}
                         />
                         <NotificationTypeRow
                             icon={ExclamationTriangleIcon}
@@ -303,6 +325,7 @@ const NotificationsTab: React.FC<NotificationsTabProps> = ({
                                 handleToggle('overdueTasks', channel, value)
                             }
                             telegramConfigured={telegramConfigured}
+                            matrixConfigured={matrixConfigured}
                         />
                         <NotificationTypeRow
                             icon={ClockIcon}
@@ -319,6 +342,7 @@ const NotificationsTab: React.FC<NotificationsTabProps> = ({
                                 handleToggle('deferUntil', channel, value)
                             }
                             telegramConfigured={telegramConfigured}
+                            matrixConfigured={matrixConfigured}
                         />
                         <NotificationTypeRow
                             icon={FolderIcon}
@@ -335,6 +359,7 @@ const NotificationsTab: React.FC<NotificationsTabProps> = ({
                                 handleToggle('dueProjects', channel, value)
                             }
                             telegramConfigured={telegramConfigured}
+                            matrixConfigured={matrixConfigured}
                         />
                         <NotificationTypeRow
                             icon={FolderOpenIcon}
@@ -351,6 +376,7 @@ const NotificationsTab: React.FC<NotificationsTabProps> = ({
                                 handleToggle('overdueProjects', channel, value)
                             }
                             telegramConfigured={telegramConfigured}
+                            matrixConfigured={matrixConfigured}
                         />
                     </tbody>
                 </table>

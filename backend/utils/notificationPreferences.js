@@ -3,16 +3,17 @@
  */
 
 const DEFAULT_PREFERENCES = {
-    dueTasks: { inApp: true, email: false, push: false, telegram: false },
-    overdueTasks: { inApp: true, email: false, push: false, telegram: false },
-    dueProjects: { inApp: true, email: false, push: false, telegram: false },
+    dueTasks: { inApp: true, email: false, push: false, telegram: false, matrix: false },
+    overdueTasks: { inApp: true, email: false, push: false, telegram: false, matrix: false },
+    dueProjects: { inApp: true, email: false, push: false, telegram: false, matrix: false },
     overdueProjects: {
         inApp: true,
         email: false,
         push: false,
         telegram: false,
+        matrix: false,
     },
-    deferUntil: { inApp: true, email: false, push: false, telegram: false },
+    deferUntil: { inApp: true, email: false, push: false, telegram: false, matrix: false },
 };
 
 /**
@@ -80,6 +81,27 @@ function shouldSendTelegramNotification(user, notificationType) {
 }
 
 /**
+ * Check if user has enabled Matrix notifications for a specific type
+ * @param {Object} user - User model instance with notification_preferences field
+ * @param {string} notificationType - Backend notification type (e.g., 'task_due_soon', 'task_overdue')
+ * @returns {boolean} - True if Matrix notifications are enabled for this type
+ */
+function shouldSendMatrixNotification(user, notificationType) {
+    if (!user || !user.notification_preferences) {
+        return false;
+    }
+
+    const prefs = user.notification_preferences;
+    const prefKey = NOTIFICATION_TYPE_MAPPING[notificationType] || notificationType;
+
+    if (!prefs[prefKey]) {
+        return false;
+    }
+
+    return prefs[prefKey].matrix === true;
+}
+
+/**
  * Get default notification preferences
  * @returns {Object} - Default preferences object
  */
@@ -122,6 +144,10 @@ function ensureNotificationPreferences(preferences) {
                     preferences[key].telegram !== undefined
                         ? preferences[key].telegram
                         : defaults[key].telegram,
+                matrix:
+                    preferences[key].matrix !== undefined
+                        ? preferences[key].matrix
+                        : defaults[key].matrix,
             };
         } else {
             // Missing preference type, use default
@@ -135,6 +161,7 @@ function ensureNotificationPreferences(preferences) {
 module.exports = {
     shouldSendInAppNotification,
     shouldSendTelegramNotification,
+    shouldSendMatrixNotification,
     getDefaultNotificationPreferences,
     ensureNotificationPreferences,
     NOTIFICATION_TYPE_MAPPING,

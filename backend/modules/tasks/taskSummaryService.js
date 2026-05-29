@@ -1,6 +1,7 @@
 const { User, Task, Project, Tag } = require('../../models');
 const { Op } = require('sequelize');
 const TelegramPoller = require('../telegram/telegramPoller');
+const { sendMatrixMessage } = require('../matrix/matrixPoller');
 
 // escape markdown special characters
 const escapeMarkdown = (text) => {
@@ -287,37 +288,65 @@ const generateSummaryForUser = async (userId) => {
 const sendSummaryToUser = async (userId) => {
     try {
         const user = await fetchUser(userId);
-        if (!user || !user.telegram_bot_token || !user.telegram_chat_id) {
-            return false;
-        }
+        if (!user) return false;
+
+        const hasTelegram = user.telegram_bot_token && user.telegram_chat_id;
+        const hasMatrix =
+            user.matrix_access_token &&
+            user.matrix_homeserver_url &&
+            user.matrix_room_id;
+
+        if (!hasTelegram && !hasMatrix) return false;
 
         const summary = await generateSummaryForUser(userId);
         if (!summary) return false;
 
-        // Send the message via Telegram with MarkdownV2 formatting
-        // If MarkdownV2 parsing fails (e.g. unescaped characters), retry as plain text
-        try {
-            await sendTelegramMessage(
-                user.telegram_bot_token,
-                user.telegram_chat_id,
-                summary,
-                null,
-                { parseMode: 'MarkdownV2' }
-            );
-        } catch (markdownError) {
-            console.warn(
-                `MarkdownV2 send failed for user ${userId}, retrying as plain text:`,
-                markdownError.message
-            );
-            const plainSummary = summary.replace(
-                /\\([_*\[\]()~`>#+\-=|{}.!\\])/g,
-                '$1'
-            );
-            await sendTelegramMessage(
-                user.telegram_bot_token,
-                user.telegram_chat_id,
-                plainSummary
-            );
+        // Send via Telegram if configured
+        if (hasTelegram) {
+            try {
+                await sendTelegramMessage(
+                    user.telegram_bot_token,
+                    user.telegram_chat_id,
+                    summary,
+                    null,
+                    { parseMode: 'MarkdownV2' }
+                );
+            } catch (markdownError) {
+                console.warn(
+                    `MarkdownV2 send failed for user ${userId}, retrying as plain text:`,
+                    markdownError.message
+                );
+                const plainSummary = summary.replace(
+                    /\\([_*\[\]()~`>#+\-=|{}.!\\])/g,
+                    '$1'
+                );
+                await sendTelegramMessage(
+                    user.telegram_bot_token,
+                    user.telegram_chat_id,
+                    plainSummary
+                );
+            }
+        }
+
+        // Send via Matrix if configured
+        if (hasMatrix) {
+            try {
+                const plainSummary = summary.replace(
+                    /\\([_*\[\]()~`>#+\-=|{}.!\\])/g,
+                    '$1'
+                );
+                await sendMatrixMessage(
+                    user.matrix_homeserver_url,
+                    user.matrix_access_token,
+                    user.matrix_room_id,
+                    plainSummary
+                );
+            } catch (matrixError) {
+                console.warn(
+                    `Matrix send failed for user ${userId}:`,
+                    matrixError.message
+                );
+            }
         }
 
         // Update tracking fields

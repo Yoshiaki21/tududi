@@ -12,30 +12,35 @@ export interface NotificationPreferences {
         email: boolean;
         push: boolean;
         telegram: boolean;
+        matrix: boolean;
     };
     overdueTasks: {
         inApp: boolean;
         email: boolean;
         push: boolean;
         telegram: boolean;
+        matrix: boolean;
     };
     dueProjects: {
         inApp: boolean;
         email: boolean;
         push: boolean;
         telegram: boolean;
+        matrix: boolean;
     };
     overdueProjects: {
         inApp: boolean;
         email: boolean;
         push: boolean;
         telegram: boolean;
+        matrix: boolean;
     };
     deferUntil: {
         inApp: boolean;
         email: boolean;
         push: boolean;
         telegram: boolean;
+        matrix: boolean;
     };
 }
 
@@ -53,6 +58,11 @@ export interface Profile {
     telegram_bot_token: string | null;
     telegram_chat_id: string | null;
     telegram_allowed_users: string | null;
+    matrix_homeserver_url: string | null;
+    matrix_access_token: string | null;
+    matrix_room_id: string | null;
+    matrix_bot_user_id: string | null;
+    matrix_allowed_users: string | null;
     task_summary_enabled: boolean;
     task_summary_frequency: string;
     task_intelligence_enabled: boolean;

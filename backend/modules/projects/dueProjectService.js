@@ -4,6 +4,7 @@ const { logError } = require('../../services/logService');
 const {
     shouldSendInAppNotification,
     shouldSendTelegramNotification,
+    shouldSendMatrixNotification,
 } = require('../../utils/notificationPreferences');
 
 /**
@@ -120,13 +121,11 @@ async function checkDueProjects() {
 
                 // Build sources array based on user preferences
                 const sources = [];
-                if (
-                    shouldSendTelegramNotification(
-                        project.User,
-                        notificationType
-                    )
-                ) {
+                if (shouldSendTelegramNotification(project.User, notificationType)) {
                     sources.push('telegram');
+                }
+                if (shouldSendMatrixNotification(project.User, notificationType)) {
+                    sources.push('matrix');
                 }
 
                 await Notification.createNotification({

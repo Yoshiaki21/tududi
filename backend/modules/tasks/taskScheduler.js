@@ -90,10 +90,20 @@ const stopJobs = (jobs) => {
 };
 
 const fetchUsersForFrequency = async (frequency) => {
+    const { Op } = require('sequelize');
     return await User.findAll({
         where: {
-            telegram_bot_token: { [require('sequelize').Op.ne]: null },
-            telegram_chat_id: { [require('sequelize').Op.ne]: null },
+            [Op.or]: [
+                {
+                    telegram_bot_token: { [Op.ne]: null },
+                    telegram_chat_id: { [Op.ne]: null },
+                },
+                {
+                    matrix_access_token: { [Op.ne]: null },
+                    matrix_homeserver_url: { [Op.ne]: null },
+                    matrix_room_id: { [Op.ne]: null },
+                },
+            ],
             task_summary_enabled: true,
             task_summary_frequency: frequency,
         },

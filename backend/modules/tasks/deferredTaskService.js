@@ -4,6 +4,7 @@ const { logError } = require('../../services/logService');
 const {
     shouldSendInAppNotification,
     shouldSendTelegramNotification,
+    shouldSendMatrixNotification,
 } = require('../../utils/notificationPreferences');
 
 async function checkDeferredTasks() {
@@ -92,6 +93,9 @@ async function checkDeferredTasks() {
                 const sources = [];
                 if (shouldSendTelegramNotification(task.User, 'deferUntil')) {
                     sources.push('telegram');
+                }
+                if (shouldSendMatrixNotification(task.User, 'deferUntil')) {
+                    sources.push('matrix');
                 }
 
                 await Notification.createNotification({
