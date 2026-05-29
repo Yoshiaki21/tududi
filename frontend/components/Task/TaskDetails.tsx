@@ -958,7 +958,10 @@ const TaskDetails: React.FC = () => {
         }
     };
 
-    const handleContentUpdate = async (newContent: string) => {
+    const handleContentUpdate = async (
+        newContent: string,
+        options?: { silent?: boolean }
+    ) => {
         if (!task?.uid) {
             return;
         }
@@ -985,9 +988,14 @@ const TaskDetails: React.FC = () => {
                 }
             }
 
-            showSuccessToast(
-                t('task.contentUpdated', 'Task content updated successfully')
-            );
+            if (!options?.silent) {
+                showSuccessToast(
+                    t(
+                        'task.contentUpdated',
+                        'Task content updated successfully'
+                    )
+                );
+            }
 
             setTimelineRefreshKey((prev) => prev + 1);
         } catch (error) {

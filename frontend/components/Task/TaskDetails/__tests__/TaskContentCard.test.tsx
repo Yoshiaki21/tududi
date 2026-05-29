@@ -65,7 +65,7 @@ describe('TaskContentCard - checkbox interactivity', () => {
         expect(checkbox).not.toBeDisabled();
     });
 
-    it('clicking a checkbox calls onUpdate with toggled content', async () => {
+    it('clicking a checkbox calls onUpdate with toggled content and silent flag', async () => {
         const onUpdate = jest.fn().mockResolvedValue(undefined);
         render(<TaskContentCard content="- [ ] Do something" onUpdate={onUpdate} />);
 
@@ -73,16 +73,20 @@ describe('TaskContentCard - checkbox interactivity', () => {
         fireEvent.click(checkbox);
 
         expect(onUpdate).toHaveBeenCalledTimes(1);
-        expect(onUpdate).toHaveBeenCalledWith('- [x] Do something');
+        expect(onUpdate).toHaveBeenCalledWith('- [x] Do something', {
+            silent: true,
+        });
     });
 
-    it('clicking a checked checkbox calls onUpdate to uncheck it', async () => {
+    it('clicking a checked checkbox calls onUpdate to uncheck it with silent flag', async () => {
         const onUpdate = jest.fn().mockResolvedValue(undefined);
         render(<TaskContentCard content="- [x] Do something" onUpdate={onUpdate} />);
 
         const checkbox = screen.getByRole('checkbox');
         fireEvent.click(checkbox);
 
-        expect(onUpdate).toHaveBeenCalledWith('- [ ] Do something');
+        expect(onUpdate).toHaveBeenCalledWith('- [ ] Do something', {
+            silent: true,
+        });
     });
 });

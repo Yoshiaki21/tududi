@@ -9,7 +9,10 @@ import MarkdownRenderer from '../../Shared/MarkdownRenderer';
 
 interface TaskContentCardProps {
     content: string;
-    onUpdate: (newContent: string) => Promise<void>;
+    onUpdate: (
+        newContent: string,
+        options?: { silent?: boolean }
+    ) => Promise<void>;
 }
 
 const TaskContentCard: React.FC<TaskContentCardProps> = ({
@@ -156,7 +159,9 @@ const TaskContentCard: React.FC<TaskContentCardProps> = ({
                     <MarkdownRenderer
                         content={content}
                         className="prose dark:prose-invert max-w-none"
-                        onContentChange={onUpdate}
+                        onContentChange={(newContent) =>
+                            onUpdate(newContent, { silent: true })
+                        }
                     />
                 </div>
             ) : (
