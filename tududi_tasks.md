@@ -411,3 +411,166 @@ client.on("room.message", async (roomId, event) => {
 5. tududi Profile の Matrix タブで設定を保存
 6. ルームからテキストメッセージを送信して Inbox に登録されることを確認
 7. タスクに期限を設定して通知が届くことを確認
+
+---
+
+## タスク3: Markdownチェックボックス更新時の Toast 抑制
+
+### 背景
+
+タスク1 でチェックボックスをクリック可能にしたが、チェックを切り替えるたびに
+「Task content updated successfully」の Toast が表示され、UX 上ノイズになっていた。
+編集モードの Save 時のみ Toast を出し、チェックボックス操作時は静かに保存したい。
+
+### 修正方針（案A: silent フラグ）
+
+呼び出し側が「これは静かな更新だ」と明示するパターン。
+インタフェースは増えるが責務が明確で、最小限のファイル変更で済む。
+
+### 対象ファイル
+
+```
+frontend/components/Task/TaskDetails/TaskContentCard.tsx
+frontend/components/Task/TaskDetails.tsx
+frontend/components/Task/TaskDetails/__tests__/TaskContentCard.test.tsx
+```
+
+### 修正内容
+
+#### 1. `TaskContentCard.tsx` の Props 型を拡張
+
+```tsx
+// 修正前
+interface TaskContentCardProps {
+    content: string;
+    onUpdate: (newContent: string) => Promise<void>;
+}
+
+// 修正後
+interface TaskContentCardProps {
+    content: string;
+    onUpdate: (
+        newContent: string,
+        options?: { silent?: boolean }
+    ) => Promise<void>;
+}
+```
+
+#### 2. `MarkdownRenderer` への `onContentChange` をラップ
+
+チェックボックス経由の更新には `{ silent: true }` を付与する。
+
+```tsx
+// 修正前
+<MarkdownRenderer
+    content={content}
+    className="prose dark:prose-invert max-w-none"
+    onContentChange={onUpdate}
+/>
+
+// 修正後
+<MarkdownRenderer
+    content={content}
+    className="prose dark:prose-invert max-w-none"
+    onContentChange={(newContent) =>
+        onUpdate(newContent, { silent: true })
+    }
+/>
+```
+
+#### 3. `TaskDetails.tsx` の `handleContentUpdate` で silent を判定
+
+```tsx
+const handleContentUpdate = async (
+    newContent: string,
+    options?: { silent?: boolean }
+) => {
+    // ... 既存の処理 ...
+
+    if (!options?.silent) {
+        showSuccessToast(
+            t('task.contentUpdated', 'Task content updated successfully')
+        );
+    }
+
+    // ... 既存の処理 ...
+};
+```
+
+エラー時の `showErrorToast` は silent 関係なく従来通り表示する。
+
+#### 4. テスト更新
+
+`TaskContentCard.test.tsx` のチェックボックスクリックテストを新シグネチャに合わせる：
+
+```tsx
+expect(onUpdate).toHaveBeenCalledWith('- [x] Do something', {
+    silent: true,
+});
+```
+
+### 期待される動作
+
+- チェックボックスをクリック → 保存はされるが Toast は出ない
+- 編集モードで Save ボタンを押す → これまで通り Toast が出る
+- エラー発生時は Toast で通知される
+
+---
+
+## タスク4: マイグレーション衝突回避のためのプレフィックス導入
+
+### 背景
+
+自フォーク（`Yoshiaki21/tududi`）で追加したマイグレーションが上流（`chrisvel/tududi`）の
+日付ベースの番号体系と混ざり、以下の問題があった：
+
+1. 上流が同じ番号帯で新マイグレーションを追加すると、cherry-pick / merge 時に混乱する
+2. 「自分が追加したもの」と「上流由来」がパッと見で区別できない
+
+### 採用方針（案1: 末尾に強制的に並べる）
+
+ファイル名の先頭に `yoshiaki21-` をつけることで、Sequelize のアルファベット順ソートで
+**必ず上流マイグレーションの後（末尾）に実行される** ようにする。
+
+- ASCII 順で数字 (`0-9`) → 英字 (`a-z`) のため、`y` 始まりは常に末尾
+- どんなに上流が新しい migration を追加しても衝突しない
+- `grep yoshiaki21` で自分の追加分が一発で抽出できる
+
+### リネーム対象
+
+```
+backend/migrations/20260601000001-add-matrix-fields-to-users.js
+  → backend/migrations/yoshiaki21-20260601000001-add-matrix-fields-to-users.js
+
+backend/migrations/20260601000002-add-matrix-to-notification-preferences.js
+  → backend/migrations/yoshiaki21-20260601000002-add-matrix-to-notification-preferences.js
+```
+
+### リネーム対象外（上流ファイルへの直接パッチ）
+
+```
+backend/migrations/20260509000001-ensure-notification-preferences.js
+```
+
+これは上流ファイルに JSON.parse のループ処理を追記しただけで、merge 時にコンフリクトを
+解消する前提のため、ファイル名はそのまま維持する。
+
+### 今後の運用ルール
+
+- **新規マイグレーションを追加するとき**は必ず `yoshiaki21-YYYYMMDDxxxxxx-description.js` の形式にする
+- **上流ファイルを直接修正するとき**はファイル名を変更しない（merge コンフリクトで気付けるように）
+- リネーム時は **SequelizeMeta テーブル** の整合性に注意：
+  - 既に DB に適用済みの場合、ファイル名を変えると Sequelize は「未適用」と判定して再実行しようとする
+  - 開発環境では `SequelizeMeta` テーブルの該当行を新ファイル名に UPDATE するか、DB を作り直す
+  - 本番環境では migration を行わずに `SequelizeMeta` 側を直接書き換える運用が安全
+
+### 動作確認
+
+```bash
+ls backend/migrations/ | tail -3
+# 20260509000001-ensure-notification-preferences.js
+# yoshiaki21-20260601000001-add-matrix-fields-to-users.js
+# yoshiaki21-20260601000002-add-matrix-to-notification-preferences.js
+```
+
+末尾に `yoshiaki21-` 始まりのファイルが並ぶことを確認。
