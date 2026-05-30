@@ -160,7 +160,25 @@ async function start(user) {
             }
         });
 
+        // E2EE: 招待を自動承諾してデバイスキー交換を完了させる
+        client.on('room.invite', async (roomId) => {
+            try {
+                await client.joinRoom(roomId);
+            } catch (err) {
+                console.error(`Matrix: failed to join room ${roomId} for user ${user.id}:`, err.message);
+            }
+        });
+
         await client.start();
+
+        // E2EE: デバイスキーをサーバーに登録（初回のみ実行される）
+        try {
+            await client.crypto.uploadDeviceKeys();
+            console.log(`Matrix: device keys uploaded for user ${user.id}`);
+        } catch (err) {
+            console.error(`Matrix: failed to upload device keys for user ${user.id}:`, err.message);
+        }
+
         activeClients.set(user.id, client);
         console.log(`Matrix: started client for user ${user.id}`);
     } catch (error) {

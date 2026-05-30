@@ -18,6 +18,7 @@ services:
     volumes:
       - ./tududi_db:/app/backend/db
       - ./uploads:/app/backend/uploads
+      - ./data:/app/backend/data
     ports:
       - "3002:3002"
     restart: unless-stopped
