@@ -767,7 +767,24 @@ docker compose up
 
 ---
 
-## タスク7: Matrix E2EE（エンドツーエンド暗号化）対応
+## タスク7: Matrix E2EE（エンドツーエンド暗号化）対応 ✅ 完了（2026-05-30）
+
+### 実施した変更
+
+#### `backend/modules/matrix/matrixClient.js`
+- `RustSdkCryptoStorageProvider` を `matrix-bot-sdk` の import に追加
+- `./data/matrix-store/<userId>/crypto/` ディレクトリを自動作成してE2EE用ストレージを初期化
+- `MatrixClient` コンストラクタの第4引数に `cryptoStorage` を渡してE2EEを有効化
+
+#### `backend/modules/matrix/matrixPoller.js`
+- `room.invite` イベントハンドラを追加（暗号化ルームへの招待を自動承諾）
+- `client.start()` の後に `client.crypto.uploadDeviceKeys()` を呼び出してデバイスキーをサーバーに登録
+- キー登録成功・失敗ともにログ出力を追加
+
+#### `docker-compose.yml`
+- `./data:/app/backend/data` ボリュームを追加し、crypto ディレクトリ（デバイスキー）をコンテナ再起動後も永続化
+
+---
 
 ### 背景
 
