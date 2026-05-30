@@ -964,20 +964,22 @@ Matrix: device keys uploaded for user 1
 
 ### 背景
 
-Profile 画面の Matrix 設定で Stop → 設定変更（Room ID等）→ Start を行った場合に
-以下の2つの問題が発生することを確認した：
+Profile 画面の Matrix 設定で Stop → Start を行うと
+`M_UNKNOWN: Internal server error` が発生してクライアントが起動しない問題が確認された。
 
-1. **`client.crypto.uploadDeviceKeys is not a function`**
-   タスク7で追加した `uploadDeviceKeys()` の呼び出しが `matrix-bot-sdk` の実際の
-   API と一致しない。E2EE 自体は自動初期化されるため、この呼び出しは不要で削除する。
+調査の結果、**真の原因は `userId` の型不一致**であることが判明した。
 
-2. **Stop → Start で `M_UNKNOWN: Internal server error` が発生しクライアントが起動しない**
-   `stop()` で旧クライアントが完全に破棄されないまま `start()` で新クライアントを
-   生成するため、crypto セッションが競合してサーバー側でエラーになる。
+- `start()` では `user.id`（整数）を Map のキーとして使用している
+- `stop()` では引数の `userId` をそのまま使用している
+- API から `stop(userId)` が呼ばれるとき `userId` が**文字列**として渡される場合がある
+- JavaScript の Map は `"1"` と `1` を別キーとして扱うため、
+  `activeClients.get("1")` が `undefined` を返し、クライアントの停止・削除が行われない
+- 古いクライアントが Map に残ったまま `start()` が実行されるため、
+  `activeClients.has(user.id)` が `true` になって即 return するか、
+  サーバー側でセッション競合が発生して `M_UNKNOWN` エラーになる
 
-3. **Stop → Start 後も変更前の設定（Room ID等）が使われる**
-   `start()` がキャッシュ済みのユーザー情報を使うため、DB に保存した最新設定が
-   反映されない。
+また、タスク7で追加した `uploadDeviceKeys()` の呼び出しが `matrix-bot-sdk` の
+実際の API と一致しないことも合わせて修正する。
 
 ### 対象ファイル
 
@@ -987,80 +989,98 @@ backend/modules/matrix/matrixPoller.js
 
 ### 修正内容
 
-#### 1. `uploadDeviceKeys()` の呼び出しを削除
-
-E2EE は `client.start()` 時に自動初期化される。明示的な呼び出しは不要なため削除する。
-
-```javascript
-// 削除する行
-await client.crypto.uploadDeviceKeys();
-```
-
-#### 2. `stop()` に待機処理を追加
-
-クライアント停止後、crypto ストレージのロックが解放されるまで待機する。
+#### 1. `stop()` の userId を整数に統一
 
 ```javascript
 // 修正前
 async function stop(userId) {
     const client = activeClients.get(userId);
-    if (client) {
+    if (!client) return;
+
+    try {
         await client.stop();
-        activeClients.delete(userId);
-    }
+    } catch (_) {}
+
+    activeClients.delete(userId);
+    processedEvents.delete(userId);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    console.log(`Matrix: stopped client for user ${userId}`);
 }
 
 // 修正後
 async function stop(userId) {
-    const client = activeClients.get(userId);
-    if (client) {
+    // 型を整数に統一（APIから文字列で渡される場合があるため）
+    const numericId = Number(userId);
+    const client = activeClients.get(numericId);
+    if (!client) return;
+
+    try {
         await client.stop();
-        activeClients.delete(userId);
-        // crypto ストレージのロック解放を待つ（新クライアントとの競合防止）
-        await new Promise(resolve => setTimeout(resolve, 1000));
-    }
+    } catch (_) {}
+
+    activeClients.delete(numericId);
+    processedEvents.delete(numericId);
+    // crypto ストレージのロック解放を待つ（新クライアントとの競合防止）
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    console.log(`Matrix: stopped client for user ${numericId}`);
 }
 ```
 
-#### 3. `start()` で DB から最新設定を取得
-
-キャッシュではなく DB から取得することで、Stop → 設定変更 → Start が
-再起動なしで反映されるようにする。
+#### 2. `start()` の先頭にも型変換を追加（防御的対応）
 
 ```javascript
 // 修正前
 async function start(userId) {
-    const user = activeUsers.get(userId);  // キャッシュから取得
+    const user = await User.findByPk(userId);
+    if (!user || !user.matrix_homeserver_url || !user.matrix_access_token) {
+        console.log(`Matrix: skipping user ${userId} - missing config`);
+        return;
+    }
+    if (activeClients.has(user.id)) return;
     // ...
 }
 
 // 修正後
 async function start(userId) {
-    // DB から最新の設定を取得（Room ID 等の変更が即反映される）
-    const { User } = require('../../models');
-    const user = await User.findByPk(userId);
-    if (!user || !user.matrix_access_token) return;
-    // ... 以降は既存の処理をそのまま使用
+    // 型を整数に統一（stop() との型不一致を防ぐ）
+    const numericId = Number(userId);
+    const user = await User.findByPk(numericId);
+    if (!user || !user.matrix_homeserver_url || !user.matrix_access_token) {
+        console.log(`Matrix: skipping user ${numericId} - missing config`);
+        return;
+    }
+    if (activeClients.has(user.id)) return;
+    // ... 以降は変更なし
 }
+```
+
+#### 3. `uploadDeviceKeys()` の呼び出しを削除
+
+タスク7で追加した以下の行を削除する。
+E2EE は `client.start()` 時に自動初期化されるため不要。
+
+```javascript
+// 削除する行（start() 内に存在する場合）
+await client.crypto.uploadDeviceKeys();
 ```
 
 ### 期待される動作
 
-- Stop → 設定変更（Room ID 等）→ Start で再起動なしに新しい設定が反映される
 - Stop → Start でクライアントが正常に再起動する
+- Stop → 設定変更（Room ID 等）→ Start で再起動なしに新しい設定が反映される
+- `M_UNKNOWN: Internal server error` が出なくなる
 - `client.crypto.uploadDeviceKeys is not a function` エラーが出なくなる
 
 ### 動作確認
 
 ```bash
-# Stop → Room ID 変更・保存 → Start 後にログを確認
+# Stop → Start 後にログを確認
 docker compose logs tududi | grep -i matrix
 
 # 以下が出て、エラーなく起動することを確認
 # Matrix: stopped client for user 1
 # Matrix: started client for user 1
-
-# 新しい Room ID のルームからメッセージを送信して Inbox に追加されることを確認
+# （M_UNKNOWN が出ないこと）
 ```
 
 ---
