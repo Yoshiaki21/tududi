@@ -616,9 +616,9 @@ FROM node:22-alpine AS builder
 FROM node:22-alpine AS production
 
 # 修正後
-FROM node:22-slim AS builder
+FROM node:22-trixie-slim AS builder
 # ...
-FROM node:22-slim AS production
+FROM node:22-trixie-slim AS production
 ```
 
 #### 2. builder ステージ：apk → apt-get
@@ -692,7 +692,7 @@ exec gosu app "$@"
 
 ### 注意事項
 
-- `node:22-slim` は Debian ベースのため、イメージサイズが Alpine より若干大きくなる（+50〜100MB 程度）
+- `node:22-trixie-slim` は Debian 13 (Trixie) ベースで glibc 2.40 を搭載。イメージサイズは Alpine より若干大きくなる（+50〜100MB 程度）
 - `gosu` は `su-exec` と同等の機能を持ち、Docker 公式が推奨するユーザー切り替えツール
 - 将来 E2EE を有効化する場合も、このベースイメージで追加作業は不要
 
@@ -707,5 +707,60 @@ docker compose up
 
 # ログに以下が出て、クラッシュしないことを確認
 # ✅ Database connection successful
+# （ERR_DLOPEN_FAILED が出ないこと）
+```
+
+---
+
+## タスク6: Dockerfile ベースイメージを node:22-trixie-slim に修正
+
+### 背景
+
+タスク5 で `node:22-slim`（Debian 12 Bookworm、glibc 2.36）に移行したが、
+`sqlite3` のプリビルドバイナリが **glibc 2.38 以上** を要求するため、
+以下のエラーで引き続きクラッシュする：
+
+```
+Error: /lib/x86_64-linux-gnu/libm.so.6: version `GLIBC_2.38' not found
+(required by node_sqlite3.node)
+code: 'ERR_DLOPEN_FAILED'
+```
+
+`node:22-trixie-slim`（Debian 13 Trixie、glibc 2.40）に変更することで解決する。
+
+### 対象ファイル
+
+```
+Dockerfile
+```
+
+### 修正内容
+
+#### 1. 両ステージのベースイメージを変更
+
+```dockerfile
+# 修正前（タスク5 適用後の状態）
+FROM node:22-slim AS builder
+FROM node:22-slim AS production
+
+# 修正後
+FROM node:22-trixie-slim AS builder   # Debian 13 / glibc 2.40
+FROM node:22-trixie-slim AS production
+```
+
+他の変更は不要。apt-get / gosu / groupadd 等はタスク5のままで動作する。
+
+### 動作確認
+
+```bash
+# イメージを再ビルド（キャッシュを使わず）
+docker build --no-cache -t tududi-local .
+
+# 起動確認
+docker compose up
+
+# 以下が出てクラッシュしないことを確認
+# ✅ Database connection successful
+# ✅ Database status check completed
 # （ERR_DLOPEN_FAILED が出ないこと）
 ```
