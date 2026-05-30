@@ -964,22 +964,20 @@ Matrix: device keys uploaded for user 1
 
 ### 背景
 
-Profile 画面の Matrix 設定で Stop → Start を行うと
-`M_UNKNOWN: Internal server error` が発生してクライアントが起動しない問題が確認された。
+Profile 画面の Matrix 設定で Stop → 設定変更（Room ID等）→ Start を行った場合に
+以下の2つの問題が発生することを確認した：
 
-調査の結果、**真の原因は `userId` の型不一致**であることが判明した。
+1. **`client.crypto.uploadDeviceKeys is not a function`**
+   タスク7で追加した `uploadDeviceKeys()` の呼び出しが `matrix-bot-sdk` の実際の
+   API と一致しない。E2EE 自体は自動初期化されるため、この呼び出しは不要で削除する。
 
-- `start()` では `user.id`（整数）を Map のキーとして使用している
-- `stop()` では引数の `userId` をそのまま使用している
-- API から `stop(userId)` が呼ばれるとき `userId` が**文字列**として渡される場合がある
-- JavaScript の Map は `"1"` と `1` を別キーとして扱うため、
-  `activeClients.get("1")` が `undefined` を返し、クライアントの停止・削除が行われない
-- 古いクライアントが Map に残ったまま `start()` が実行されるため、
-  `activeClients.has(user.id)` が `true` になって即 return するか、
-  サーバー側でセッション競合が発生して `M_UNKNOWN` エラーになる
+2. **Stop → Start で `M_UNKNOWN: Internal server error` が発生しクライアントが起動しない**
+   `stop()` で旧クライアントが完全に破棄されないまま `start()` で新クライアントを
+   生成するため、crypto セッションが競合してサーバー側でエラーになる。
 
-また、タスク7で追加した `uploadDeviceKeys()` の呼び出しが `matrix-bot-sdk` の
-実際の API と一致しないことも合わせて修正する。
+3. **Stop → Start 後も変更前の設定（Room ID等）が使われる**
+   `start()` がキャッシュ済みのユーザー情報を使うため、DB に保存した最新設定が
+   反映されない。
 
 ### 対象ファイル
 
@@ -989,54 +987,50 @@ backend/modules/matrix/matrixPoller.js
 
 ### 修正内容
 
-#### 1. `stop()` の userId を整数に統一
+#### 1. `uploadDeviceKeys()` の呼び出しを削除
+
+E2EE は `client.start()` 時に自動初期化される。明示的な呼び出しは不要なため削除する。
+
+```javascript
+// 削除する行
+await client.crypto.uploadDeviceKeys();
+```
+
+#### 2. `stop()` に待機処理を追加
+
+クライアント停止後、crypto ストレージのロックが解放されるまで待機する。
 
 ```javascript
 // 修正前
 async function stop(userId) {
     const client = activeClients.get(userId);
-    if (!client) return;
-
-    try {
+    if (client) {
         await client.stop();
-    } catch (_) {}
-
-    activeClients.delete(userId);
-    processedEvents.delete(userId);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    console.log(`Matrix: stopped client for user ${userId}`);
+        activeClients.delete(userId);
+    }
 }
 
 // 修正後
 async function stop(userId) {
-    // 型を整数に統一（APIから文字列で渡される場合があるため）
-    const numericId = Number(userId);
-    const client = activeClients.get(numericId);
-    if (!client) return;
-
-    try {
+    const client = activeClients.get(userId);
+    if (client) {
         await client.stop();
-    } catch (_) {}
-
-    activeClients.delete(numericId);
-    processedEvents.delete(numericId);
-    // crypto ストレージのロック解放を待つ（新クライアントとの競合防止）
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    console.log(`Matrix: stopped client for user ${numericId}`);
+        activeClients.delete(userId);
+        // crypto ストレージのロック解放を待つ（新クライアントとの競合防止）
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
 }
 ```
 
-#### 2. `start()` の先頭にも型変換を追加（防御的対応）
+#### 3. `start()` で DB から最新設定を取得
+
+キャッシュではなく DB から取得することで、Stop → 設定変更 → Start が
+再起動なしで反映されるようにする。
 
 ```javascript
 // 修正前
 async function start(userId) {
-    const user = await User.findByPk(userId);
-    if (!user || !user.matrix_homeserver_url || !user.matrix_access_token) {
-        console.log(`Matrix: skipping user ${userId} - missing config`);
-        return;
-    }
-    if (activeClients.has(user.id)) return;
+    const user = activeUsers.get(userId);  // キャッシュから取得
     // ...
 }
 
@@ -1045,42 +1039,89 @@ async function start(userId) {
     // 型を整数に統一（stop() との型不一致を防ぐ）
     const numericId = Number(userId);
     const user = await User.findByPk(numericId);
-    if (!user || !user.matrix_homeserver_url || !user.matrix_access_token) {
-        console.log(`Matrix: skipping user ${numericId} - missing config`);
-        return;
-    }
-    if (activeClients.has(user.id)) return;
-    // ... 以降は変更なし
+    if (!user || !user.matrix_access_token) return;
+    // ... 以降は既存の処理をそのまま使用
 }
 ```
 
-#### 3. `uploadDeviceKeys()` の呼び出しを削除
+#### 4. イベントハンドラ内で Room ID を毎回 DB から取得
 
-タスク7で追加した以下の行を削除する。
-E2EE は `client.start()` 時に自動初期化されるため不要。
+**問題**: `start()` で DB から `user` を取得しても、イベントハンドラ内の
+`user.matrix_room_id` はクロージャにより `start()` 実行時点の値に固定される。
+そのため Room ID を変更して再起動しても、古い Room ID でフィルタされ続ける。
+
+**原因の流れ**:
+1. Room ID を変更して保存
+2. docker compose restart または Stop → Start
+3. `start()` で DB から新しい `user` を取得 ← ここは正しい
+4. しかし `room.message` ハンドラ内の `user` は古いオブジェクトのまま
+5. `roomId !== user.matrix_room_id` の判定で新 Room ID のメッセージが弾かれる
+
+Access Token を入れ直すと動作するのは、保存処理後の `start()` で新しい
+`user` オブジェクトがクロージャに取り込まれるためで、根本解決ではない。
 
 ```javascript
-// 削除する行（start() 内に存在する場合）
-await client.crypto.uploadDeviceKeys();
+// 修正前
+client.on('room.message', async (roomId, event) => {
+    // user はクロージャで固定されているため Room ID 変更が反映されない
+    if (user.matrix_room_id && roomId !== user.matrix_room_id) return;
+    if (user.matrix_bot_user_id && event.sender === user.matrix_bot_user_id) return;
+    // ...
+    await processMessage(user, { roomId, text, sender: event.sender, eventId: event.event_id });
+});
+
+// 修正後
+client.on('room.message', async (roomId, event) => {
+    // 毎回 DB から最新設定を取得（Room ID 変更を即反映）
+    const currentUser = await User.findByPk(user.id);
+    if (!currentUser) return;
+
+    if (currentUser.matrix_room_id && roomId !== currentUser.matrix_room_id) return;
+    if (currentUser.matrix_bot_user_id && event.sender === currentUser.matrix_bot_user_id) return;
+
+    if (event.type !== 'm.room.message') return;
+    if (event.content?.msgtype !== 'm.text') return;
+
+    if (seen.has(event.event_id)) return;
+    seen.add(event.event_id);
+
+    if (seen.size > 1000) {
+        const oldest = Array.from(seen).slice(0, 100);
+        oldest.forEach((id) => seen.delete(id));
+    }
+
+    const text = event.content?.body;
+    if (!text) return;
+
+    // currentUser を使って processMessage を呼び出す
+    await processMessage(currentUser, {
+        roomId,
+        text,
+        sender: event.sender,
+        eventId: event.event_id,
+    });
+});
 ```
 
 ### 期待される動作
 
-- Stop → Start でクライアントが正常に再起動する
-- Stop → 設定変更（Room ID 等）→ Start で再起動なしに新しい設定が反映される
-- `M_UNKNOWN: Internal server error` が出なくなる
+- Stop → Start でクライアントが正常に再起動する（`M_UNKNOWN` が出ない）
+- Room ID を変更 → 保存 → Stop → Start で**再起動なしに新しい Room ID が反映される**
+- Room ID を変更しても Access Token を入れ直さなくて済む
 - `client.crypto.uploadDeviceKeys is not a function` エラーが出なくなる
 
 ### 動作確認
 
 ```bash
-# Stop → Start 後にログを確認
+# Stop → Room ID 変更・保存 → Start 後にログを確認
 docker compose logs tududi | grep -i matrix
 
 # 以下が出て、エラーなく起動することを確認
 # Matrix: stopped client for user 1
 # Matrix: started client for user 1
 # （M_UNKNOWN が出ないこと）
+
+# 新しい Room ID のルームからメッセージを送信して Inbox に追加されることを確認
 ```
 
 ---
