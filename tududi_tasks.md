@@ -764,3 +764,179 @@ docker compose up
 # ✅ Database status check completed
 # （ERR_DLOPEN_FAILED が出ないこと）
 ```
+
+---
+
+## タスク7: Matrix E2EE（エンドツーエンド暗号化）対応
+
+### 背景
+
+現在の Matrix 連携（タスク2）は非暗号化ルームのみ対応している。
+暗号化ルーム（Element で 🔒 マークが付くルーム）では以下の問題が発生する：
+
+- 受信メッセージが復号できず無視される
+- bot からの送信が暗号化されないため暗号化ルームで弾かれる
+
+`@matrix-org/matrix-sdk-crypto-nodejs` はすでにインストール済みで、
+`node:22-trixie-slim`（glibc 2.40）環境で動作可能な状態になっている。
+このタスクでは `matrix-bot-sdk` の E2EE 機能を有効化し、暗号化ルームで動作させる。
+
+### 使用するクラス
+
+`matrix-bot-sdk` が提供する以下を使用する：
+
+```javascript
+const {
+    MatrixClient,
+    SimpleFsStorageProvider,
+    RustSdkCryptoStorageProvider,  // E2EE用ストレージ（新規追加）
+} = require("matrix-bot-sdk");
+```
+
+### 対象ファイル
+
+```
+backend/modules/matrix/matrixClient.js
+backend/modules/matrix/matrixPoller.js
+```
+
+---
+
+### 修正内容
+
+#### 1. `backend/modules/matrix/matrixClient.js`
+
+`RustSdkCryptoStorageProvider` を追加し、クライアント生成時に渡す。
+
+```javascript
+// 修正前
+const { MatrixClient, SimpleFsStorageProvider } = require("matrix-bot-sdk");
+
+function createMatrixClient(homeserverUrl, accessToken, userId) {
+    const storageDir = `./data/matrix-store/${userId}`;
+    if (!fs.existsSync(storageDir)) {
+        fs.mkdirSync(storageDir, { recursive: true });
+    }
+    const storage = new SimpleFsStorageProvider(`${storageDir}/state.json`);
+    return new MatrixClient(homeserverUrl, accessToken, storage);
+}
+
+// 修正後
+const {
+    MatrixClient,
+    SimpleFsStorageProvider,
+    RustSdkCryptoStorageProvider,
+} = require("matrix-bot-sdk");
+
+function createMatrixClient(homeserverUrl, accessToken, userId) {
+    const storageDir = `./data/matrix-store/${userId}`;
+    if (!fs.existsSync(storageDir)) {
+        fs.mkdirSync(storageDir, { recursive: true });
+    }
+    const storage = new SimpleFsStorageProvider(`${storageDir}/state.json`);
+
+    // E2EE用ストレージを追加（デバイスキー・セッションキーを永続化）
+    const cryptoDir = `${storageDir}/crypto`;
+    if (!fs.existsSync(cryptoDir)) {
+        fs.mkdirSync(cryptoDir, { recursive: true });
+    }
+    const cryptoStorage = new RustSdkCryptoStorageProvider(cryptoDir);
+
+    return new MatrixClient(homeserverUrl, accessToken, storage, cryptoStorage);
+}
+```
+
+#### 2. `backend/modules/matrix/matrixPoller.js`
+
+`client.start()` の前にデバイスキーの登録と、暗号化ルームへの対応処理を追加する。
+
+```javascript
+// 修正前
+async function start(userId) {
+    // ... クライアント生成 ...
+    client.on("room.message", async (roomId, event) => {
+        // ... メッセージ処理 ...
+    });
+    await client.start();
+}
+
+// 修正後
+async function start(userId) {
+    // ... クライアント生成 ...
+
+    // E2EE: デバイスキーをサーバーに登録（初回のみ実行される）
+    await client.crypto.uploadDeviceKeys();
+
+    client.on("room.message", async (roomId, event) => {
+        if (processedEvents.has(event.event_id)) return;
+        processedEvents.add(event.event_id);
+
+        if (event.sender === botUserId) return;
+        if (event.type !== "m.room.message") return;
+
+        // E2EE: 復号済みイベントかどうかに関わらず body を取得
+        // matrix-bot-sdk は E2EE 有効時に自動復号してくれるため、
+        // event.content.body をそのまま使えば暗号化・非暗号化どちらも動作する
+        const text = event.content?.body;
+        if (!text) return;
+
+        await processMessage(user, { roomId, text, sender: event.sender });
+    });
+
+    // E2EE: 暗号化ルームへの招待を自動承諾（任意・セキュリティ要件に応じて判断）
+    client.on("room.invite", async (roomId, inviteEvent) => {
+        await client.joinRoom(roomId);
+    });
+
+    await client.start();
+}
+```
+
+### 注意事項
+
+#### デバイスキーの永続化について
+
+`RustSdkCryptoStorageProvider` に指定したディレクトリ（`./data/matrix-store/<userId>/crypto/`）に
+デバイスキーが保存される。このディレクトリが消えると別デバイスとして扱われ、
+過去の暗号化メッセージが復号できなくなる。
+
+Docker ボリューム設定で `./data/` も永続化されているか確認すること：
+
+```yaml
+# docker-compose.yml（確認）
+volumes:
+  - ./data:/app/backend/data   # matrix-store もここに含まれること
+```
+
+含まれていない場合は追加する。
+
+#### 既存の非暗号化ルームへの影響
+
+E2EE を有効化しても非暗号化ルームは引き続き動作する。
+`matrix-bot-sdk` は暗号化・非暗号化を自動判別するため、コードの分岐は不要。
+
+#### 初回起動時の動作
+
+初回 `client.start()` 時にデバイスキーの生成とサーバーへの登録が行われる。
+この処理には数秒かかる場合があるが、以降は永続化されたキーを再利用する。
+
+### 動作確認手順
+
+1. Element でテスト用の**暗号化ルーム**を新規作成（ルーム作成時に暗号化を有効にする）
+2. bot アカウントをルームに招待
+3. bot が参加したことを確認（🔒 マークが表示されていること）
+4. ルームからテキストを送信
+5. tududi Web UI の Inbox にアイテムが追加されることを確認
+6. bot からの返信メッセージも暗号化されて届くことを確認（Element で 🔒 マークが付くこと）
+
+```bash
+# 動作確認時のログ監視
+docker compose logs -f tududi | grep -i matrix
+```
+
+以下のようなログが出れば E2EE が正常に初期化されている：
+
+```
+Matrix: crypto initialized for user 1
+Matrix: device keys uploaded for user 1
+```
