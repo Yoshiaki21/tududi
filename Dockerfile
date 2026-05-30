@@ -1,16 +1,16 @@
 ###############
 # BUILD STAGE #
 ###############
-# Use Node.js Alpine for minimal build image
-FROM node:22-alpine AS builder
+FROM node:22-trixie-slim AS builder
 
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     make \
     g++ \
-    sqlite-dev \
-    sqlite \
-    bash
+    libsqlite3-dev \
+    sqlite3 \
+    bash \
+    && rm -rf /var/lib/apt/lists/*
 
 # Update npm to latest version
 RUN npm install -g npm@11.6.4
@@ -39,25 +39,26 @@ RUN npm cache clean --force && \
 ####################
 # Production stage #
 ####################
-FROM node:22-alpine AS production
+FROM node:22-trixie-slim AS production
 
 ENV APP_UID=1001
 ENV APP_GID=1001
 
 # Install minimal runtime dependencies
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
-    sqlite \
+    sqlite3 \
     dumb-init \
-    su-exec && \
-    rm -rf /tmp/* /var/cache/apk/*
+    gosu \
+    wget \
+    && rm -rf /var/lib/apt/lists/* /tmp/*
 
 # Update npm to latest version
 RUN npm install -g npm@11.6.4
 
 # Create app user and group
-RUN addgroup -g ${APP_GID} app && \
-    adduser -D -u ${APP_UID} -G app app
+RUN groupadd -g ${APP_GID} app && \
+    useradd -u ${APP_UID} -g app -M -s /sbin/nologin app
 
 # Set working directory
 WORKDIR /app
