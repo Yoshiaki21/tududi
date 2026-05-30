@@ -574,3 +574,138 @@ ls backend/migrations/ | tail -3
 ```
 
 末尾に `yoshiaki21-` 始まりのファイルが並ぶことを確認。
+
+---
+
+## タスク5: Dockerfile の Alpine → Debian slim 移行
+
+### 背景
+
+`matrix-bot-sdk` は内部依存として `@matrix-org/matrix-sdk-crypto-nodejs` を持つ。
+このパッケージは Rust 製のネイティブバイナリ（E2EE暗号化ライブラリ）を同梱しており、
+実行時に **glibc（`ld-linux-x86-64.so.2`）を要求する**。
+
+現在の Dockerfile は `node:22-alpine`（musl libc）をベースにしているため、
+起動時に以下のエラーで即クラッシュし、コンテナが再起動ループに陥る：
+
+```
+Error: Error loading shared library ld-linux-x86-64.so.2: No such file or directory
+(needed by matrix-sdk-crypto.linux-x64-musl.node)
+code: 'ERR_DLOPEN_FAILED'
+```
+
+E2EE は初期実装では対応しないが、`@matrix-org/matrix-sdk-crypto-nodejs` は
+optional ではないため `npm install` 時に必ず導入され、`require` 時にクラッシュする。
+将来の E2EE 対応時にも同じ glibc 環境が必要なため、Alpine を廃止する。
+
+### 対象ファイル
+
+```
+Dockerfile
+scripts/docker-entrypoint.sh
+```
+
+### 修正内容
+
+#### 1. ベースイメージの変更（builder / production 両ステージ）
+
+```dockerfile
+# 修正前
+FROM node:22-alpine AS builder
+# ...
+FROM node:22-alpine AS production
+
+# 修正後
+FROM node:22-slim AS builder
+# ...
+FROM node:22-slim AS production
+```
+
+#### 2. builder ステージ：apk → apt-get
+
+```dockerfile
+# 修正前
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    sqlite-dev \
+    sqlite \
+    bash
+
+# 修正後
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
+    libsqlite3-dev \
+    sqlite3 \
+    bash \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+#### 3. production ステージ：apk → apt-get、su-exec → gosu
+
+```dockerfile
+# 修正前
+RUN apk add --no-cache \
+    bash \
+    sqlite \
+    dumb-init \
+    su-exec && \
+    rm -rf /tmp/* /var/cache/apk/*
+
+# 修正後
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    sqlite3 \
+    dumb-init \
+    gosu \
+    && rm -rf /var/lib/apt/lists/* /tmp/*
+```
+
+#### 4. addgroup / adduser → groupadd / useradd
+
+Alpine の `addgroup` / `adduser` は Debian では使えないため、標準コマンドに変更する。
+
+```dockerfile
+# 修正前
+RUN addgroup -g ${APP_GID} app && \
+    adduser -D -u ${APP_UID} -G app app
+
+# 修正後
+RUN groupadd -g ${APP_GID} app && \
+    useradd -u ${APP_UID} -g app -M -s /sbin/nologin app
+```
+
+#### 5. docker-entrypoint.sh の su-exec → gosu
+
+`scripts/docker-entrypoint.sh` 内で `su-exec` を使用している箇所をすべて `gosu` に置き換える。
+
+```bash
+# 修正前
+exec su-exec app "$@"
+
+# 修正後
+exec gosu app "$@"
+```
+
+### 注意事項
+
+- `node:22-slim` は Debian ベースのため、イメージサイズが Alpine より若干大きくなる（+50〜100MB 程度）
+- `gosu` は `su-exec` と同等の機能を持ち、Docker 公式が推奨するユーザー切り替えツール
+- 将来 E2EE を有効化する場合も、このベースイメージで追加作業は不要
+
+### 動作確認
+
+```bash
+# ビルド
+docker build -t tududi-local .
+
+# 起動確認（クラッシュループが解消されることを確認）
+docker compose up
+
+# ログに以下が出て、クラッシュしないことを確認
+# ✅ Database connection successful
+# （ERR_DLOPEN_FAILED が出ないこと）
+```
