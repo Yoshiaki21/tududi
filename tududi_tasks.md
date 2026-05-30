@@ -957,3 +957,230 @@ docker compose logs -f tududi | grep -i matrix
 Matrix: crypto initialized for user 1
 Matrix: device keys uploaded for user 1
 ```
+
+---
+
+## タスク8: matrixPoller.js の Stop/Start 動作修正
+
+### 背景
+
+Profile 画面の Matrix 設定で Stop → 設定変更（Room ID等）→ Start を行った場合に
+以下の2つの問題が発生することを確認した：
+
+1. **`client.crypto.uploadDeviceKeys is not a function`**
+   タスク7で追加した `uploadDeviceKeys()` の呼び出しが `matrix-bot-sdk` の実際の
+   API と一致しない。E2EE 自体は自動初期化されるため、この呼び出しは不要で削除する。
+
+2. **Stop → Start で `M_UNKNOWN: Internal server error` が発生しクライアントが起動しない**
+   `stop()` で旧クライアントが完全に破棄されないまま `start()` で新クライアントを
+   生成するため、crypto セッションが競合してサーバー側でエラーになる。
+
+3. **Stop → Start 後も変更前の設定（Room ID等）が使われる**
+   `start()` がキャッシュ済みのユーザー情報を使うため、DB に保存した最新設定が
+   反映されない。
+
+### 対象ファイル
+
+```
+backend/modules/matrix/matrixPoller.js
+```
+
+### 修正内容
+
+#### 1. `uploadDeviceKeys()` の呼び出しを削除
+
+E2EE は `client.start()` 時に自動初期化される。明示的な呼び出しは不要なため削除する。
+
+```javascript
+// 削除する行
+await client.crypto.uploadDeviceKeys();
+```
+
+#### 2. `stop()` に待機処理を追加
+
+クライアント停止後、crypto ストレージのロックが解放されるまで待機する。
+
+```javascript
+// 修正前
+async function stop(userId) {
+    const client = activeClients.get(userId);
+    if (client) {
+        await client.stop();
+        activeClients.delete(userId);
+    }
+}
+
+// 修正後
+async function stop(userId) {
+    const client = activeClients.get(userId);
+    if (client) {
+        await client.stop();
+        activeClients.delete(userId);
+        // crypto ストレージのロック解放を待つ（新クライアントとの競合防止）
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+}
+```
+
+#### 3. `start()` で DB から最新設定を取得
+
+キャッシュではなく DB から取得することで、Stop → 設定変更 → Start が
+再起動なしで反映されるようにする。
+
+```javascript
+// 修正前
+async function start(userId) {
+    const user = activeUsers.get(userId);  // キャッシュから取得
+    // ...
+}
+
+// 修正後
+async function start(userId) {
+    // DB から最新の設定を取得（Room ID 等の変更が即反映される）
+    const { User } = require('../../models');
+    const user = await User.findByPk(userId);
+    if (!user || !user.matrix_access_token) return;
+    // ... 以降は既存の処理をそのまま使用
+}
+```
+
+### 期待される動作
+
+- Stop → 設定変更（Room ID 等）→ Start で再起動なしに新しい設定が反映される
+- Stop → Start でクライアントが正常に再起動する
+- `client.crypto.uploadDeviceKeys is not a function` エラーが出なくなる
+
+### 動作確認
+
+```bash
+# Stop → Room ID 変更・保存 → Start 後にログを確認
+docker compose logs tududi | grep -i matrix
+
+# 以下が出て、エラーなく起動することを確認
+# Matrix: stopped client for user 1
+# Matrix: started client for user 1
+
+# 新しい Room ID のルームからメッセージを送信して Inbox に追加されることを確認
+```
+
+---
+
+## タスク9: MatrixTab UI改善（保存ボタン統一 ＋ タスクサマリー通知設定追加）
+
+### 背景
+
+Matrix 設定画面に以下の2つの問題がある：
+
+1. **保存ボタンが2つ存在する**
+   「Save Matrix Settings」と「変更を保存」の2つがあり混乱を招く。
+   Profile 画面全体の「変更を保存」に統一する。
+
+2. **タスクサマリー通知の設定UIがない**
+   Telegram タブにはタスクサマリー通知のトグル・頻度選択・テスト送信ボタンがあるが、
+   Matrix タブには同等の UI がない。バックエンドの送信処理は実装済みのため、
+   フロントエンドの UI とテスト送信エンドポイントを追加する。
+
+### 対象ファイル
+
+```
+frontend/components/Profile/tabs/MatrixTab.tsx
+backend/modules/matrix/routes.js
+backend/modules/matrix/controller.js
+```
+
+---
+
+### 修正内容
+
+#### 1. `frontend/components/Profile/tabs/MatrixTab.tsx`
+
+##### 1-1. 「Save Matrix Settings」ボタンを削除
+
+Profile 画面全体の「変更を保存」ボタンに統一する。
+
+```tsx
+// 削除するボタン
+<button
+    onClick={handleSave}
+    className="..."
+>
+    Save Matrix Settings
+</button>
+```
+
+##### 1-2. タスクサマリー通知セクションを追加
+
+`TelegramTab.tsx` のタスクサマリーセクションを参考に、同等の UI を Matrix タブに追加する。
+
+追加する UI 要素：
+
+| 要素 | 内容 |
+|---|---|
+| セクションヘッダー | 「タスクサマリー通知」（Telegram と同じスタイル） |
+| 説明文 | 「Matrix を通じて定期的にタスクのサマリーを受け取ります」 |
+| 有効/無効トグル | `task_summary_enabled` に対応 |
+| 頻度選択 | 1時間 / 2時間 / 4時間 / 8時間 / 12時間 / 1日 / 1週間 |
+| テスト送信ボタン | `/api/matrix/test-summary` を呼び出す |
+| エラー表示 | Matrix 連携が未設定の場合に警告メッセージを表示 |
+
+実装は `TelegramTab.tsx` のサマリーセクションと同じパターンで、
+API エンドポイントのパスを `/api/telegram/...` → `/api/matrix/...` に変更する。
+
+---
+
+#### 2. `backend/modules/matrix/routes.js`
+
+Telegram の `routes.js` を参考に、テスト送信用エンドポイントを追加する。
+
+```javascript
+// 追加するルート
+router.post('/test-summary', controller.testSummary);
+```
+
+---
+
+#### 3. `backend/modules/matrix/controller.js`
+
+Telegram の `controller.js` の `testSummary` 関数を参考に実装する。
+
+```javascript
+// 追加する関数
+async testSummary(req, res) {
+    try {
+        const userId = req.user.id;
+        const user = await User.findByPk(userId);
+
+        if (!user.matrix_access_token || !user.matrix_room_id) {
+            return res.status(400).json({
+                error: 'Matrix integration is not configured'
+            });
+        }
+
+        // matrixNotificationService を使ってテストメッセージを送信
+        await matrixNotificationService.sendMessage(
+            user.matrix_homeserver_url,
+            user.matrix_access_token,
+            user.matrix_room_id,
+            '📋 This is a test summary from tududi!'
+        );
+
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+}
+```
+
+### 期待される動作
+
+- Matrix 設定画面の「Save Matrix Settings」ボタンが消え、「変更を保存」のみになる
+- Telegram タブと同等のタスクサマリー通知設定が Matrix タブに表示される
+- 「テスト送信」ボタンを押すと Matrix ルームにテストメッセージが届く
+- Matrix 未設定時はテスト送信ボタンが無効化またはエラーメッセージが表示される
+
+### 動作確認
+
+1. Profile → Matrix タブで「Save Matrix Settings」ボタンが消えていることを確認
+2. タスクサマリー通知セクションが表示されていることを確認
+3. テスト送信ボタンを押して Matrix ルームにメッセージが届くことを確認
+4. 「変更を保存」でサマリー設定（有効/無効・頻度）が保存されることを確認
