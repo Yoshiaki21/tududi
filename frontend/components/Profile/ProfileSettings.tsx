@@ -1,6 +1,7 @@
 import React, {
     useState,
     useEffect,
+    useRef,
     ChangeEvent,
     FormEvent,
     useCallback,
@@ -843,6 +844,8 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({
         }
     };
 
+    const matrixSaveRef = useRef<(() => Promise<void>) | null>(null);
+
     const handleSendTestSummary = async () => {
         try {
             const response = await fetch(
@@ -863,6 +866,27 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({
 
             const data = await response.json();
             showSuccessToast(data.message);
+        } catch (error) {
+            showErrorToast((error as Error).message);
+        }
+    };
+
+    const handleSendTestMatrixSummary = async () => {
+        try {
+            const response = await fetch(getApiPath('matrix/test-summary'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-csrf-token': await getCsrfToken(),
+                },
+            });
+
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || t('profile.sendSummaryFailed'));
+            }
+
+            showSuccessToast(t('profile.matrix.testSummarySent', 'Test summary sent to Matrix.'));
         } catch (error) {
             showErrorToast((error as Error).message);
         }
@@ -1098,6 +1122,11 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({
                     newPassword: '',
                     confirmPassword: '',
                 }));
+            }
+
+            // Matrix 設定も保存（タブがロード済みの場合のみ実行される）
+            if (matrixSaveRef.current) {
+                await matrixSaveRef.current();
             }
 
             const successMessage = isPasswordChange
@@ -1371,7 +1400,26 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({
                                     formatFrequency={formatFrequency}
                                 />
 
-                                <MatrixTab isActive={activeTab === 'matrix'} />
+                                <MatrixTab
+                                    isActive={activeTab === 'matrix'}
+                                    saveRef={matrixSaveRef}
+                                    formData={formData}
+                                    onToggleSummary={() =>
+                                        setFormData((prev) => ({
+                                            ...prev,
+                                            task_summary_enabled:
+                                                !prev.task_summary_enabled,
+                                        }))
+                                    }
+                                    onSelectFrequency={(frequency) =>
+                                        setFormData((prev) => ({
+                                            ...prev,
+                                            task_summary_frequency: frequency,
+                                        }))
+                                    }
+                                    onSendTestSummary={handleSendTestMatrixSummary}
+                                    formatFrequency={formatFrequency}
+                                />
 
                                 <AiTab
                                     isActive={activeTab === 'ai'}
