@@ -1245,3 +1245,310 @@ async testSummary(req, res) {
 2. タスクサマリー通知セクションが表示されていることを確認
 3. テスト送信ボタンを押して Matrix ルームにメッセージが届くことを確認
 4. 「変更を保存」でサマリー設定（有効/無効・頻度）が保存されることを確認
+
+---
+
+## タスク10: 工数管理機能の追加（作業時間記録・プロジェクト集計・人工計算）
+
+### 背景
+
+プロジェクトを仕事の単位として使い、タスクに作業時間を記録し、
+プロジェクトごとの工数・人工・費用を把握したい。
+
+具体的なユースケース：
+- プロジェクト = 1案件（例：小松(7)分散パッド）
+- タスク = 1日程度の作業単位（例：FH計画と排水計算）
+- サブタスク = ToDoリスト（例：排水計算、FH計画平面図）
+- タスクに作業時間を手入力（例：1.5 = 1時間30分）
+- プロジェクト画面で合計時間・人工・費用を確認
+
+### 対象ファイル
+
+```
+# DB マイグレーション（新規）
+backend/migrations/yoshiaki21-YYYYMMDD000001-add-work-hours-to-tasks.js
+backend/migrations/yoshiaki21-YYYYMMDD000002-add-work-hours-fields-to-projects.js
+backend/migrations/yoshiaki21-YYYYMMDD000003-add-default-unit-price-to-users.js
+
+# モデル
+backend/models/Task.js
+backend/models/Project.js
+backend/models/User.js
+
+# バックエンド
+backend/routes/tasks.js        （または tasks コントローラ）
+backend/routes/projects.js     （または projects コントローラ）
+backend/routes/users.js        （または profile コントローラ）
+
+# フロントエンド
+frontend/components/TaskDetail/TaskDetail.tsx  （または同等のタスク詳細コンポーネント）
+frontend/components/Project/ProjectDetail.tsx  （または同等のプロジェクト詳細コンポーネント）
+frontend/components/Project/WorkSummaryCard.tsx（新規作成）
+frontend/components/Profile/tabs/GeneralTab.tsx（または同等の一般設定タブ）
+frontend/components/Project/ProjectModal.tsx   （または新規作成モーダル）
+```
+
+実際のファイルパスは Claude Code がコードベースを参照して確認すること。
+
+---
+
+### 修正内容
+
+#### 1. DB マイグレーション
+
+##### tasks テーブルに `work_hours` カラムを追加
+
+```javascript
+// yoshiaki21-YYYYMMDD000001-add-work-hours-to-tasks.js
+await queryInterface.addColumn('Tasks', 'work_hours', {
+    type: Sequelize.FLOAT,
+    allowNull: true,
+    defaultValue: null,
+});
+```
+
+##### projects テーブルに `unit_price` カラムを追加
+
+```javascript
+// yoshiaki21-YYYYMMDD000002-add-work-hours-fields-to-projects.js
+await queryInterface.addColumn('Projects', 'unit_price', {
+    type: Sequelize.INTEGER,
+    allowNull: true,
+    defaultValue: null,  // null の場合はユーザーのデフォルト単価を使用
+});
+```
+
+##### users テーブルに `default_unit_price` カラムを追加
+
+```javascript
+// yoshiaki21-YYYYMMDD000003-add-default-unit-price-to-users.js
+await queryInterface.addColumn('Users', 'default_unit_price', {
+    type: Sequelize.INTEGER,
+    allowNull: true,
+    defaultValue: 25000,
+});
+```
+
+---
+
+#### 2. モデル更新
+
+##### Task.js
+
+```javascript
+// 追加フィールド
+work_hours: {
+    type: DataTypes.FLOAT,
+    allowNull: true,
+    defaultValue: null,
+},
+```
+
+##### Project.js
+
+```javascript
+// 追加フィールド
+unit_price: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: null,
+},
+description: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    defaultValue: null,
+},
+```
+
+##### User.js
+
+```javascript
+// 追加フィールド
+default_unit_price: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    defaultValue: 25000,
+},
+```
+
+---
+
+#### 3. バックエンド API
+
+##### プロジェクトの工数集計エンドポイントを追加
+
+既存のプロジェクト取得 API（`GET /api/projects/:id`）のレスポンスに
+以下の集計値を含める（または別途 `GET /api/projects/:id/work-summary` を追加）：
+
+```javascript
+// レスポンスに追加する集計値
+{
+    total_work_hours: 12.5,      // プロジェクト内の全タスクの work_hours 合計
+    // null の task は集計から除外
+}
+```
+
+集計クエリ例：
+
+```javascript
+const totalWorkHours = await Task.sum('work_hours', {
+    where: {
+        project_id: projectId,
+        work_hours: { [Op.not]: null },
+    },
+});
+```
+
+##### tasks / projects の CRUD に新フィールドを追加
+
+- Task の作成・更新で `work_hours` を受け付ける
+- Project の作成・更新で `unit_price`・`description` を受け付ける
+- User の Profile 更新で `default_unit_price` を受け付ける
+
+---
+
+#### 4. フロントエンド
+
+##### 4-1. タスク詳細画面に「作業時間」入力欄を追加
+
+表示位置：期限日（Due Date）の**上**
+
+```tsx
+{/* 作業時間入力欄 - 期限日の上に配置 */}
+<div className="work-hours-field">
+    <label>作業時間</label>
+    <input
+        type="number"
+        step="0.5"
+        min="0"
+        placeholder="例: 1.5"
+        value={task.work_hours ?? ''}
+        onChange={(e) => handleUpdate('work_hours',
+            e.target.value === '' ? null : parseFloat(e.target.value)
+        )}
+    />
+    <span className="unit">h</span>
+</div>
+```
+
+- 入力は手入力（自由入力）
+- 小数第1位（0.1刻み）
+- 未入力（null）は集計から除外
+- 入力値は既存のタスク更新 API に乗せて保存
+
+##### 4-2. プロジェクト詳細画面に「作業時間集計カード」を追加
+
+表示位置：右カラムの**期限スケジュールカードの上**
+
+新規コンポーネント `WorkSummaryCard.tsx` として作成する。
+
+```tsx
+// WorkSummaryCard の表示内容
+// unit_price は project.unit_price ?? user.default_unit_price で解決
+
+const manDays = totalWorkHours / 8;  // 8時間 = 1人工
+const unitPrice = project.unit_price ?? userDefaultUnitPrice;
+const totalCost = manDays * unitPrice;
+
+// 表示
+作業時間集計
+合計: {totalWorkHours.toFixed(1)}h
+人工: {manDays.toFixed(1)}人工
+単価: ¥{unitPrice.toLocaleString()}/人工
+金額: ¥{totalCost.toLocaleString()}
+```
+
+- `totalWorkHours` が 0 または null のみの場合は「作業時間が記録されていません」と表示
+- 単価入力欄をカード内に設ける（変更すると金額がリアルタイムで再計算される）
+- 単価の変更は `PATCH /api/projects/:id`（`unit_price` フィールド）で保存
+
+単価入力欄のイメージ：
+
+```
+┌─────────────────────────────────┐
+│ 作業時間集計                      │
+│ 合計: 12.5h                      │
+│ 人工: 1.6人工                     │
+│ 単価: [¥ 25,000] /人工  [変更保存] │
+│ 金額: ¥40,000                    │
+└─────────────────────────────────┘
+```
+
+##### 4-3. プロジェクト概要欄を追加
+
+表示位置：プロジェクト詳細画面の左カラム、「新しいタスクを追加」ボタンの**上**
+
+タスクの概要欄と同じ実装パターンを使用する：
+- Markdown 対応（表示時はレンダリング、編集時はテキストエリア）
+- Markdown チェックボックスはタスク1で実装したものと同様にクリック可能にする
+- 編集モードの切り替えはダブルクリック（タスクの概要欄と同じ UX）
+- 保存は `PATCH /api/projects/:id`（`description` フィールド）
+
+##### 4-4. Profile 画面「一般」タブにデフォルト人工単価を追加
+
+表示位置：一般タブの**下部**に追加
+
+```tsx
+{/* デフォルト人工単価 */}
+<div className="setting-field">
+    <label>デフォルト人工単価</label>
+    <div className="input-with-unit">
+        <span>¥</span>
+        <input
+            type="number"
+            min="0"
+            step="1000"
+            value={defaultUnitPrice}
+            onChange={(e) => setDefaultUnitPrice(parseInt(e.target.value))}
+        />
+        <span>/人工</span>
+    </div>
+    <p className="hint">プロジェクト新規作成時の初期値として使用されます</p>
+</div>
+```
+
+- 「変更を保存」ボタンで既存の Profile 更新 API に乗せて保存
+
+##### 4-5. プロジェクト新規作成モーダルに人工単価を追加
+
+プロジェクト作成モーダルに単価入力欄を追加する。
+
+- 初期値は `user.default_unit_price`（Profile 設定値）を自動入力
+- 未入力の場合は null として保存（表示時に `default_unit_price` にフォールバック）
+
+---
+
+### 実装上の注意
+
+#### 人工単価の優先順位
+
+```
+表示時の単価 = project.unit_price ?? user.default_unit_price ?? 25000
+```
+
+1. プロジェクト個別設定値（`project.unit_price`）
+2. ユーザーのデフォルト設定値（`user.default_unit_price`）
+3. システムデフォルト（25,000円）
+
+#### 集計対象
+
+- `work_hours` が `null` のタスクは集計から除外
+- 完了・未完了問わず `work_hours` が入力されているタスクすべてを集計
+- サブタスクは集計対象外（タスク単位で集計）
+
+#### マイグレーションプレフィックス
+
+タスク4のルールに従い、マイグレーションファイル名に `yoshiaki21-` プレフィックスを付ける。
+
+---
+
+### 動作確認
+
+1. タスク詳細画面で「作業時間」欄が期限日の上に表示されることを確認
+2. 作業時間（例: `1.5`）を入力・保存してリロード後も値が残ることを確認
+3. プロジェクト画面で「作業時間集計」カードが期限スケジュールの上に表示されることを確認
+4. 集計値（合計h・人工・金額）が正しく計算されることを確認
+5. 単価を変更すると金額がリアルタイムで再計算されることを確認
+6. プロジェクト概要欄に Markdown テキストを入力・保存できることを確認
+7. Profile → 一般タブでデフォルト人工単価が保存できることを確認
+8. プロジェクト新規作成モーダルでデフォルト単価が初期入力されていることを確認
