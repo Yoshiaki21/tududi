@@ -17,6 +17,8 @@ import {
     EllipsisVerticalIcon,
     XMarkIcon,
     ArrowsPointingOutIcon,
+    PaperClipIcon,
+    CloudArrowUpIcon,
 } from '@heroicons/react/24/outline';
 import { useToast } from './Shared/ToastContext';
 import { Link, useParams, useNavigate } from 'react-router-dom';
@@ -34,6 +36,14 @@ import { useStore } from '../store/useStore';
 import { createProject } from '../utils/projectsService';
 import { ENABLE_NOTE_COLOR } from '../config/featureFlags';
 import NoteFocusMode from './Note/NoteFocusMode';
+import { NoteAttachment } from '../entities/Attachment';
+import {
+    fetchNoteAttachments,
+    uploadNoteAttachment,
+    deleteNoteAttachment,
+    getAttachmentType,
+} from '../utils/noteAttachmentsService';
+import AttachmentPreview from './Shared/AttachmentPreview';
 
 const NOTE_COLORS = [
     { name: 'None', value: '' },
@@ -86,6 +96,13 @@ const Notes: React.FC = () => {
     >('saved');
     const [isFocusMode, setIsFocusMode] = useState(false);
     const hasAutoSelected = useRef(false);
+
+    const [previewActiveTab, setPreviewActiveTab] = useState<'text' | 'attachments'>('text');
+    const [previewAttachments, setPreviewAttachments] = useState<NoteAttachment[]>([]);
+    const [previewAttachmentsLoading, setPreviewAttachmentsLoading] = useState(false);
+    const [previewUploading, setPreviewUploading] = useState(false);
+    const [previewFilePreview, setPreviewFilePreview] = useState<NoteAttachment | null>(null);
+    const previewFileInputRef = useRef<HTMLInputElement>(null);
 
     const editingNoteColor =
         ENABLE_NOTE_COLOR && editingNote ? editingNote.color : undefined;
@@ -385,11 +402,41 @@ const Notes: React.FC = () => {
         }
     };
 
+    const handlePreviewFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !previewNote?.uid) return;
+        setPreviewUploading(true);
+        try {
+            const newAtt = await uploadNoteAttachment(previewNote.uid, file);
+            setPreviewAttachments((prev) => [...prev, newAtt]);
+        } catch (err) {
+            console.error('Error uploading note attachment:', err);
+        } finally {
+            setPreviewUploading(false);
+            if (previewFileInputRef.current) previewFileInputRef.current.value = '';
+        }
+    };
+
+    const handlePreviewAttachmentDelete = async (att: NoteAttachment) => {
+        if (!previewNote?.uid) return;
+        try {
+            await deleteNoteAttachment(previewNote.uid, att.uid);
+            setPreviewAttachments((prev) => prev.filter((a) => a.uid !== att.uid));
+            if (previewFilePreview?.uid === att.uid) setPreviewFilePreview(null);
+        } catch (err) {
+            console.error('Error deleting note attachment:', err);
+        }
+    };
+
     const filteredNotes = useMemo(() => {
         return notes.filter(
             (note) =>
-                note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                note.content.toLowerCase().includes(searchQuery.toLowerCase())
+                !note.project_id &&
+                !note.project_uid &&
+                !note.project &&
+                !note.Project &&
+                (note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                    note.content.toLowerCase().includes(searchQuery.toLowerCase()))
         );
     }, [notes, searchQuery]);
 
@@ -490,6 +537,22 @@ const Notes: React.FC = () => {
         document.addEventListener('keydown', handleEscape);
         return () => document.removeEventListener('keydown', handleEscape);
     }, [isEditing, editingNote]);
+
+    useEffect(() => {
+        setPreviewActiveTab('text');
+        setPreviewAttachments([]);
+        setPreviewFilePreview(null);
+    }, [previewNote?.uid]);
+
+    useEffect(() => {
+        if (previewActiveTab === 'attachments' && previewNote?.uid) {
+            setPreviewAttachmentsLoading(true);
+            fetchNoteAttachments(previewNote.uid)
+                .then(setPreviewAttachments)
+                .catch(console.error)
+                .finally(() => setPreviewAttachmentsLoading(false));
+        }
+    }, [previewActiveTab, previewNote?.uid]);
 
     if (isLoading) {
         return (
@@ -1288,56 +1351,180 @@ const Notes: React.FC = () => {
                                     </div>
                                 </div>
 
-                                <div
-                                    onClick={() => handleEditNote(previewNote)}
-                                    className="text-sm md:text-base flex-1 overflow-y-auto cursor-pointer px-6 md:px-8 py-4 text-gray-900 dark:text-gray-100"
-                                    style={{
-                                        color: previewNoteColor
-                                            ? shouldUseLightText(
-                                                  previewNoteColor
-                                              )
-                                                ? '#ffffff'
-                                                : '#333333'
-                                            : undefined,
-                                    }}
-                                    title="Click to edit"
-                                >
-                                    <MarkdownRenderer
-                                        content={previewNote.content}
-                                        noteColor={previewNoteColor}
-                                        onContentChange={async (newContent) => {
-                                            const updatedNote = {
-                                                ...previewNote,
-                                                content: newContent,
-                                            };
-                                            setPreviewNote(updatedNote);
-
-                                            if (previewNote.uid) {
-                                                try {
-                                                    const savedNote =
-                                                        await updateNote(
-                                                            previewNote.uid,
-                                                            updatedNote
-                                                        );
-                                                    const updatedNotes =
-                                                        notes.map((n) =>
-                                                            n.uid ===
-                                                            previewNote.uid
-                                                                ? savedNote
-                                                                : n
-                                                        );
-                                                    setNotes(updatedNotes);
-                                                    setPreviewNote(savedNote);
-                                                } catch (err) {
-                                                    console.error(
-                                                        'Error updating note:',
-                                                        err
-                                                    );
-                                                }
-                                            }
-                                        }}
-                                    />
+                                {/* Tabs */}
+                                <div className="flex space-x-4 border-b border-gray-200 dark:border-gray-700 px-6 md:px-8 flex-shrink-0">
+                                    <button
+                                        onClick={() => setPreviewActiveTab('text')}
+                                        className={`pb-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                                            previewActiveTab === 'text'
+                                                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                                                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                                        }`}
+                                    >
+                                        {t('notes.textTab', 'テキスト')}
+                                    </button>
+                                    <button
+                                        onClick={() => setPreviewActiveTab('attachments')}
+                                        className={`pb-2 text-sm font-medium flex items-center space-x-1 transition-colors border-b-2 -mb-px ${
+                                            previewActiveTab === 'attachments'
+                                                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                                                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                                        }`}
+                                    >
+                                        <PaperClipIcon className="h-4 w-4" />
+                                        <span>{t('notes.attachmentsTab', '添付ファイル')}</span>
+                                        {previewAttachments.length > 0 && (
+                                            <span className="px-1.5 py-0.5 text-xs bg-gray-200 dark:bg-gray-600 rounded-full">
+                                                {previewAttachments.length}
+                                            </span>
+                                        )}
+                                    </button>
                                 </div>
+
+                                {previewActiveTab === 'text' && (
+                                    <div
+                                        onClick={() => handleEditNote(previewNote)}
+                                        className="text-sm md:text-base flex-1 overflow-y-auto cursor-pointer px-6 md:px-8 py-4 text-gray-900 dark:text-gray-100"
+                                        style={{
+                                            color: previewNoteColor
+                                                ? shouldUseLightText(
+                                                      previewNoteColor
+                                                  )
+                                                    ? '#ffffff'
+                                                    : '#333333'
+                                                : undefined,
+                                        }}
+                                        title="Click to edit"
+                                    >
+                                        <MarkdownRenderer
+                                            content={previewNote.content}
+                                            noteColor={previewNoteColor}
+                                            onContentChange={async (newContent) => {
+                                                const updatedNote = {
+                                                    ...previewNote,
+                                                    content: newContent,
+                                                };
+                                                setPreviewNote(updatedNote);
+
+                                                if (previewNote.uid) {
+                                                    try {
+                                                        const savedNote =
+                                                            await updateNote(
+                                                                previewNote.uid,
+                                                                updatedNote
+                                                            );
+                                                        const updatedNotes =
+                                                            notes.map((n) =>
+                                                                n.uid ===
+                                                                previewNote.uid
+                                                                    ? savedNote
+                                                                    : n
+                                                            );
+                                                        setNotes(updatedNotes);
+                                                        setPreviewNote(savedNote);
+                                                    } catch (err) {
+                                                        console.error(
+                                                            'Error updating note:',
+                                                            err
+                                                        );
+                                                    }
+                                                }
+                                            }}
+                                        />
+                                    </div>
+                                )}
+
+                                {previewActiveTab === 'attachments' && (
+                                    <div className="flex-1 overflow-y-auto px-6 md:px-8 py-4">
+                                        {previewAttachmentsLoading ? (
+                                            <p className="text-sm text-gray-500 dark:text-gray-400">{t('common.loading', 'Loading...')}</p>
+                                        ) : (
+                                            <>
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                                    <div
+                                                        className="bg-gray-50 dark:bg-gray-800 rounded-lg shadow-md relative flex flex-col cursor-pointer hover:shadow-lg transition-shadow"
+                                                        style={{ minHeight: '250px', maxHeight: '250px' }}
+                                                        onClick={() => !previewUploading && previewFileInputRef.current?.click()}
+                                                    >
+                                                        <input
+                                                            ref={previewFileInputRef}
+                                                            type="file"
+                                                            className="hidden"
+                                                            onChange={handlePreviewFileSelect}
+                                                            disabled={previewUploading}
+                                                            accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.gif,.svg,.webp,.xls,.xlsx,.csv,.zip"
+                                                        />
+                                                        <div
+                                                            className="bg-gray-200 dark:bg-gray-700 flex flex-col items-center justify-center rounded-t-lg border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
+                                                            style={{ height: '140px' }}
+                                                        >
+                                                            <CloudArrowUpIcon className="h-12 w-12 text-gray-400 dark:text-gray-500 mb-2" />
+                                                            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                                                {previewUploading
+                                                                    ? t('task.attachments.uploading', 'Uploading...')
+                                                                    : t('task.attachments.clickToUpload', 'Click to upload')}
+                                                            </p>
+                                                        </div>
+                                                        <div className="p-4 flex-1 flex flex-col justify-center">
+                                                            <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                                                                {t('task.attachments.maxSize', 'Max 10MB')}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+
+                                                    {previewAttachments.map((att) => (
+                                                        <div
+                                                            key={att.uid}
+                                                            className="bg-gray-50 dark:bg-gray-800 rounded-lg shadow-md relative flex flex-col"
+                                                            style={{ minHeight: '250px', maxHeight: '250px' }}
+                                                        >
+                                                            <div
+                                                                className="bg-gray-200 dark:bg-gray-700 flex items-center justify-center rounded-t-lg cursor-pointer overflow-hidden"
+                                                                style={{ height: '140px' }}
+                                                                onClick={() => setPreviewFilePreview(previewFilePreview?.uid === att.uid ? null : att)}
+                                                            >
+                                                                {getAttachmentType(att.mime_type) === 'image' && att.file_url ? (
+                                                                    <img src={att.file_url} alt={att.original_filename} className="w-full h-full object-cover" />
+                                                                ) : (
+                                                                    <PaperClipIcon className="h-12 w-12 text-gray-400 dark:text-gray-500" />
+                                                                )}
+                                                            </div>
+                                                            <div className="p-3 flex-1 flex flex-col justify-between">
+                                                                <p className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{att.original_filename}</p>
+                                                                <button
+                                                                    onClick={() => handlePreviewAttachmentDelete(att)}
+                                                                    className="text-xs text-red-500 hover:text-red-700 mt-2"
+                                                                >
+                                                                    {t('common.delete', 'Delete')}
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+
+                                                {previewFilePreview && (
+                                                    <div
+                                                        className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"
+                                                        onClick={() => setPreviewFilePreview(null)}
+                                                    >
+                                                        <div
+                                                            className="bg-white dark:bg-gray-800 rounded-lg max-w-4xl max-h-[90vh] overflow-auto"
+                                                            onClick={(e) => e.stopPropagation()}
+                                                        >
+                                                            <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
+                                                                <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{previewFilePreview.original_filename}</h3>
+                                                                <button onClick={() => setPreviewFilePreview(null)} className="text-gray-500 hover:text-gray-700">✕</button>
+                                                            </div>
+                                                            <div className="p-1">
+                                                                <AttachmentPreview attachment={previewFilePreview as any} />
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                         ) : (
                             <div className="flex items-center justify-center flex-1 text-gray-500 dark:text-gray-400">
