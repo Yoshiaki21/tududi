@@ -1248,7 +1248,70 @@ async testSummary(req, res) {
 
 ---
 
-## タスク10: 工数管理機能の追加（作業時間記録・プロジェクト集計・人工計算）
+## タスク10: 工数管理機能の追加（作業時間記録・プロジェクト集計・人工計算） ✅ 完了（2026-05-31）
+
+### 実施した変更
+
+#### DBマイグレーション（3ファイル）
+- `backend/migrations/yoshiaki21-20260531000001-add-work-hours-to-tasks.js`
+  - `tasks.work_hours` (FLOAT, NULL許容) を追加
+- `backend/migrations/yoshiaki21-20260531000002-add-unit-price-to-projects.js`
+  - `projects.unit_price` (INTEGER, NULL許容) を追加
+- `backend/migrations/yoshiaki21-20260531000003-add-default-unit-price-to-users.js`
+  - `users.default_unit_price` (INTEGER, デフォルト25000) を追加
+
+#### モデル更新
+- `backend/models/task.js` : `work_hours` フィールドを追加
+- `backend/models/project.js` : `unit_price` フィールドを追加（`description` は既存）
+- `backend/models/user.js` : `default_unit_price` フィールドを追加
+
+#### バックエンド
+- `backend/modules/tasks/core/builders.js`
+  - `buildTaskAttributes` / `buildUpdateAttributes` に `work_hours` を追加
+- `backend/modules/projects/service.js`
+  - `create` / `update` で `unit_price` を受付
+  - `getByUid` のレスポンスに `total_work_hours` 集計値を追加（サブタスク除外・NULL除外）
+- `backend/modules/users/service.js`
+  - `updateProfile` に `default_unit_price` を追加
+- `backend/modules/users/repository.js`
+  - `PROFILE_ATTRIBUTES` / `PROFILE_UPDATE_ATTRIBUTES` に `default_unit_price` と Matrix 関連フィールドを追加
+
+#### フロントエンド
+- `frontend/entities/Task.ts` : `work_hours?: number | null` を追加
+- `frontend/entities/Project.ts` : `unit_price`, `total_work_hours` を追加
+- `frontend/components/Profile/types.ts` : `Profile` に `default_unit_price` を追加
+- `frontend/components/Task/TaskDetails/TaskWorkHoursCard.tsx` （新規）
+  - タスク詳細の期限日の**上**に作業時間入力欄（0.1h刻み、クリックで編集）
+- `frontend/components/Task/TaskDetails/index.ts`
+  - `TaskWorkHoursCard` をエクスポートに追加
+- `frontend/components/Task/TaskDetails.tsx`
+  - `handleWorkHoursUpdate` ハンドラを追加
+  - `TaskWorkHoursCard` を `TaskDueDateCard` の上に追加
+- `frontend/components/Project/WorkSummaryCard.tsx` （新規）
+  - 合計時間・人工・単価（インライン編集）・金額の集計カード
+  - `unit_price ?? default_unit_price` で有効単価を解決
+- `frontend/components/Project/ProjectDetails.tsx`
+  - `WorkSummaryCard` と `MarkdownRenderer` をインポート
+  - `defaultUnitPrice` state を追加し、マウント時にプロフィールから取得
+  - `handleUnitPriceChange` / `handleStartDescriptionEdit` / `handleSaveDescription` / `handleCancelDescriptionEdit` を追加
+  - 右カラムの `ProjectInsightsPanel` の**上**に `WorkSummaryCard` を追加
+  - 左カラムの `ProjectTasksSection` の**上**にプロジェクト概要欄（Markdown対応、ダブルクリック編集）を追加
+- `frontend/components/Profile/tabs/GeneralTab.tsx`
+  - `onDefaultUnitPriceChange` prop を追加
+  - 一般タブの下部にデフォルト人工単価入力欄（¥ / 人工）を追加
+- `frontend/components/Profile/ProfileSettings.tsx`
+  - `GeneralTab` に `onDefaultUnitPriceChange` コールバックを渡す
+- `frontend/components/Project/ProjectModal.tsx`
+  - `defaultUnitPrice` state を追加し、新規作成時にプロフィールから取得
+  - `unit_price` 入力欄をモーダルのフォームに追加（空欄でnull保存）
+
+### 実装上の注意事項
+- `safeAddColumns` を使う際はテーブル名を**小文字**で渡す（`'tasks'`, `'projects'`, `'users'`）
+  - `showAllTables()` が小文字で返すため大文字だとスキップされる
+- `migration:run` (`npx sequelize-cli db:migrate`) と `db:migrate` (`sequelize.sync({alter:true})`) は別物
+  - マイグレーションファイルを使う場合は `migration:run` を使う
+
+---
 
 ### 背景
 
