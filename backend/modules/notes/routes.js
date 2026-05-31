@@ -3,6 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const notesController = require('./controller');
+const attachmentsRouter = require('./attachments');
 const { hasAccess } = require('../../middleware/authorize');
 
 // All routes require authentication (handled by app.js middleware)
@@ -39,5 +40,8 @@ router.delete(
     }),
     notesController.delete
 );
+
+// Mount note attachments router
+router.use(attachmentsRouter);
 
 module.exports = router;

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -7,7 +7,7 @@ import {
     TagIcon,
     FolderIcon,
 } from '@heroicons/react/24/solid';
-import { DocumentDuplicateIcon } from '@heroicons/react/24/outline';
+import { DocumentDuplicateIcon, PaperClipIcon, CloudArrowUpIcon } from '@heroicons/react/24/outline';
 import { useToast } from '../Shared/ToastContext';
 import ConfirmDialog from '../Shared/ConfirmDialog';
 import NoteModal from './NoteModal';
@@ -20,6 +20,14 @@ import {
 import { deleteNoteWithStoreUpdate } from '../../utils/noteDeleteUtils';
 import { createProject } from '../../utils/projectsService';
 import { useStore } from '../../store/useStore';
+import { NoteAttachment } from '../../entities/Attachment';
+import {
+    fetchNoteAttachments,
+    uploadNoteAttachment,
+    deleteNoteAttachment,
+    getAttachmentType,
+} from '../../utils/noteAttachmentsService';
+import AttachmentPreview from '../Shared/AttachmentPreview';
 
 const NoteDetails: React.FC = () => {
     const { t } = useTranslation();
@@ -36,7 +44,12 @@ const NoteDetails: React.FC = () => {
     const { setProjects } = useStore((state: any) => state.projectsStore);
     const navigate = useNavigate();
 
-    // Dispatch global modal events
+    const [activeTab, setActiveTab] = useState<'text' | 'attachments'>('text');
+    const [attachments, setAttachments] = useState<NoteAttachment[]>([]);
+    const [attachmentsLoading, setAttachmentsLoading] = useState(false);
+    const [uploading, setUploading] = useState(false);
+    const [previewAttachment, setPreviewAttachment] = useState<NoteAttachment | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         const fetchNote = async () => {
@@ -57,7 +70,15 @@ const NoteDetails: React.FC = () => {
         fetchNote();
     }, [uidSlug]);
 
-    // Projects are now loaded by Layout component into global store
+    useEffect(() => {
+        if (activeTab === 'attachments' && note?.uid) {
+            setAttachmentsLoading(true);
+            fetchNoteAttachments(note.uid)
+                .then(setAttachments)
+                .catch(console.error)
+                .finally(() => setAttachmentsLoading(false));
+        }
+    }, [activeTab, note?.uid]);
 
     const handleDeleteNote = async () => {
         if (!noteToDelete) return;
@@ -121,6 +142,32 @@ const NoteDetails: React.FC = () => {
     const handleOpenConfirmDialog = (note: Note) => {
         setNoteToDelete(note);
         setIsConfirmDialogOpen(true);
+    };
+
+    const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !note?.uid) return;
+        setUploading(true);
+        try {
+            const newAtt = await uploadNoteAttachment(note.uid, file);
+            setAttachments((prev) => [...prev, newAtt]);
+        } catch (err) {
+            console.error('Error uploading note attachment:', err);
+        } finally {
+            setUploading(false);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+    };
+
+    const handleAttachmentDelete = async (att: NoteAttachment) => {
+        if (!note?.uid) return;
+        try {
+            await deleteNoteAttachment(note.uid, att.uid);
+            setAttachments((prev) => prev.filter((a) => a.uid !== att.uid));
+            if (previewAttachment?.uid === att.uid) setPreviewAttachment(null);
+        } catch (err) {
+            console.error('Error deleting note attachment:', err);
+        }
     };
 
     if (isLoading) {
@@ -246,41 +293,169 @@ const NoteDetails: React.FC = () => {
                         </button>
                     </div>
                 </div>
-                {/* Note Content */}
-                <div className="mb-6 bg-white dark:bg-gray-900 shadow-md rounded-lg p-6">
-                    <MarkdownRenderer
-                        content={note.content}
-                        onContentChange={async (newContent) => {
-                            // Update local state immediately
-                            const updatedNote = {
-                                ...note,
-                                content: newContent,
-                            };
-                            setNote(updatedNote);
 
-                            // Auto-save
-                            try {
-                                const noteIdentifier =
-                                    note.uid ??
-                                    (note.id !== undefined
-                                        ? String(note.id)
-                                        : null);
+                {/* Tabs */}
+                <div className="flex space-x-4 mb-4 border-b border-gray-200 dark:border-gray-700">
+                    <button
+                        onClick={() => setActiveTab('text')}
+                        className={`pb-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                            activeTab === 'text'
+                                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                        }`}
+                    >
+                        {t('notes.textTab', 'テキスト')}
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('attachments')}
+                        className={`pb-2 text-sm font-medium flex items-center space-x-1 transition-colors border-b-2 -mb-px ${
+                            activeTab === 'attachments'
+                                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                        }`}
+                    >
+                        <PaperClipIcon className="h-4 w-4" />
+                        <span>{t('notes.attachmentsTab', '添付ファイル')}</span>
+                        {attachments.length > 0 && (
+                            <span className="px-1.5 py-0.5 text-xs bg-gray-200 dark:bg-gray-600 rounded-full">
+                                {attachments.length}
+                            </span>
+                        )}
+                    </button>
+                </div>
 
-                                if (noteIdentifier) {
-                                    await apiUpdateNote(
-                                        noteIdentifier,
-                                        updatedNote
+                {/* Text Tab */}
+                {activeTab === 'text' && (
+                    <div className="mb-6 bg-white dark:bg-gray-900 shadow-md rounded-lg p-6">
+                        <MarkdownRenderer
+                            content={note.content}
+                            onContentChange={async (newContent) => {
+                                const updatedNote = {
+                                    ...note,
+                                    content: newContent,
+                                };
+                                setNote(updatedNote);
+
+                                try {
+                                    const noteIdentifier =
+                                        note.uid ??
+                                        (note.id !== undefined
+                                            ? String(note.id)
+                                            : null);
+
+                                    if (noteIdentifier) {
+                                        await apiUpdateNote(
+                                            noteIdentifier,
+                                            updatedNote
+                                        );
+                                    }
+                                } catch (err) {
+                                    console.error(
+                                        'Error auto-saving checkbox:',
+                                        err
                                     );
                                 }
-                            } catch (err) {
-                                console.error(
-                                    'Error auto-saving checkbox:',
-                                    err
-                                );
-                            }
-                        }}
-                    />
-                </div>
+                            }}
+                        />
+                    </div>
+                )}
+
+                {/* Attachments Tab */}
+                {activeTab === 'attachments' && (
+                    <div className="mb-6">
+                        {attachmentsLoading ? (
+                            <p className="text-sm text-gray-500 dark:text-gray-400">{t('common.loading', 'Loading...')}</p>
+                        ) : (
+                            <>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                    {/* Upload card */}
+                                    <div
+                                        className="bg-gray-50 dark:bg-gray-900 rounded-lg shadow-md relative flex flex-col cursor-pointer hover:shadow-lg transition-shadow"
+                                        style={{ minHeight: '250px', maxHeight: '250px' }}
+                                        onClick={() => !uploading && fileInputRef.current?.click()}
+                                    >
+                                        <input
+                                            ref={fileInputRef}
+                                            type="file"
+                                            className="hidden"
+                                            onChange={handleFileSelect}
+                                            disabled={uploading}
+                                            accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.gif,.svg,.webp,.xls,.xlsx,.csv,.zip"
+                                        />
+                                        <div
+                                            className="bg-gray-200 dark:bg-gray-700 flex flex-col items-center justify-center rounded-t-lg border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
+                                            style={{ height: '140px' }}
+                                        >
+                                            <CloudArrowUpIcon className="h-12 w-12 text-gray-400 dark:text-gray-500 mb-2" />
+                                            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                                {uploading
+                                                    ? t('task.attachments.uploading', 'Uploading...')
+                                                    : t('task.attachments.clickToUpload', 'Click to upload')}
+                                            </p>
+                                        </div>
+                                        <div className="p-4 flex-1 flex flex-col justify-center">
+                                            <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                                                {t('task.attachments.maxSize', 'Max 10MB')}
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    {/* Attachment cards */}
+                                    {attachments.map((att) => (
+                                        <div
+                                            key={att.uid}
+                                            className="bg-gray-50 dark:bg-gray-900 rounded-lg shadow-md relative flex flex-col"
+                                            style={{ minHeight: '250px', maxHeight: '250px' }}
+                                        >
+                                            <div
+                                                className="bg-gray-200 dark:bg-gray-700 flex items-center justify-center rounded-t-lg cursor-pointer overflow-hidden"
+                                                style={{ height: '140px' }}
+                                                onClick={() => setPreviewAttachment(previewAttachment?.uid === att.uid ? null : att)}
+                                            >
+                                                {getAttachmentType(att.mime_type) === 'image' && att.file_url ? (
+                                                    <img src={att.file_url} alt={att.original_filename} className="w-full h-full object-cover" />
+                                                ) : (
+                                                    <PaperClipIcon className="h-12 w-12 text-gray-400 dark:text-gray-500" />
+                                                )}
+                                            </div>
+                                            <div className="p-3 flex-1 flex flex-col justify-between">
+                                                <p className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{att.original_filename}</p>
+                                                <button
+                                                    onClick={() => handleAttachmentDelete(att)}
+                                                    className="text-xs text-red-500 hover:text-red-700 mt-2"
+                                                >
+                                                    {t('common.delete', 'Delete')}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Preview modal */}
+                                {previewAttachment && (
+                                    <div
+                                        className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"
+                                        onClick={() => setPreviewAttachment(null)}
+                                    >
+                                        <div
+                                            className="bg-white dark:bg-gray-800 rounded-lg max-w-4xl max-h-[90vh] overflow-auto"
+                                            onClick={(e) => e.stopPropagation()}
+                                        >
+                                            <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
+                                                <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{previewAttachment.original_filename}</h3>
+                                                <button onClick={() => setPreviewAttachment(null)} className="text-gray-500 hover:text-gray-700">✕</button>
+                                            </div>
+                                            <div className="p-1">
+                                                <AttachmentPreview attachment={previewAttachment as any} />
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </div>
+                )}
+
                 {/* NoteModal for editing */}
                 {isNoteModalOpen && (
                     <NoteModal
