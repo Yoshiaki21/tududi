@@ -17,6 +17,11 @@ const PROFILE_ATTRIBUTES = [
     'telegram_bot_token',
     'telegram_chat_id',
     'telegram_allowed_users',
+    'matrix_homeserver_url',
+    'matrix_access_token',
+    'matrix_room_id',
+    'matrix_bot_user_id',
+    'matrix_allowed_users',
     'task_summary_enabled',
     'task_summary_frequency',
     'task_intelligence_enabled',
@@ -28,6 +33,7 @@ const PROFILE_ATTRIBUTES = [
     'next_task_suggestion_enabled',
     'notification_preferences',
     'keyboard_shortcuts',
+    'default_unit_price',
 ];
 
 const PROFILE_UPDATE_ATTRIBUTES = [
@@ -42,6 +48,11 @@ const PROFILE_UPDATE_ATTRIBUTES = [
     'telegram_bot_token',
     'telegram_chat_id',
     'telegram_allowed_users',
+    'matrix_homeserver_url',
+    'matrix_access_token',
+    'matrix_room_id',
+    'matrix_bot_user_id',
+    'matrix_allowed_users',
     'task_intelligence_enabled',
     'task_summary_enabled',
     'task_summary_frequency',
@@ -51,6 +62,7 @@ const PROFILE_UPDATE_ATTRIBUTES = [
     'pomodoro_enabled',
     'notification_preferences',
     'keyboard_shortcuts',
+    'default_unit_price',
 ];
 
 class UsersRepository extends BaseRepository {

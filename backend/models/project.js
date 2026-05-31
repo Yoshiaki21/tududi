@@ -92,6 +92,11 @@ module.exports = (sequelize) => {
                 allowNull: false,
                 defaultValue: 'not_started',
             },
+            unit_price: {
+                type: DataTypes.INTEGER,
+                allowNull: true,
+                defaultValue: null,
+            },
         },
         {
             tableName: 'projects',

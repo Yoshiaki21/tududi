@@ -13,6 +13,7 @@ import ProjectStateDropdown from '../Shared/ProjectStateDropdown';
 import { PriorityType } from '../../entities/Task';
 import { useStore } from '../../store/useStore';
 import { useTranslation } from 'react-i18next';
+import { getApiPath } from '../../config/paths';
 import {
     TagIcon,
     Squares2X2Icon,
@@ -56,6 +57,7 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
         project?.tags?.map((tag) => tag.name) || []
     );
     const [isSaving, setIsSaving] = useState(false);
+    const [defaultUnitPrice, setDefaultUnitPrice] = useState<number>(25000);
 
     const { tagsStore } = useStore();
     // Avoid calling getTags() during component initialization to prevent remounting
@@ -132,8 +134,17 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
                 tags: [],
                 priority: null,
                 due_date_at: null,
+                unit_price: null,
             });
             setTags([]);
+            fetch(getApiPath('profile'), { credentials: 'include' })
+                .then((r) => r.ok ? r.json() : null)
+                .then((profile) => {
+                    if (profile?.default_unit_price != null) {
+                        setDefaultUnitPrice(profile.default_unit_price);
+                    }
+                })
+                .catch(() => undefined);
         }
         setError(null);
     }, [project]);
@@ -647,6 +658,34 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
                                                     </div>
                                                 </div>
                                             )}
+
+                                            {/* Unit Price */}
+                                            <div className="px-4 pb-3">
+                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                                    {t('project.unitPriceLabel', '人工単価 (¥/人工)')}
+                                                </label>
+                                                <div className="flex items-center space-x-2">
+                                                    <span className="text-gray-500 dark:text-gray-400 text-sm">¥</span>
+                                                    <input
+                                                        type="number"
+                                                        min="0"
+                                                        step="1000"
+                                                        value={formData.unit_price ?? ''}
+                                                        placeholder={String(defaultUnitPrice)}
+                                                        onChange={(e) =>
+                                                            setFormData({
+                                                                ...formData,
+                                                                unit_price: e.target.value === '' ? null : parseInt(e.target.value, 10),
+                                                            })
+                                                        }
+                                                        className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-1.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                                    />
+                                                    <span className="text-gray-500 dark:text-gray-400 text-xs whitespace-nowrap">/人工</span>
+                                                </div>
+                                                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                                    {t('project.unitPriceHint', '空欄の場合はデフォルト単価 ¥{{price}} を使用', { price: defaultUnitPrice.toLocaleString() })}
+                                                </p>
+                                            </div>
                                         </fieldset>
                                     </form>
                                 </div>

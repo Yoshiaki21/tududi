@@ -1,6 +1,7 @@
 'use strict';
 
 const { Op } = require('sequelize');
+const { Task } = require('../../models');
 const projectsRepository = require('./repository');
 const { validateUid, validateName, formatDate } = require('./validation');
 const { NotFoundError, ValidationError } = require('../../shared/errors');
@@ -197,6 +198,14 @@ class ProjectsService {
         const safeTimezone = getSafeTimezone(userTimezone);
         const projectJson = project.toJSON();
 
+        const totalWorkHours = await Task.sum('work_hours', {
+            where: {
+                project_id: project.id,
+                work_hours: { [Op.not]: null },
+                parent_task_id: null,
+            },
+        });
+
         const normalizedTasks = projectJson.Tasks
             ? projectJson.Tasks.map((task) => {
                   const normalizedTask = {
@@ -238,6 +247,7 @@ class ProjectsService {
             user_id: project.user_id,
             share_count: shareCount,
             is_shared: shareCount > 0,
+            total_work_hours: totalWorkHours || 0,
         };
     }
 
@@ -265,6 +275,7 @@ class ProjectsService {
             state,
             tags,
             Tags,
+            unit_price,
         } = data;
 
         const validatedName = validateName(name);
@@ -282,6 +293,7 @@ class ProjectsService {
             image_url: image_url || null,
             status: status || state || 'not_started',
             user_id: userId,
+            unit_price: unit_price !== undefined ? unit_price : null,
         };
 
         const project = await projectsRepository.create(projectData);
@@ -326,6 +338,7 @@ class ProjectsService {
             state,
             tags,
             Tags,
+            unit_price,
         } = data;
 
         const tagsData = tags || Tags;
@@ -345,6 +358,8 @@ class ProjectsService {
             updateData.image_url = image_url === '' ? null : image_url;
         if (status !== undefined) updateData.status = status;
         else if (state !== undefined) updateData.status = state;
+        if (unit_price !== undefined)
+            updateData.unit_price = unit_price === '' ? null : unit_price;
 
         await projectsRepository.update(project, updateData);
         await updateProjectTags(project, tagsData, userId);

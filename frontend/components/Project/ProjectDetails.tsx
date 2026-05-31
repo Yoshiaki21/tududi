@@ -43,6 +43,8 @@ import ProjectBanner from './ProjectBanner';
 import BannerEditModal from './BannerEditModal';
 import ProjectTasksSection from './ProjectTasksSection';
 import ProjectNotesSection from './ProjectNotesSection';
+import WorkSummaryCard from './WorkSummaryCard';
+import MarkdownRenderer from '../Shared/MarkdownRenderer';
 import { useProjectMetrics } from './useProjectMetrics';
 
 const ProjectDetails: React.FC = () => {
@@ -79,6 +81,9 @@ const ProjectDetails: React.FC = () => {
     const [orderBy, setOrderBy] = useState<string>('status:inProgressFirst');
     const [taskSearchQuery, setTaskSearchQuery] = useState('');
     const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+    const [defaultUnitPrice, setDefaultUnitPrice] = useState<number>(25000);
+    const [isEditingDescription, setIsEditingDescription] = useState(false);
+    const [editedDescription, setEditedDescription] = useState<string>('');
     const {
         isOpen: isModalOpen,
         openModal,
@@ -211,6 +216,17 @@ const ProjectDetails: React.FC = () => {
                 .catch(() => undefined);
         }
     }, [allProjects.length]);
+
+    useEffect(() => {
+        fetch(getApiPath('profile'), { credentials: 'include' })
+            .then((r) => r.ok ? r.json() : null)
+            .then((profile) => {
+                if (profile?.default_unit_price != null) {
+                    setDefaultUnitPrice(profile.default_unit_price);
+                }
+            })
+            .catch(() => undefined);
+    }, [getApiPath]);
 
     useEffect(() => {
         const storedSort = localStorage.getItem('project_order_by');
@@ -471,6 +487,32 @@ const ProjectDetails: React.FC = () => {
     const handleSortChange = (newOrderBy: string) => {
         setOrderBy(newOrderBy);
         localStorage.setItem('project_order_by', newOrderBy);
+    };
+
+    const handleUnitPriceChange = async (price: number) => {
+        if (!project?.uid) return;
+        const updated = await updateProject(project.uid, { ...project, unit_price: price });
+        setProject((prev) => prev ? { ...prev, unit_price: price, ...updated } : prev);
+    };
+
+    const handleStartDescriptionEdit = () => {
+        setEditedDescription(project?.description || '');
+        setIsEditingDescription(true);
+    };
+
+    const handleSaveDescription = async () => {
+        if (!project?.uid) return;
+        const updated = await updateProject(project.uid, {
+            ...project,
+            description: editedDescription,
+        });
+        setProject((prev) => prev ? { ...prev, description: editedDescription, ...updated } : prev);
+        setIsEditingDescription(false);
+    };
+
+    const handleCancelDescriptionEdit = () => {
+        setIsEditingDescription(false);
+        setEditedDescription(project?.description || '');
     };
 
     const handleDeleteProject = async () => {
@@ -1011,6 +1053,53 @@ const ProjectDetails: React.FC = () => {
                                                 : 'xl:translate-x-6'
                                         }`}
                                     >
+                                        {isEditingDescription ? (
+                                            <div className="mb-4 rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-blue-200 dark:border-blue-700 p-4">
+                                                <textarea
+                                                    autoFocus
+                                                    value={editedDescription}
+                                                    onChange={(e) => setEditedDescription(e.target.value)}
+                                                    className="w-full min-h-[120px] bg-transparent border-none focus:ring-0 focus:outline-none text-sm text-gray-900 dark:text-gray-100 resize-y"
+                                                    placeholder={t('project.descriptionPlaceholder', 'プロジェクトの概要を入力... (Markdown 対応)')}
+                                                />
+                                                <div className="flex justify-end space-x-2 mt-2">
+                                                    <button
+                                                        onClick={handleSaveDescription}
+                                                        className="px-4 py-1.5 text-sm bg-green-600 dark:bg-green-500 text-white rounded hover:bg-green-700 dark:hover:bg-green-600 transition-colors"
+                                                    >
+                                                        {t('common.save', 'Save')}
+                                                    </button>
+                                                    <button
+                                                        onClick={handleCancelDescriptionEdit}
+                                                        className="px-4 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                                                    >
+                                                        {t('common.cancel', 'Cancel')}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ) : project?.description ? (
+                                            <div
+                                                onDoubleClick={handleStartDescriptionEdit}
+                                                className="mb-4 rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-gray-50 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700 p-4 cursor-pointer transition-colors"
+                                                title={t('project.doubleClickToEditDescription', 'ダブルクリックして編集')}
+                                            >
+                                                <MarkdownRenderer
+                                                    content={project.description}
+                                                    className="prose dark:prose-invert max-w-none text-sm"
+                                                />
+                                            </div>
+                                        ) : (
+                                            <div
+                                                onDoubleClick={handleStartDescriptionEdit}
+                                                className="mb-4 rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-gray-50 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700 p-4 cursor-pointer transition-colors"
+                                                title={t('project.doubleClickToAddDescription', 'ダブルクリックして概要を追加')}
+                                            >
+                                                <span className="text-sm text-gray-400 dark:text-gray-500 italic">
+                                                    {t('project.noDescription', '概要なし（ダブルクリックして追加）')}
+                                                </span>
+                                            </div>
+                                        )}
+
                                         <ProjectTasksSection
                                             project={project}
                                             displayTasks={displayTasks}
@@ -1050,6 +1139,13 @@ const ProjectDetails: React.FC = () => {
                                         style={{ overflow: 'hidden' }}
                                         aria-hidden={!showMetrics}
                                     >
+                                        <WorkSummaryCard
+                                            totalWorkHours={project.total_work_hours ?? 0}
+                                            unitPrice={project.unit_price}
+                                            defaultUnitPrice={defaultUnitPrice}
+                                            onUnitPriceChange={handleUnitPriceChange}
+                                        />
+
                                         <ProjectInsightsPanel
                                             taskStats={taskStats}
                                             completionGradient={

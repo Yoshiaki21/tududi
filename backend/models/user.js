@@ -259,6 +259,11 @@ module.exports = (sequelize) => {
                 type: DataTypes.DATE,
                 allowNull: true,
             },
+            default_unit_price: {
+                type: DataTypes.INTEGER,
+                allowNull: true,
+                defaultValue: 25000,
+            },
         },
         {
             tableName: 'users',

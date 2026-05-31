@@ -72,6 +72,7 @@ export interface Profile {
     pomodoro_enabled: boolean;
     notification_preferences?: NotificationPreferences | null;
     keyboard_shortcuts?: KeyboardShortcutsConfig | null;
+    default_unit_price?: number | null;
 }
 
 export interface TelegramBotInfo {

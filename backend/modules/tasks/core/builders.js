@@ -164,6 +164,7 @@ function buildTaskAttributes(body, userId, timezone, isUpdate = false) {
                 ? body.recurrence_week_of_month
                 : null,
         completion_based: body.completion_based || false,
+        work_hours: body.work_hours !== undefined ? body.work_hours : null,
     };
 
     if (!isUpdate) {
@@ -223,6 +224,8 @@ function buildUpdateAttributes(body, task, timezone) {
             body.completion_based !== undefined
                 ? body.completion_based
                 : task.completion_based,
+        work_hours:
+            body.work_hours !== undefined ? body.work_hours : task.work_hours,
     };
 
     if (body.due_date !== undefined) {

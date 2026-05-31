@@ -189,6 +189,11 @@ module.exports = (sequelize) => {
                 type: DataTypes.DATE,
                 allowNull: true,
             },
+            work_hours: {
+                type: DataTypes.FLOAT,
+                allowNull: true,
+                defaultValue: null,
+            },
         },
         {
             tableName: 'tasks',

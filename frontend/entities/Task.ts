@@ -41,6 +41,7 @@ export interface Task {
     habit_best_streak?: number;
     habit_total_completions?: number;
     habit_last_completion_at?: string;
+    work_hours?: number | null;
 }
 
 export type StatusType =

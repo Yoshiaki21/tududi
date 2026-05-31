@@ -120,6 +120,7 @@ class UsersService {
             keyboard_shortcuts,
             currentPassword,
             newPassword,
+            default_unit_price,
         } = data;
 
         const allowedUpdates = {};
@@ -161,6 +162,8 @@ class UsersService {
             allowedUpdates.notification_preferences = notification_preferences;
         if (keyboard_shortcuts !== undefined)
             allowedUpdates.keyboard_shortcuts = keyboard_shortcuts;
+        if (default_unit_price !== undefined)
+            allowedUpdates.default_unit_price = default_unit_price;
 
         // Handle password change if provided
         if (currentPassword && newPassword) {

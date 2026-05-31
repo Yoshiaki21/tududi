@@ -30,6 +30,7 @@ import {
     TaskDueDateCard,
     TaskDeferUntilCard,
     TaskAttachmentsCard,
+    TaskWorkHoursCard,
 } from './TaskDetails/';
 import {
     isTaskOverdueInTodayPlan,
@@ -1007,6 +1008,29 @@ const TaskDetails: React.FC = () => {
         }
     };
 
+    const handleWorkHoursUpdate = async (value: number | null) => {
+        if (!task?.uid) return;
+        try {
+            taskModifiedRef.current = true;
+            await updateTask(task.uid, { work_hours: value });
+            if (uid) {
+                const updatedTask = await fetchTaskByUid(uid);
+                const existingIndex = tasksStore.tasks.findIndex(
+                    (t: Task) => t.uid === uid
+                );
+                if (existingIndex >= 0) {
+                    const updatedTasks = [...tasksStore.tasks];
+                    updatedTasks[existingIndex] = updatedTask;
+                    tasksStore.setTasks(updatedTasks);
+                }
+            }
+            setTimelineRefreshKey((prev) => prev + 1);
+        } catch (error) {
+            console.error('Error updating work hours:', error);
+            showErrorToast(t('task.workHoursUpdateError', '作業時間の更新に失敗しました'));
+        }
+    };
+
     const handleProjectCreateInlineWrapper = async (name: string) => {
         if (!task?.uid || !name.trim()) return;
 
@@ -1206,6 +1230,11 @@ const TaskDetails: React.FC = () => {
                                     onUpdate={handleTagsUpdate}
                                     onLoadTags={() => tagsStore.loadTags()}
                                     getTagLink={getTagLink}
+                                />
+
+                                <TaskWorkHoursCard
+                                    workHours={task.work_hours}
+                                    onUpdate={handleWorkHoursUpdate}
                                 />
 
                                 <TaskDueDateCard

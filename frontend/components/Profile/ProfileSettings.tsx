@@ -1287,6 +1287,12 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({
                                             first_day_of_week: value,
                                         }))
                                     }
+                                    onDefaultUnitPriceChange={(value) =>
+                                        setFormData((prev) => ({
+                                            ...prev,
+                                            default_unit_price: value,
+                                        }))
+                                    }
                                     avatarPreview={avatarPreview}
                                     onAvatarSelect={handleAvatarSelect}
                                     onAvatarRemove={handleAvatarRemove}

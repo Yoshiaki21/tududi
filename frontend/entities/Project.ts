@@ -45,4 +45,6 @@ export interface Project {
     task_status?: ProjectTaskStatus;
     completion_percentage?: number;
     is_stalled?: boolean;
+    unit_price?: number | null;
+    total_work_hours?: number;
 }
