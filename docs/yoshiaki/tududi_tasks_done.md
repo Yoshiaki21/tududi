@@ -211,3 +211,21 @@
 - **変更内容**:
   - `ProjectDetails.tsx`: `handleDescriptionCheckboxChange` 関数を追加し、`MarkdownRenderer` の `onContentChange` に渡すよう修正。チェックボックス変更時に即座に `updateProject` でサーバーへ保存
   - `MarkdownRenderer.tsx`: チェックボックス `input` に `onDoubleClick` の `stopPropagation` を追加（親 `div` の `onDoubleClick` 編集モード誤発火を防止）
+
+---
+
+## タスク14: MarkdownEditor クリップボード貼り付けによる画像アップロード対応
+
+- **完了日**: 2026-05-31
+- **修正ファイル**:
+  - `frontend/components/Shared/MarkdownEditor.tsx`
+- **変更内容**:
+  - `handlePaste` 関数を追加：`e.clipboardData.items` から画像を検出し、既存の `uploadImageForContext` でアップロード後に Markdown を挿入
+  - `generatePasteFilename`: MIMEタイプから `paste-YYYYMMDD-HHmmss.png` 形式のファイル名を生成
+  - `isGenericFilename`: `image.png` / `image.jpg` 等の汎用名を正規表現で判定
+  - `<textarea>` に `onPaste={handlePaste}` を追加
+  - placeholder テキストを「ドラッグ＆ドロップまたは貼り付け可」に更新
+- **ファイル名ルール**:
+  - スクリーンショット等で `file.name` が `image.png` 等の汎用名 → `paste-YYYYMMDD-HHmmss.png` に自動置換
+  - ファイルエクスプローラーからコピーした場合 → 元のファイル名を保持
+  - テキストのみのクリップボード → `e.preventDefault()` を呼ばず通常貼り付けとして動作

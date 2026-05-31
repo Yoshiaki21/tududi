@@ -142,6 +142,62 @@ const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
     const handleHR = () => insertBlock('\n---\n');
     const handleLink = () => insertWrap('[', '](URL)', 'テキスト');
 
+    const generatePasteFilename = (mimeType: string): string => {
+        const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+        const now = new Date();
+        const ts =
+            now.getFullYear().toString() +
+            String(now.getMonth() + 1).padStart(2, '0') +
+            String(now.getDate()).padStart(2, '0') +
+            '-' +
+            String(now.getHours()).padStart(2, '0') +
+            String(now.getMinutes()).padStart(2, '0') +
+            String(now.getSeconds()).padStart(2, '0');
+        return `paste-${ts}.${ext}`;
+    };
+
+    const isGenericFilename = (name: string): boolean => {
+        return !name || /^image\.(png|jpe?g|gif|webp|svg)$/i.test(name);
+    };
+
+    const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+        if (!uploadContext.uid) return;
+
+        const imageItems = Array.from(e.clipboardData.items).filter((item) =>
+            item.type.startsWith('image/')
+        );
+        if (imageItems.length === 0) return;
+
+        e.preventDefault();
+        setIsUploading(true);
+        try {
+            const ta = textareaRef.current;
+            let insertPos = ta ? ta.selectionStart : value.length;
+            let updatedValue = value;
+
+            for (const item of imageItems) {
+                const raw = item.getAsFile();
+                if (!raw) continue;
+                const file = isGenericFilename(raw.name)
+                    ? new File([raw], generatePasteFilename(raw.type), { type: raw.type })
+                    : raw;
+                const fileUrl = await uploadImageForContext(uploadContext, file);
+                if (fileUrl) {
+                    const md = `![${file.name}](${fileUrl})\n`;
+                    updatedValue =
+                        updatedValue.substring(0, insertPos) +
+                        md +
+                        updatedValue.substring(insertPos);
+                    insertPos += md.length;
+                }
+            }
+
+            onChange(updatedValue);
+        } finally {
+            setIsUploading(false);
+        }
+    };
+
     const handleDragOver = (e: React.DragEvent) => {
         e.preventDefault();
         if (e.dataTransfer.types.includes('Files')) {
@@ -253,10 +309,11 @@ const MarkdownEditor: React.FC<MarkdownEditorProps> = ({
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
                     onKeyDown={onKeyDown}
+                    onPaste={handlePaste}
                     placeholder={
                         placeholder ||
                         (uploadContext.uid
-                            ? t('editor.placeholder', 'Markdownで入力... 画像はドラッグ＆ドロップ可')
+                            ? t('editor.placeholder', 'Markdownで入力... 画像はドラッグ＆ドロップまたは貼り付け可')
                             : t('editor.placeholderNoUpload', 'Markdownで入力...'))
                     }
                     className="w-full border border-gray-300 dark:border-gray-600 border-t-0 rounded-b-md px-3 py-2 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 resize-y focus:ring-2 focus:ring-blue-500 focus:outline-none transition"
