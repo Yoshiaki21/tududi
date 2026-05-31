@@ -198,3 +198,16 @@
   - 8時間 = 1人工
   - `work_hours` が null のタスクは集計除外
   - `safeAddColumns` のテーブル名は小文字で渡す
+
+---
+
+## タスク13: プロジェクト概要欄チェックボックス操作不能バグ修正
+
+- **完了日**: 2026-05-31
+- **修正ファイル**:
+  - `frontend/components/Project/ProjectDetails.tsx`
+  - `frontend/components/Shared/MarkdownRenderer.tsx`
+- **原因**: `MarkdownRenderer` は `onContentChange` が渡されない場合にチェックボックスを `disabled` にする設計だが、概要欄の `MarkdownRenderer` に `onContentChange` を渡していなかった
+- **変更内容**:
+  - `ProjectDetails.tsx`: `handleDescriptionCheckboxChange` 関数を追加し、`MarkdownRenderer` の `onContentChange` に渡すよう修正。チェックボックス変更時に即座に `updateProject` でサーバーへ保存
+  - `MarkdownRenderer.tsx`: チェックボックス `input` に `onDoubleClick` の `stopPropagation` を追加（親 `div` の `onDoubleClick` 編集モード誤発火を防止）

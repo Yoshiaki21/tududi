@@ -576,6 +576,15 @@ const ProjectDetails: React.FC = () => {
         setEditedDescription(project?.description || '');
     };
 
+    const handleDescriptionCheckboxChange = async (newContent: string) => {
+        if (!project?.uid) return;
+        const updated = await updateProject(project.uid, {
+            ...project,
+            description: newContent,
+        });
+        setProject((prev) => prev ? { ...prev, description: newContent, ...updated } : prev);
+    };
+
     const handleDeleteProject = async () => {
         if (!project?.uid) return;
         await deleteProject(project.uid);
@@ -1135,6 +1144,7 @@ const ProjectDetails: React.FC = () => {
                                     <MarkdownRenderer
                                         content={project.description}
                                         className="prose dark:prose-invert max-w-none text-sm"
+                                        onContentChange={handleDescriptionCheckboxChange}
                                     />
                                 </div>
                             ) : (

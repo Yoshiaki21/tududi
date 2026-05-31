@@ -402,6 +402,9 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                                     onClick={(e) => {
                                         e.stopPropagation();
                                     }}
+                                    onDoubleClick={(e) => {
+                                        e.stopPropagation();
+                                    }}
                                     onChange={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
