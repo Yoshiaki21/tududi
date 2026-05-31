@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -45,7 +45,18 @@ import ProjectTasksSection from './ProjectTasksSection';
 import ProjectNotesSection from './ProjectNotesSection';
 import WorkSummaryCard from './WorkSummaryCard';
 import MarkdownRenderer from '../Shared/MarkdownRenderer';
+import MarkdownEditor from '../Shared/MarkdownEditor';
 import { useProjectMetrics } from './useProjectMetrics';
+import { ProjectAttachment } from '../../entities/Attachment';
+import {
+    fetchProjectAttachments,
+    uploadProjectAttachment,
+    deleteProjectAttachment,
+    getAttachmentType,
+} from '../../utils/projectAttachmentsService';
+import AttachmentCard from '../Shared/AttachmentCard';
+import AttachmentPreview from '../Shared/AttachmentPreview';
+import { CloudArrowUpIcon, PaperClipIcon } from '@heroicons/react/24/outline';
 
 const ProjectDetails: React.FC = () => {
     const UI_OPTIONS_KEY = 'ui_app_options';
@@ -67,7 +78,12 @@ const ProjectDetails: React.FC = () => {
     const [selectedNote, setSelectedNote] = useState<Note | null>(null);
     const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
     const [isBannerEditModalOpen, setIsBannerEditModalOpen] = useState(false);
-    const [activeTab, setActiveTab] = useState<'description' | 'tasks' | 'notes'>('tasks');
+    const [activeTab, setActiveTab] = useState<'description' | 'tasks' | 'notes' | 'attachments'>('tasks');
+    const [projectAttachments, setProjectAttachments] = useState<ProjectAttachment[]>([]);
+    const [attachmentsLoading, setAttachmentsLoading] = useState(false);
+    const [attachmentUploading, setAttachmentUploading] = useState(false);
+    const [previewAttachment, setPreviewAttachment] = useState<ProjectAttachment | null>(null);
+    const projectAttachmentFileRef = React.useRef<HTMLInputElement>(null);
     const [taskStatusFilter, setTaskStatusFilter] = useState<
         'all' | 'active' | 'completed'
     >(() => {
@@ -487,6 +503,51 @@ const ProjectDetails: React.FC = () => {
     const handleSortChange = (newOrderBy: string) => {
         setOrderBy(newOrderBy);
         localStorage.setItem('project_order_by', newOrderBy);
+    };
+
+    const loadProjectAttachments = useCallback(async () => {
+        if (!project?.uid) return;
+        setAttachmentsLoading(true);
+        try {
+            const data = await fetchProjectAttachments(project.uid);
+            setProjectAttachments(data);
+        } catch (err) {
+            console.error('Error loading project attachments:', err);
+        } finally {
+            setAttachmentsLoading(false);
+        }
+    }, [project?.uid]);
+
+    useEffect(() => {
+        if (activeTab === 'attachments' && project?.uid) {
+            loadProjectAttachments();
+        }
+    }, [activeTab, project?.uid, loadProjectAttachments]);
+
+    const handleProjectAttachmentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file || !project?.uid) return;
+        setAttachmentUploading(true);
+        try {
+            const newAtt = await uploadProjectAttachment(project.uid, file);
+            setProjectAttachments((prev) => [...prev, newAtt]);
+        } catch (err) {
+            console.error('Error uploading project attachment:', err);
+        } finally {
+            setAttachmentUploading(false);
+            if (projectAttachmentFileRef.current) projectAttachmentFileRef.current.value = '';
+        }
+    };
+
+    const handleProjectAttachmentDelete = async (att: ProjectAttachment) => {
+        if (!project?.uid) return;
+        try {
+            await deleteProjectAttachment(project.uid, att.uid);
+            setProjectAttachments((prev) => prev.filter((a) => a.uid !== att.uid));
+            if (previewAttachment?.uid === att.uid) setPreviewAttachment(null);
+        } catch (err) {
+            console.error('Error deleting project attachment:', err);
+        }
     };
 
     const handleUnitPriceChange = async (price: number) => {
@@ -938,6 +999,22 @@ const ProjectDetails: React.FC = () => {
                                         </span>
                                     )}
                                 </button>
+                                <button
+                                    onClick={() => setActiveTab('attachments')}
+                                    className={`flex items-center space-x-1 sm:space-x-2 text-xs sm:text-sm font-medium transition-colors ${
+                                        activeTab === 'attachments'
+                                            ? 'text-gray-900 dark:text-gray-100'
+                                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                                    }`}
+                                >
+                                    <PaperClipIcon className="h-3.5 w-3.5" />
+                                    <span>{t('project.attachmentsTab', '添付ファイル')}</span>
+                                    {projectAttachments.length > 0 && (
+                                        <span className="ml-1 sm:ml-2 px-1.5 sm:px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-600 rounded-full">
+                                            {projectAttachments.length}
+                                        </span>
+                                    )}
+                                </button>
                             </div>
 
                             {activeTab === 'tasks' && (
@@ -1026,12 +1103,13 @@ const ProjectDetails: React.FC = () => {
                         <div className="w-full max-w-5xl">
                             {isEditingDescription ? (
                                 <div className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-blue-200 dark:border-blue-700 p-4">
-                                    <textarea
-                                        autoFocus
+                                    <MarkdownEditor
                                         value={editedDescription}
-                                        onChange={(e) => setEditedDescription(e.target.value)}
-                                        className="w-full min-h-[200px] bg-transparent border-none focus:ring-0 focus:outline-none text-sm text-gray-900 dark:text-gray-100 resize-y"
+                                        onChange={setEditedDescription}
+                                        uploadContext={{ type: 'project', uid: project.uid || null }}
+                                        minHeight={200}
                                         placeholder={t('project.descriptionPlaceholder', 'プロジェクトの概要を入力... (Markdown 対応)')}
+                                        className="mb-2"
                                     />
                                     <div className="flex justify-end space-x-2 mt-2">
                                         <button
@@ -1212,6 +1290,101 @@ const ProjectDetails: React.FC = () => {
                                 setIsConfirmDialogOpen(true);
                             }}
                         />
+                    )}
+
+                    {activeTab === 'attachments' && (
+                        <div className="w-full max-w-5xl">
+                            {attachmentsLoading ? (
+                                <p className="text-sm text-gray-500 dark:text-gray-400">{t('common.loading', 'Loading...')}</p>
+                            ) : (
+                                <>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                        {/* Upload card */}
+                                        <div
+                                            className="bg-gray-50 dark:bg-gray-900 rounded-lg shadow-md relative flex flex-col cursor-pointer hover:shadow-lg transition-shadow"
+                                            style={{ minHeight: '250px', maxHeight: '250px' }}
+                                            onClick={() => !attachmentUploading && projectAttachmentFileRef.current?.click()}
+                                        >
+                                            <input
+                                                ref={projectAttachmentFileRef}
+                                                type="file"
+                                                className="hidden"
+                                                onChange={handleProjectAttachmentUpload}
+                                                disabled={attachmentUploading}
+                                                accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.gif,.svg,.webp,.xls,.xlsx,.csv,.zip"
+                                            />
+                                            <div
+                                                className="bg-gray-200 dark:bg-gray-700 flex flex-col items-center justify-center rounded-t-lg border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
+                                                style={{ height: '140px' }}
+                                            >
+                                                <CloudArrowUpIcon className="h-12 w-12 text-gray-400 dark:text-gray-500 mb-2" />
+                                                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                                    {attachmentUploading
+                                                        ? t('task.attachments.uploading', 'Uploading...')
+                                                        : t('task.attachments.clickToUpload', 'Click to upload')}
+                                                </p>
+                                            </div>
+                                            <div className="p-4 flex-1 flex flex-col justify-center">
+                                                <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                                                    {t('task.attachments.maxSize', 'Max 10MB')}
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        {/* Attachment cards */}
+                                        {projectAttachments.map((att) => (
+                                            <div
+                                                key={att.uid}
+                                                className="bg-gray-50 dark:bg-gray-900 rounded-lg shadow-md relative flex flex-col"
+                                                style={{ minHeight: '250px', maxHeight: '250px' }}
+                                            >
+                                                <div
+                                                    className="bg-gray-200 dark:bg-gray-700 flex items-center justify-center rounded-t-lg cursor-pointer overflow-hidden"
+                                                    style={{ height: '140px' }}
+                                                    onClick={() => setPreviewAttachment(previewAttachment?.uid === att.uid ? null : att)}
+                                                >
+                                                    {getAttachmentType(att.mime_type) === 'image' && att.file_url ? (
+                                                        <img src={att.file_url} alt={att.original_filename} className="w-full h-full object-cover" />
+                                                    ) : (
+                                                        <PaperClipIcon className="h-12 w-12 text-gray-400 dark:text-gray-500" />
+                                                    )}
+                                                </div>
+                                                <div className="p-3 flex-1 flex flex-col justify-between">
+                                                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{att.original_filename}</p>
+                                                    <button
+                                                        onClick={() => handleProjectAttachmentDelete(att)}
+                                                        className="text-xs text-red-500 hover:text-red-700 mt-2"
+                                                    >
+                                                        {t('common.delete', 'Delete')}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {/* Preview modal */}
+                                    {previewAttachment && (
+                                        <div
+                                            className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"
+                                            onClick={() => setPreviewAttachment(null)}
+                                        >
+                                            <div
+                                                className="bg-white dark:bg-gray-800 rounded-lg max-w-4xl max-h-[90vh] overflow-auto"
+                                                onClick={(e) => e.stopPropagation()}
+                                            >
+                                                <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
+                                                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{previewAttachment.original_filename}</h3>
+                                                    <button onClick={() => setPreviewAttachment(null)} className="text-gray-500 hover:text-gray-700">✕</button>
+                                                </div>
+                                                <div className="p-1">
+                                                    <AttachmentPreview attachment={previewAttachment as any} />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
                     )}
 
                     <ProjectModal

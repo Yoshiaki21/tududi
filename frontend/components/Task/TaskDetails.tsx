@@ -1206,6 +1206,7 @@ const TaskDetails: React.FC = () => {
                             <div className="lg:col-span-3 space-y-8">
                                 <TaskContentCard
                                     content={task.note || ''}
+                                    taskUid={task.uid}
                                     onUpdate={handleContentUpdate}
                                 />
                             </div>

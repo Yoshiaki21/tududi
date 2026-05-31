@@ -3,12 +3,13 @@ import { useTranslation } from 'react-i18next';
 import {
     PencilSquareIcon,
     EyeIcon,
-    PencilIcon,
 } from '@heroicons/react/24/outline';
 import MarkdownRenderer from '../../Shared/MarkdownRenderer';
+import MarkdownEditor from '../../Shared/MarkdownEditor';
 
 interface TaskContentCardProps {
     content: string;
+    taskUid?: string;
     onUpdate: (
         newContent: string,
         options?: { silent?: boolean }
@@ -17,6 +18,7 @@ interface TaskContentCardProps {
 
 const TaskContentCard: React.FC<TaskContentCardProps> = ({
     content,
+    taskUid,
     onUpdate,
 }) => {
     const { t } = useTranslation();
@@ -62,68 +64,59 @@ const TaskContentCard: React.FC<TaskContentCardProps> = ({
     return (
         <div className="space-y-2">
             {isEditing ? (
-                <div className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-blue-500 dark:border-blue-400 p-6">
-                    <div className="relative">
-                        {/* Floating toggle buttons */}
-                        <div className="absolute top-2 right-2 z-10 flex space-x-1">
-                            <button
-                                type="button"
-                                onClick={() => setContentTab('edit')}
-                                className={`p-1.5 rounded-md transition-colors ${
-                                    contentTab === 'edit'
-                                        ? 'bg-blue-600 text-white'
-                                        : 'bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700'
-                                }`}
-                                title={t('common.edit', 'Edit')}
-                            >
-                                <PencilIcon className="h-3 w-3" />
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => setContentTab('preview')}
-                                className={`p-1.5 rounded-md transition-colors ${
-                                    contentTab === 'preview'
-                                        ? 'bg-blue-600 text-white'
-                                        : 'bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700'
-                                }`}
-                                title={t('common.preview', 'Preview')}
-                            >
-                                <EyeIcon className="h-3 w-3" />
-                            </button>
-                        </div>
-
-                        {contentTab === 'edit' ? (
-                            <textarea
-                                ref={contentTextareaRef}
-                                value={editedContent}
-                                onChange={(e) =>
-                                    setEditedContent(e.target.value)
-                                }
-                                onKeyDown={handleKeyDown}
-                                className="w-full min-h-[200px] bg-transparent border-none focus:ring-0 focus:outline-none text-gray-900 dark:text-gray-100 resize-y font-normal pr-20"
-                                placeholder={t(
-                                    'task.contentPlaceholder',
-                                    'Add content here... (Markdown supported)'
-                                )}
-                            />
-                        ) : (
-                            <div className="w-full min-h-[200px] bg-gray-50 dark:bg-gray-800 rounded p-3 pr-20 overflow-y-auto">
-                                {editedContent ? (
-                                    <MarkdownRenderer
-                                        content={editedContent}
-                                        className="prose dark:prose-invert max-w-none"
-                                    />
-                                ) : (
-                                    <p className="text-gray-500 dark:text-gray-400 italic">
-                                        {t(
-                                            'task.noContentPreview',
-                                            'No content to preview. Switch to Edit mode to add content.'
-                                        )}
-                                    </p>
-                                )}
-                            </div>
-                        )}
+                <div className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-blue-500 dark:border-blue-400 p-4">
+                    <div className="flex space-x-1 mb-2 justify-end">
+                        <button
+                            type="button"
+                            onClick={() => setContentTab('edit')}
+                            className={`p-1.5 rounded-md transition-colors ${
+                                contentTab === 'edit'
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700'
+                            }`}
+                            title={t('common.edit', 'Edit')}
+                        >
+                            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setContentTab('preview')}
+                            className={`p-1.5 rounded-md transition-colors ${
+                                contentTab === 'preview'
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-700'
+                            }`}
+                            title={t('common.preview', 'Preview')}
+                        >
+                            <EyeIcon className="h-3 w-3" />
+                        </button>
                     </div>
+
+                    {contentTab === 'edit' ? (
+                        <MarkdownEditor
+                            value={editedContent}
+                            onChange={setEditedContent}
+                            uploadContext={{ type: 'task', uid: taskUid || null }}
+                            minHeight={200}
+                            onKeyDown={handleKeyDown}
+                        />
+                    ) : (
+                        <div className="w-full min-h-[200px] bg-gray-50 dark:bg-gray-800 rounded p-3 overflow-y-auto">
+                            {editedContent ? (
+                                <MarkdownRenderer
+                                    content={editedContent}
+                                    className="prose dark:prose-invert max-w-none"
+                                />
+                            ) : (
+                                <p className="text-gray-500 dark:text-gray-400 italic">
+                                    {t(
+                                        'task.noContentPreview',
+                                        'No content to preview. Switch to Edit mode to add content.'
+                                    )}
+                                </p>
+                            )}
+                        </div>
+                    )}
                     <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
                         <span className="text-xs text-gray-500 dark:text-gray-400">
                             {t(

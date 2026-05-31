@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import ProjectDropdown from '../Shared/ProjectDropdown';
 import ConfirmDialog from '../Shared/ConfirmDialog';
 import DiscardChangesDialog from '../Shared/DiscardChangesDialog';
+import MarkdownEditor from '../Shared/MarkdownEditor';
 import {
     EyeIcon,
     PencilIcon,
@@ -576,20 +577,17 @@ const NoteModal: React.FC<NoteModalProps> = ({
                                                     </div>
 
                                                     {activeTab === 'edit' ? (
-                                                        <textarea
-                                                            id="noteContent"
-                                                            name="content"
-                                                            value={
-                                                                formData.content ||
-                                                                ''
+                                                        <MarkdownEditor
+                                                            value={formData.content || ''}
+                                                            onChange={(val) =>
+                                                                setFormData((prev) => ({ ...prev, content: val }))
                                                             }
-                                                            onChange={
-                                                                handleChange
-                                                            }
-                                                            className="block w-full h-full min-h-0 sm:border sm:border-gray-300 sm:dark:border-gray-600 sm:rounded-md shadow-sm py-2 sm:py-3 px-3 sm:px-3 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 sm:focus:ring-2 sm:focus:ring-blue-500 transition duration-150 ease-in-out resize-none"
-                                                            placeholder="Write your content using Markdown formatting...&#10;&#10;Examples:&#10;# Heading&#10;**Bold text**&#10;*Italic text*&#10;- List item&#10;```code```"
-                                                            autoComplete="off"
-                                                            data-testid="note-content-textarea"
+                                                            uploadContext={{
+                                                                type: 'note',
+                                                                uid: formData.uid || null,
+                                                            }}
+                                                            minHeight={200}
+                                                            className="flex-1"
                                                         />
                                                     ) : (
                                                         <div className="block w-full h-full min-h-0 sm:border sm:border-gray-300 sm:dark:border-gray-600 sm:rounded-md shadow-sm py-2 px-3 sm:py-3 sm:px-3 text-sm bg-gray-50 dark:bg-gray-800 overflow-y-auto">
