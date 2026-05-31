@@ -35,7 +35,7 @@ class ProjectsRepository extends BaseRepository {
                 {
                     model: Task,
                     required: false,
-                    attributes: ['id', 'status'],
+                    attributes: ['id', 'status', 'work_hours'],
                     where: {
                         parent_task_id: null,
                         recurring_parent_id: null,
