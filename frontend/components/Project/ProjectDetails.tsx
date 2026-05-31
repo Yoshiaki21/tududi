@@ -67,7 +67,7 @@ const ProjectDetails: React.FC = () => {
     const [selectedNote, setSelectedNote] = useState<Note | null>(null);
     const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
     const [isBannerEditModalOpen, setIsBannerEditModalOpen] = useState(false);
-    const [activeTab, setActiveTab] = useState<'tasks' | 'notes'>('tasks');
+    const [activeTab, setActiveTab] = useState<'description' | 'tasks' | 'notes'>('tasks');
     const [taskStatusFilter, setTaskStatusFilter] = useState<
         'all' | 'active' | 'completed'
     >(() => {
@@ -899,6 +899,16 @@ const ProjectDetails: React.FC = () => {
                         <div className="flex items-center justify-between min-h-[2.5rem]">
                             <div className="flex items-center space-x-3 sm:space-x-6">
                                 <button
+                                    onClick={() => setActiveTab('description')}
+                                    className={`flex items-center space-x-1 sm:space-x-2 text-xs sm:text-sm font-medium transition-colors ${
+                                        activeTab === 'description'
+                                            ? 'text-gray-900 dark:text-gray-100'
+                                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                                    }`}
+                                >
+                                    <span>{t('project.descriptionTab', '概要')}</span>
+                                </button>
+                                <button
                                     onClick={() => setActiveTab('tasks')}
                                     className={`flex items-center space-x-1 sm:space-x-2 text-xs sm:text-sm font-medium transition-colors ${
                                         activeTab === 'tasks'
@@ -1012,6 +1022,57 @@ const ProjectDetails: React.FC = () => {
                         </div>
                     </div>
 
+                    {activeTab === 'description' && (
+                        <div className="w-full max-w-5xl">
+                            {isEditingDescription ? (
+                                <div className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-blue-200 dark:border-blue-700 p-4">
+                                    <textarea
+                                        autoFocus
+                                        value={editedDescription}
+                                        onChange={(e) => setEditedDescription(e.target.value)}
+                                        className="w-full min-h-[200px] bg-transparent border-none focus:ring-0 focus:outline-none text-sm text-gray-900 dark:text-gray-100 resize-y"
+                                        placeholder={t('project.descriptionPlaceholder', 'プロジェクトの概要を入力... (Markdown 対応)')}
+                                    />
+                                    <div className="flex justify-end space-x-2 mt-2">
+                                        <button
+                                            onClick={handleSaveDescription}
+                                            className="px-4 py-1.5 text-sm bg-green-600 dark:bg-green-500 text-white rounded hover:bg-green-700 dark:hover:bg-green-600 transition-colors"
+                                        >
+                                            {t('common.save', 'Save')}
+                                        </button>
+                                        <button
+                                            onClick={handleCancelDescriptionEdit}
+                                            className="px-4 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                                        >
+                                            {t('common.cancel', 'Cancel')}
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : project?.description ? (
+                                <div
+                                    onDoubleClick={handleStartDescriptionEdit}
+                                    className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-gray-50 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700 p-4 cursor-pointer transition-colors"
+                                    title={t('project.doubleClickToEditDescription', 'ダブルクリックして編集')}
+                                >
+                                    <MarkdownRenderer
+                                        content={project.description}
+                                        className="prose dark:prose-invert max-w-none text-sm"
+                                    />
+                                </div>
+                            ) : (
+                                <div
+                                    onDoubleClick={handleStartDescriptionEdit}
+                                    className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-gray-50 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700 p-4 cursor-pointer transition-colors"
+                                    title={t('project.doubleClickToAddDescription', 'ダブルクリックして概要を追加')}
+                                >
+                                    <span className="text-sm text-gray-400 dark:text-gray-500 italic">
+                                        {t('project.noDescription', '概要なし（ダブルクリックして追加）')}
+                                    </span>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {activeTab === 'tasks' && (
                         <>
                             <div
@@ -1053,53 +1114,6 @@ const ProjectDetails: React.FC = () => {
                                                 : 'xl:translate-x-6'
                                         }`}
                                     >
-                                        {isEditingDescription ? (
-                                            <div className="mb-4 rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-blue-200 dark:border-blue-700 p-4">
-                                                <textarea
-                                                    autoFocus
-                                                    value={editedDescription}
-                                                    onChange={(e) => setEditedDescription(e.target.value)}
-                                                    className="w-full min-h-[120px] bg-transparent border-none focus:ring-0 focus:outline-none text-sm text-gray-900 dark:text-gray-100 resize-y"
-                                                    placeholder={t('project.descriptionPlaceholder', 'プロジェクトの概要を入力... (Markdown 対応)')}
-                                                />
-                                                <div className="flex justify-end space-x-2 mt-2">
-                                                    <button
-                                                        onClick={handleSaveDescription}
-                                                        className="px-4 py-1.5 text-sm bg-green-600 dark:bg-green-500 text-white rounded hover:bg-green-700 dark:hover:bg-green-600 transition-colors"
-                                                    >
-                                                        {t('common.save', 'Save')}
-                                                    </button>
-                                                    <button
-                                                        onClick={handleCancelDescriptionEdit}
-                                                        className="px-4 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
-                                                    >
-                                                        {t('common.cancel', 'Cancel')}
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ) : project?.description ? (
-                                            <div
-                                                onDoubleClick={handleStartDescriptionEdit}
-                                                className="mb-4 rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-gray-50 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700 p-4 cursor-pointer transition-colors"
-                                                title={t('project.doubleClickToEditDescription', 'ダブルクリックして編集')}
-                                            >
-                                                <MarkdownRenderer
-                                                    content={project.description}
-                                                    className="prose dark:prose-invert max-w-none text-sm"
-                                                />
-                                            </div>
-                                        ) : (
-                                            <div
-                                                onDoubleClick={handleStartDescriptionEdit}
-                                                className="mb-4 rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-gray-50 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700 p-4 cursor-pointer transition-colors"
-                                                title={t('project.doubleClickToAddDescription', 'ダブルクリックして概要を追加')}
-                                            >
-                                                <span className="text-sm text-gray-400 dark:text-gray-500 italic">
-                                                    {t('project.noDescription', '概要なし（ダブルクリックして追加）')}
-                                                </span>
-                                            </div>
-                                        )}
-
                                         <ProjectTasksSection
                                             project={project}
                                             displayTasks={displayTasks}

@@ -88,7 +88,7 @@ const WorkSummaryCard: React.FC<WorkSummaryCardProps> = ({
                             value={editPrice}
                             onChange={(e) => setEditPrice(e.target.value)}
                             onKeyDown={handleKeyDown}
-                            className="w-24 border border-gray-300 dark:border-gray-600 rounded px-2 py-0.5 text-sm text-right bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-blue-500"
+                            className="w-24 border border-gray-300 dark:border-gray-600 rounded px-2 py-0.5 text-sm text-right bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-blue-500 no-spinner"
                         />
                         <span className="text-gray-500 dark:text-gray-400 text-xs whitespace-nowrap">
                             /{t('project.manDaysUnit', '人工')}
