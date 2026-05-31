@@ -486,6 +486,16 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
                                     : '0/0'}
                             </span>
                         </div>
+                        {((project as any).total_hours > 0 || (project as any).total_amount > 0) && (
+                            <div className="flex items-center space-x-2 text-[11px] text-gray-500 dark:text-gray-400 mb-1">
+                                {(project as any).total_hours > 0 && (
+                                    <span>{((project as any).total_hours as number).toFixed(1)}h</span>
+                                )}
+                                {(project as any).total_amount > 0 && (
+                                    <span>¥{((project as any).total_amount as number).toLocaleString('ja-JP')}</span>
+                                )}
+                            </div>
+                        )}
                         <div className="flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
                             <div className="flex items-center min-w-0">
                                 {dueInfo.isOverdue ? (

@@ -47,4 +47,6 @@ export interface Project {
     is_stalled?: boolean;
     unit_price?: number | null;
     total_work_hours?: number;
+    total_hours?: number;
+    total_amount?: number;
 }

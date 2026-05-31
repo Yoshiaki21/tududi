@@ -152,6 +152,15 @@ class ProjectsService {
                 taskStatus.in_progress + taskStatus.not_started;
             const isStalled = isActiveStatus && activeTaskCount === 0;
 
+            const tasks = project.Tasks || [];
+            const totalHours = Math.round(
+                tasks.reduce((sum, t) => sum + (t.work_hours || 0), 0) * 10
+            ) / 10;
+            const unitPrice = project.unit_price || 0;
+            const totalAmount = unitPrice > 0
+                ? Math.round((totalHours / 8) * unitPrice)
+                : 0;
+
             return {
                 ...projectJson,
                 tags: sortTags(projectJson.Tags),
@@ -165,6 +174,8 @@ class ProjectsService {
                 share_count: shareCount,
                 is_shared: shareCount > 0,
                 is_stalled: isStalled,
+                total_hours: totalHours,
+                total_amount: totalAmount,
             };
         });
 
