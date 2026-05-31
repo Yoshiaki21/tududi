@@ -23,7 +23,7 @@ async function initializeMatrixPolling() {
             if (users.length > 0) {
                 console.log(`Matrix: initializing polling for ${users.length} user(s)...`);
                 for (const user of users) {
-                    await matrixPoller.start(user);
+                    await matrixPoller.start(user.id);
                 }
             }
         } catch (error) {

@@ -1,7 +1,7 @@
 'use strict';
 
 const { createMatrixClient } = require('./matrixClient');
-const { InboxItem } = require('../../models');
+const { InboxItem, User } = require('../../models');
 const { Op } = require('sequelize');
 
 // userId -> MatrixClient
@@ -9,6 +9,9 @@ const activeClients = new Map();
 
 // Per-client processed event IDs to prevent duplicate processing
 const processedEvents = new Map(); // userId -> Set<event_id>
+
+// リトライ待機中のユーザーID（重複リトライ防止）
+const pendingRetries = new Set();
 
 function isAuthorizedMatrixUser(user, sender) {
     const raw = user.matrix_allowed_users;
@@ -38,7 +41,19 @@ async function createInboxItem(content, userId) {
     return InboxItem.create({ content, source: 'matrix', user_id: userId });
 }
 
-async function sendMatrixMessage(homeserverUrl, accessToken, roomId, message) {
+async function sendMatrixMessage(homeserverUrl, accessToken, roomId, message, userId = null) {
+    // userId が指定されている場合、E2EE対応のアクティブクライアントを使用する
+    if (userId != null) {
+        const activeClient = activeClients.get(Number(userId));
+        if (activeClient) {
+            await activeClient.sendMessage(roomId, {
+                msgtype: 'm.text',
+                body: message,
+            });
+            return;
+        }
+    }
+    // フォールバック: 新規クライアントで送信（非暗号化ルーム用）
     const { MatrixClient } = require('matrix-bot-sdk');
     const client = new MatrixClient(homeserverUrl, accessToken);
     await client.sendMessage(roomId, {
@@ -60,7 +75,8 @@ async function handleBotCommand(command, user, roomId) {
                 homeserverUrl,
                 accessToken,
                 roomId,
-                'Welcome to tududi!\n\nSend me any text and I\'ll add it to your inbox.\n\nCommands:\n/help - Show this message'
+                'Welcome to tududi!\n\nSend me any text and I\'ll add it to your inbox.\n\nCommands:\n/help - Show this message',
+                user.id
             );
             break;
         default:
@@ -68,7 +84,8 @@ async function handleBotCommand(command, user, roomId) {
                 homeserverUrl,
                 accessToken,
                 roomId,
-                `Unknown command: ${command}\n\nUse /help to see available commands.`
+                `Unknown command: ${command}\n\nUse /help to see available commands.`,
+                user.id
             );
     }
 }
@@ -91,7 +108,8 @@ async function processMessage(user, { roomId, text, sender, eventId }) {
             user.matrix_homeserver_url,
             user.matrix_access_token,
             roomId,
-            `Added to tududi inbox: "${text}"`
+            `Added to tududi inbox: "${text}"`,
+            user.id
         );
 
         console.log(`Matrix: processed message for user ${user.id}: "${text}"`);
@@ -101,18 +119,24 @@ async function processMessage(user, { roomId, text, sender, eventId }) {
             user.matrix_homeserver_url,
             user.matrix_access_token,
             roomId,
-            `Failed to add to inbox: ${error.message}`
+            `Failed to add to inbox: ${error.message}`,
+            user.id
         ).catch(() => {});
     }
 }
 
-async function start(user) {
-    if (activeClients.has(user.id)) return;
-
-    if (!user.matrix_homeserver_url || !user.matrix_access_token) {
-        console.log(`Matrix: skipping user ${user.id} - missing config`);
+async function start(userId) {
+    // 型を整数に統一（stop() との型不一致を防ぐ）
+    const numericId = Number(userId);
+    // DB から最新の設定を取得（Room ID 等の変更が即反映される）
+    const user = await User.findByPk(numericId);
+    if (!user || !user.matrix_homeserver_url || !user.matrix_access_token) {
+        console.log(`Matrix: skipping user ${numericId} - missing config`);
         return;
     }
+
+    // user.id（整数）を一貫して使用してキー型不整合を防ぐ
+    if (activeClients.has(user.id)) return;
 
     try {
         const client = createMatrixClient(
@@ -126,11 +150,15 @@ async function start(user) {
 
         client.on('room.message', async (roomId, event) => {
             try {
+                // 毎回 DB から最新設定を取得（Room ID 変更を即反映）
+                const currentUser = await User.findByPk(user.id);
+                if (!currentUser) return;
+
                 // Only process messages in the configured room if set
-                if (user.matrix_room_id && roomId !== user.matrix_room_id) return;
+                if (currentUser.matrix_room_id && roomId !== currentUser.matrix_room_id) return;
 
                 // Ignore own messages
-                if (user.matrix_bot_user_id && event.sender === user.matrix_bot_user_id) return;
+                if (currentUser.matrix_bot_user_id && event.sender === currentUser.matrix_bot_user_id) return;
 
                 // Ignore non-text messages
                 if (event.type !== 'm.room.message') return;
@@ -149,7 +177,7 @@ async function start(user) {
                 const text = event.content?.body;
                 if (!text) return;
 
-                await processMessage(user, {
+                await processMessage(currentUser, {
                     roomId,
                     text,
                     sender: event.sender,
@@ -171,32 +199,43 @@ async function start(user) {
 
         await client.start();
 
-        // E2EE: デバイスキーをサーバーに登録（初回のみ実行される）
-        try {
-            await client.crypto.uploadDeviceKeys();
-            console.log(`Matrix: device keys uploaded for user ${user.id}`);
-        } catch (err) {
-            console.error(`Matrix: failed to upload device keys for user ${user.id}:`, err.message);
-        }
-
         activeClients.set(user.id, client);
         console.log(`Matrix: started client for user ${user.id}`);
     } catch (error) {
         console.error(`Matrix: failed to start client for user ${user.id}:`, error.message);
+        // クリーンアップ
+        processedEvents.delete(user.id);
+
+        // 一時的なサーバーエラー（5xx）の場合は60秒後にリトライ
+        const isTransient = error.statusCode >= 500 || error.errcode === 'M_UNKNOWN';
+        if (isTransient && !pendingRetries.has(user.id)) {
+            pendingRetries.add(user.id);
+            console.log(`Matrix: will retry start for user ${user.id} in 60 seconds`);
+            setTimeout(async () => {
+                pendingRetries.delete(user.id);
+                await start(user.id);
+            }, 60000);
+        }
     }
 }
 
 async function stop(userId) {
-    const client = activeClients.get(userId);
+    // 型を整数に統一（APIから文字列で渡される場合があるため）
+    const numericId = Number(userId);
+    pendingRetries.delete(numericId); // リトライ待機中もキャンセル
+
+    const client = activeClients.get(numericId);
     if (!client) return;
 
     try {
         await client.stop();
     } catch (_) {}
 
-    activeClients.delete(userId);
-    processedEvents.delete(userId);
-    console.log(`Matrix: stopped client for user ${userId}`);
+    activeClients.delete(numericId);
+    processedEvents.delete(numericId);
+    // crypto ストレージのロック解放を待つ（新クライアントとの競合防止）
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    console.log(`Matrix: stopped client for user ${numericId}`);
 }
 
 function getStatus() {

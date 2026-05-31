@@ -960,7 +960,19 @@ Matrix: device keys uploaded for user 1
 
 ---
 
-## タスク8: matrixPoller.js の Stop/Start 動作修正
+## タスク8: matrixPoller.js の Stop/Start 動作修正 ✅ 完了（2026-05-31）
+
+### 実施した変更
+
+#### `backend/modules/matrix/matrixPoller.js`
+- `client.crypto.uploadDeviceKeys()` の呼び出しを削除（E2EE は `client.start()` 時に自動初期化されるため不要）
+- `stop()` に `await new Promise(resolve => setTimeout(resolve, 1000))` を追加し、crypto ストレージのロック解放を待機するようにした（Stop → Start での競合防止）
+- `start()` の引数を `user` オブジェクトから `userId` に変更し、`User.findByPk(numericId)` で DB から最新設定を取得するように修正
+- `start()` 内に `pendingRetries` による重複リトライ防止ロジックを追加
+- `room.message` イベントハンドラ内で毎回 `User.findByPk(user.id)` を呼び出し、Room ID 等の最新設定を `currentUser` として取得するように変更（クロージャによる古い設定の固定を解消）
+- `sendMatrixMessage()` に `userId` パラメータを追加し、E2EE 対応のアクティブクライアント経由で送信するよう改善
+
+---
 
 ### 背景
 
