@@ -8,6 +8,7 @@ const { getConfig } = require('../../config/config');
 const config = getConfig();
 const router = express.Router();
 const projectsController = require('./controller');
+const attachmentsRouter = require('./attachments');
 const { hasAccess } = require('../../middleware/authorize');
 const { requireAuth } = require('../../middleware/auth');
 
@@ -98,5 +99,8 @@ router.delete(
     ),
     projectsController.delete
 );
+
+// Mount project attachments router
+router.use(attachmentsRouter);
 
 module.exports = router;
