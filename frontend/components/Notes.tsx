@@ -27,6 +27,7 @@ import NoteModal from './Note/NoteModal';
 import ConfirmDialog from './Shared/ConfirmDialog';
 import DiscardChangesDialog from './Shared/DiscardChangesDialog';
 import MarkdownRenderer from './Shared/MarkdownRenderer';
+import MarkdownEditor from './Shared/MarkdownEditor';
 import IconSortDropdown from './Shared/IconSortDropdown';
 import TagInput from './Tag/TagInput';
 import { Note } from '../entities/Note';
@@ -1038,27 +1039,48 @@ const Notes: React.FC = () => {
                                     </div>
                                 )}
 
-                                <div className="flex-1 overflow-y-auto px-6 md:px-8">
-                                    <textarea
+                                <div className="flex-1 overflow-y-auto px-6 md:px-8 py-4">
+                                    <MarkdownEditor
                                         value={editingNote.content || ''}
-                                        onChange={(e) =>
-                                            handleNoteChange({
-                                                content: e.target.value,
-                                            })
+                                        onChange={(content) =>
+                                            handleNoteChange({ content })
                                         }
-                                        onClick={(e) => e.stopPropagation()}
+                                        uploadContext={{
+                                            type: 'note',
+                                            uid: editingNote.uid || null,
+                                        }}
                                         placeholder="Write your note content here... (Markdown supported)"
-                                        className="w-full h-full min-h-[300px] bg-transparent text-gray-900 dark:text-gray-100 border-none focus:outline-none focus:ring-0 resize-none py-4"
-                                        style={{
-                                            color: editingNoteColor
-                                                ? shouldUseLightText(
-                                                      editingNoteColor
-                                                  )
-                                                    ? '#ffffff'
-                                                    : '#333333'
-                                                : undefined,
+                                        minHeight={300}
+                                        onKeyDown={(e) => {
+                                            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                                                e.preventDefault();
+                                                handleSaveInlineNote();
+                                            } else if (e.key === 'Escape') {
+                                                e.preventDefault();
+                                                handleCancelEdit();
+                                            }
                                         }}
                                     />
+                                    <div className="flex items-center justify-between mt-4 flex-shrink-0">
+                                        <span className="text-xs text-gray-400 dark:text-gray-500">
+                                            Cmd/Ctrl+Enterを押して保存、Escを押してキャンセル
+                                        </span>
+                                        <div className="flex gap-2">
+                                            <button
+                                                onClick={handleCancelEdit}
+                                                className="px-4 py-2 text-sm text-gray-700 dark:text-gray-300 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 rounded transition-colors"
+                                            >
+                                                キャンセル
+                                            </button>
+                                            <button
+                                                onClick={handleSaveInlineNote}
+                                                disabled={!editingNote.title}
+                                                className="px-4 py-2 text-sm text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed rounded transition-colors"
+                                            >
+                                                保存
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         ) : previewNote ? (
