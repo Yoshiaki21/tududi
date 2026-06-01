@@ -253,6 +253,40 @@
 
 ---
 
+## 添付ファイル孤立クリーンアップ（Phase 1 + Phase 2）
+
+- **完了日**: 2026-06-01
+- **動作確認**: ✅ 済み
+
+### Phase 1: 削除時の即時クリーンアップ
+
+- **修正ファイル**:
+  - `backend/modules/tasks/routes.js`
+  - `backend/modules/projects/repository.js`
+  - `backend/modules/notes/service.js`
+- **変更内容**:
+  - `tasks/routes.js`: `deleteAttachmentsForTask()` helper 追加。繰り返しタスクの未来インスタンスと親タスク削除前に呼び出し、`task_attachments` のDBレコードとディスクファイルを削除
+  - `projects/repository.js`: `ProjectAttachment` を import し、`project.destroy()` 前にプロジェクト添付ファイルをループ削除（既存トランザクション内）
+  - `notes/service.js`: `NoteAttachment` / `deleteFileFromDisk` を import し、`note.destroy()` 前にノート添付ファイルをループ削除
+- **背景**:
+  - SQLite の `foreign_keys` pragma がデフォルト OFF のため `onDelete: 'CASCADE'` が機能しない
+  - タスク削除時は `PRAGMA foreign_keys = OFF` 中に削除するためさらにCASCADEが無効
+  - 従来はタスク・ノート削除時、およびプロジェクト削除時のプロジェクト自体の添付ファイルが孤立していた
+
+### Phase 2: 設定ページに孤立ファイル削除ボタン
+
+- **新規ファイル**:
+  - `backend/modules/cleanup/service.js`: `Op.notIn + literal` サブクエリで3テーブル（task_attachments / project_attachments / note_attachments）の孤立レコードを検出・削除。削除件数と解放バイト数を返す
+  - `backend/modules/cleanup/routes.js`: `POST /api/cleanup/orphaned-attachments`
+  - `backend/modules/cleanup/index.js`
+  - `frontend/components/Profile/tabs/StorageTab.tsx`: 「クリーンアップを実行」ボタン、削除件数・解放容量を表示
+- **修正ファイル**:
+  - `backend/app.js`: cleanupModule を登録
+  - `frontend/components/Profile/ProfileSettings.tsx`: ストレージタブ追加（一覧末尾）
+- **アクセス方法**: 設定ページ（`/profile?section=storage`）→ ストレージタブ → クリーンアップを実行
+
+---
+
 ## タスク15: ノート編集モードにMarkdownEditorツールバーを追加
 
 - **完了日**: 2026-05-31

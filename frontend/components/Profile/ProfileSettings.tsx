@@ -22,6 +22,7 @@ import {
     CommandLineIcon,
     CpuChipIcon,
     CalendarIcon,
+    CircleStackIcon,
 } from '@heroicons/react/24/outline';
 import TelegramIcon from '../Shared/Icons/TelegramIcon';
 import MatrixIcon from '../Shared/Icons/MatrixIcon';
@@ -54,6 +55,7 @@ import NotificationsTab from './tabs/NotificationsTab';
 import KeyboardShortcutsTab from './tabs/KeyboardShortcutsTab';
 import McpTab from './tabs/McpTab';
 import CalDAVTab from './tabs/CalDAVTab';
+import StorageTab from './tabs/StorageTab';
 import { getDefaultConfig } from '../../utils/keyboardShortcutsService';
 import {
     getFeatureFlags,
@@ -106,6 +108,7 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({
             'keyboard-shortcuts',
             'caldav',
             'mcp',
+            'storage',
         ];
         return section && validTabs.includes(section) ? section : 'general';
     }, [location.search]);
@@ -1220,6 +1223,11 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({
             icon: <CpuChipIcon className="w-5 h-5" />,
             featureFlag: 'mcp',
         },
+        {
+            id: 'storage',
+            name: t('profile.tabs.storage', 'ストレージ'),
+            icon: <CircleStackIcon className="w-5 h-5" />,
+        },
     ];
 
     // Filter tabs based on feature flags
@@ -1452,6 +1460,8 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({
                                 <McpTab isActive={activeTab === 'mcp'} />
 
                                 <CalDAVTab isActive={activeTab === 'caldav'} />
+
+                                <StorageTab isActive={activeTab === 'storage'} />
 
                                 <div className="flex justify-end dark:border-gray-700">
                                     <button

@@ -8,7 +8,11 @@ const {
     ValidationError,
     ForbiddenError,
 } = require('../../shared/errors');
-const { Tag, Project } = require('../../models');
+const { Tag, Project, NoteAttachment } = require('../../models');
+const { deleteFileFromDisk } = require('../../utils/attachment-utils');
+const path = require('path');
+const { getConfig } = require('../../config/config');
+const notesServiceConfig = getConfig();
 const { validateTagName } = require('../tags/tagsService');
 const permissionsService = require('../../services/permissionsService');
 const { sortTags } = require('../tasks/core/serializers');
@@ -298,6 +302,13 @@ class NotesService {
 
         if (!note) {
             throw new NotFoundError('Note not found.');
+        }
+
+        const attachments = await NoteAttachment.findAll({ where: { note_id: note.id } });
+        for (const attachment of attachments) {
+            const filePath = path.join(notesServiceConfig.uploadPath, attachment.file_path);
+            await deleteFileFromDisk(filePath);
+            await attachment.destroy();
         }
 
         await notesRepository.destroy(note);

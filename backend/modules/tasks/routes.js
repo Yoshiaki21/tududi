@@ -8,10 +8,15 @@ const eventsRouter = require('./events');
 const {
     Task,
     TaskEvent,
+    TaskAttachment,
     RecurringCompletion,
     Project,
     sequelize,
 } = require('../../models');
+const { deleteFileFromDisk } = require('../../utils/attachment-utils');
+const path = require('path');
+const { getConfig } = require('../../config/config');
+const taskRoutesConfig = getConfig();
 const taskRepository = require('./repository');
 const {
     resetQueryCounter,
@@ -873,6 +878,15 @@ router.patch('/task/:uid', requireTaskWriteAccess, async (req, res) => {
     }
 });
 
+async function deleteAttachmentsForTask(taskId) {
+    const attachments = await TaskAttachment.findAll({ where: { task_id: taskId } });
+    for (const attachment of attachments) {
+        const filePath = path.join(taskRoutesConfig.uploadPath, attachment.file_path);
+        await deleteFileFromDisk(filePath);
+        await attachment.destroy();
+    }
+}
+
 router.delete('/task/:uid', requireTaskWriteAccess, async (req, res) => {
     try {
         const task = await taskRepository.findByUid(req.params.uid);
@@ -899,6 +913,7 @@ router.delete('/task/:uid', requireTaskWriteAccess, async (req, res) => {
             });
 
             for (const futureInstance of futureInstances) {
+                await deleteAttachmentsForTask(futureInstance.id);
                 await futureInstance.destroy();
             }
 
@@ -929,6 +944,8 @@ router.delete('/task/:uid', requireTaskWriteAccess, async (req, res) => {
             });
 
             await taskRepository.clearRecurringParent(taskId);
+
+            await deleteAttachmentsForTask(taskId);
 
             await task.destroy({ force: true });
         } finally {

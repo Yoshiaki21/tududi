@@ -10,6 +10,7 @@ const {
     User,
     Permission,
     TaskAttachment,
+    ProjectAttachment,
     sequelize,
 } = require('../../models');
 const { Op } = require('sequelize');
@@ -289,6 +290,17 @@ class ProjectsRepository extends BaseRepository {
                         transaction,
                     }
                 );
+
+                // Delete project attachments (files + DB records)
+                const projectAttachments = await ProjectAttachment.findAll({
+                    where: { project_id: project.id },
+                    transaction,
+                });
+                for (const attachment of projectAttachments) {
+                    const filePath = path.join(config.uploadPath, attachment.file_path);
+                    await deleteFileFromDisk(filePath);
+                    await attachment.destroy({ transaction });
+                }
 
                 // Delete project cover image if it exists
                 if (project.image_url) {
