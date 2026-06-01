@@ -348,7 +348,6 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
             // New project - check if any field has been filled
             return (
                 formData.name.trim() !== '' ||
-                formData.description?.trim() !== '' ||
                 formData.area_id !== null ||
                 formData.status !== 'not_started' ||
                 tags.length > 0 ||
@@ -360,7 +359,6 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
         // Existing project - compare with original
         const formChanged =
             formData.name !== project.name ||
-            formData.description !== project.description ||
             formData.area_id !== project.area_id ||
             formData.status !== project.status ||
             formData.priority !== project.priority ||
@@ -512,24 +510,6 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
                                                         {error}
                                                     </div>
                                                 )}
-                                            </div>
-
-                                            {/* Description Section - Always Visible */}
-                                            <div className="flex-1 border-b border-gray-200 dark:border-gray-700 pb-4 sm:px-4 flex flex-col mb-2">
-                                                <textarea
-                                                    id="projectDescription"
-                                                    name="description"
-                                                    value={
-                                                        formData.description ||
-                                                        ''
-                                                    }
-                                                    onChange={handleChange}
-                                                    className="block w-full h-full min-h-0 sm:border sm:border-gray-300 sm:dark:border-gray-600 sm:rounded-md shadow-sm py-2 px-3 sm:py-3 sm:px-3 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 sm:focus:ring-2 sm:focus:ring-blue-500 transition duration-150 ease-in-out resize-none"
-                                                    placeholder={t(
-                                                        'forms.projectDescriptionPlaceholder',
-                                                        'Enter project description (optional)'
-                                                    )}
-                                                />
                                             </div>
 
                                             {/* Expandable Sections - Only show when expanded */}

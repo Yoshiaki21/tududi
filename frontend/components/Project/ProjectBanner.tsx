@@ -84,11 +84,14 @@ const ProjectBanner: React.FC<ProjectBannerProps> = ({
                         <h1 className="text-4xl md:text-5xl font-bold text-white drop-shadow-lg project-banner-name">
                             {project.name}
                         </h1>
-                        {project.description && (
-                            <p className="text-lg md:text-xl text-white/90 mt-2 font-light drop-shadow-md max-w-2xl mx-auto project-banner-desc">
-                                {project.description}
-                            </p>
-                        )}
+                        {project.due_date_at && (() => {
+                            const parts = project.due_date_at!.split('T')[0].split('-');
+                            return (
+                                <p className="text-lg md:text-xl text-white/90 mt-2 font-light drop-shadow-md max-w-2xl mx-auto project-banner-desc">
+                                    プロジェクト期限{parts[0]}年{parseInt(parts[1])}月{parseInt(parts[2])}日
+                                </p>
+                            );
+                        })()}
                     </div>
                 </div>
 

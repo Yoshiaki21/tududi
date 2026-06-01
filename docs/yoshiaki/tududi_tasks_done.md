@@ -232,6 +232,27 @@
 
 ---
 
+## タスク16: プロジェクトバナー表示の改善とモーダルから説明欄を削除
+
+- **完了日**: 2026-06-01
+- **修正ファイル**:
+  - `frontend/components/Project/ProjectBanner.tsx`
+  - `frontend/components/Project/ProjectModal.tsx`
+- **変更内容**:
+  - `ProjectBanner.tsx`:
+    - バナー画像オーバーレイに表示していた `project.description` を削除
+    - 代わりに `project.due_date_at` が設定されている場合に「プロジェクト期限YYYY年M月D日」形式で表示（タイムゾーンずれ回避のため ISO 文字列を直接パース）
+  - `ProjectModal.tsx`:
+    - 説明テキストエリア（③）を削除（概要タブで入力するため不要）
+    - `hasUnsavedChanges` 内の `description` 比較チェックを削除
+    - 説明欄削除分のウィンドウ高さを調整（`sm:min-h-[500px]` → `sm:min-h-[320px]`）
+- **背景**:
+  - バナーに概要テキストが重複表示されていた（バナー内④と概要タブ②の2箇所）
+  - 説明は概要タブで管理するため、モーダルの入力欄は不要
+  - バナーには期限を表示する方が有用
+
+---
+
 ## タスク15: ノート編集モードにMarkdownEditorツールバーを追加
 
 - **完了日**: 2026-05-31
