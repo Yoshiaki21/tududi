@@ -77,7 +77,7 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
         tags: false,
         area: false,
         priority: false,
-        dueDate: false,
+        dueDate: true,
     });
 
     const { showSuccessToast, showErrorToast } = useToast();
@@ -658,7 +658,7 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
                                                                 unit_price: e.target.value === '' ? null : parseInt(e.target.value, 10),
                                                             })
                                                         }
-                                                        className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-1.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                                        className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-1.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                                                     />
                                                     <span className="text-gray-500 dark:text-gray-400 text-xs whitespace-nowrap">/人工</span>
                                                 </div>

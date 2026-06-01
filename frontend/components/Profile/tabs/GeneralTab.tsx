@@ -249,7 +249,7 @@ const GeneralTab: React.FC<GeneralTabProps> = ({
                                         : parseInt(e.target.value, 10)
                                 )
                             }
-                            className="block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            className="block w-full border border-gray-300 dark:border-gray-600 rounded-md shadow-sm px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                             placeholder="25000"
                         />
                         <span className="text-gray-500 dark:text-gray-400 whitespace-nowrap">/人工</span>

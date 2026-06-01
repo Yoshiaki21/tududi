@@ -287,6 +287,24 @@
 
 ---
 
+## タスク17: プロジェクト設定モーダルの期限セクションをデフォルト展開 ＋ スピナー非表示
+
+- **完了日**: 2026-06-01
+- **動作確認**: ✅ 済み
+- **修正ファイル**:
+  - `frontend/components/Project/ProjectModal.tsx`
+  - `frontend/components/Profile/tabs/GeneralTab.tsx`
+- **変更内容**:
+  - `ProjectModal.tsx`: `expandedSections.dueDate` の初期値を `false` → `true` に変更（モーダルを開いた時点で期限・人工単価セクションが展開された状態になる）
+  - `ProjectModal.tsx`: 人工単価 `<input type="number">` の `className` に `[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none` を追加（▽△スピナーを非表示）
+  - `GeneralTab.tsx`: デフォルト人工単価 `<input type="number">` の `className` に同様のスピナー非表示クラスを追加
+- **確認項目**:
+  - プロジェクト設定を開くと期限・人工単価欄が最初から表示される
+  - 人工単価入力欄にスピナー（▽△）が表示されない
+  - プロフィール設定のデフォルト人工単価入力欄にもスピナーが表示されない
+
+---
+
 ## タスク15: ノート編集モードにMarkdownEditorツールバーを追加
 
 - **完了日**: 2026-05-31
