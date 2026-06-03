@@ -326,7 +326,11 @@ const NoteDetails: React.FC = () => {
 
                 {/* Text Tab */}
                 {activeTab === 'text' && (
-                    <div className="mb-6 bg-white dark:bg-gray-900 shadow-md rounded-lg p-6">
+                    <div
+                        className="mb-6 bg-white dark:bg-gray-900 shadow-md rounded-lg p-6 border-2 border-transparent hover:border-gray-200 dark:hover:border-gray-700 transition-colors cursor-pointer"
+                        onDoubleClick={handleEditNote}
+                        title="ダブルクリックして編集"
+                    >
                         <MarkdownRenderer
                             content={note.content}
                             onContentChange={async (newContent) => {

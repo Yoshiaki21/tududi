@@ -322,3 +322,16 @@
   - B/I/H/≡/☑/`<>`/—/🔗 の各ボタンが動作する
   - 画像のドラッグ&ドロップおよびクリップボード貼り付けが動作する
   - 「保存」ボタンで保存、「キャンセル」で破棄できる
+
+---
+
+## タスク18: ノートプレビューエリアをダブルクリック編集に変更
+
+- **完了日**: 2026-06-03
+- **修正ファイル**:
+  - `frontend/components/Notes.tsx`
+  - `frontend/components/Note/NoteDetails.tsx`
+- **変更内容**:
+  - `Notes.tsx`: タイトル（`h1`）とコンテンツエリア（`div`）の `onClick` → `onDoubleClick` に変更、`title` を "Click to edit" → "ダブルクリックして編集" に更新
+  - `NoteDetails.tsx`: コンテンツエリアのラッパー `div` に `onDoubleClick={handleEditNote}` を追加、ホバー時のボーダーエフェクトとツールチップ "ダブルクリックして編集" を追加
+- **備考**: プロジェクト概要（`ProjectDetails.tsx`）のダブルクリック編集と同じ操作感に統一。チェックボックスへの影響なし（`stopPropagation` で保護済み）。鉛筆ボタンは単一クリックのまま残存

@@ -1096,7 +1096,7 @@ const Notes: React.FC = () => {
                                             ← {t('common.back', 'Back to list')}
                                         </button>
                                         <h1
-                                            onClick={() =>
+                                            onDoubleClick={() =>
                                                 handleEditNote(previewNote)
                                             }
                                             className="cursor-pointer text-gray-900 dark:text-gray-100 transition-colors pt-5 mb-4"
@@ -1112,7 +1112,7 @@ const Notes: React.FC = () => {
                                                 lineHeight: '2rem',
                                                 fontWeight: 500,
                                             }}
-                                            title="Click to edit"
+                                            title="ダブルクリックして編集"
                                         >
                                             {previewNote.title ||
                                                 t(
@@ -1405,7 +1405,7 @@ const Notes: React.FC = () => {
 
                                 {previewActiveTab === 'text' && (
                                     <div
-                                        onClick={() => handleEditNote(previewNote)}
+                                        onDoubleClick={() => handleEditNote(previewNote)}
                                         className="text-sm md:text-base flex-1 overflow-y-auto cursor-pointer px-6 md:px-8 py-4 text-gray-900 dark:text-gray-100"
                                         style={{
                                             color: previewNoteColor
@@ -1416,7 +1416,7 @@ const Notes: React.FC = () => {
                                                     : '#333333'
                                                 : undefined,
                                         }}
-                                        title="Click to edit"
+                                        title="ダブルクリックして編集"
                                     >
                                         <MarkdownRenderer
                                             content={previewNote.content}
