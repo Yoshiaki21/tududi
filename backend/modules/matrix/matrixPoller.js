@@ -13,17 +13,22 @@ const processedEvents = new Map(); // userId -> Set<event_id>
 // リトライ待機中のユーザーID（重複リトライ防止）
 const pendingRetries = new Set();
 
-function isAuthorizedMatrixUser(user, sender) {
-    const raw = user.matrix_allowed_users;
-    if (!raw || raw.trim() === '') return true;
+function isBotMentioned(event, botUserId) {
+    if (!botUserId) return false;
 
-    const allowed = raw
-        .split(',')
-        .map((u) => u.trim().toLowerCase())
-        .filter((u) => u.length > 0);
+    // Modern Matrix spec: m.mentions (Matrix 1.7+)
+    const mentions = event.content?.['m.mentions'];
+    if (mentions?.user_ids?.includes(botUserId)) return true;
 
-    if (allowed.length === 0) return true;
-    return allowed.includes(sender.toLowerCase());
+    // Fallback: formatted_body HTML pill
+    const formattedBody = event.content?.formatted_body;
+    if (formattedBody && formattedBody.includes(`https://matrix.to/#/${botUserId}`)) return true;
+
+    // Last resort: plain body contains the bot user ID
+    const body = event.content?.body;
+    if (body && body.toLowerCase().includes(botUserId.toLowerCase())) return true;
+
+    return false;
 }
 
 async function createInboxItem(content, userId) {
@@ -91,11 +96,6 @@ async function handleBotCommand(command, user, roomId) {
 }
 
 async function processMessage(user, { roomId, text, sender, eventId }) {
-    if (!isAuthorizedMatrixUser(user, sender)) {
-        console.log(`Matrix: ignoring unauthorized sender ${sender} for user ${user.id}`);
-        return;
-    }
-
     try {
         if (text.startsWith('/')) {
             await handleBotCommand(text, user, roomId);
@@ -154,15 +154,15 @@ async function start(userId) {
                 const currentUser = await User.findByPk(user.id);
                 if (!currentUser) return;
 
-                // Only process messages in the configured room if set
-                if (currentUser.matrix_room_id && roomId !== currentUser.matrix_room_id) return;
-
                 // Ignore own messages
                 if (currentUser.matrix_bot_user_id && event.sender === currentUser.matrix_bot_user_id) return;
 
                 // Ignore non-text messages
                 if (event.type !== 'm.room.message') return;
                 if (event.content?.msgtype !== 'm.text') return;
+
+                // Only process messages that mention the bot
+                if (!isBotMentioned(event, currentUser.matrix_bot_user_id)) return;
 
                 // Deduplicate
                 if (seen.has(event.event_id)) return;
@@ -185,15 +185,6 @@ async function start(userId) {
                 });
             } catch (err) {
                 console.error(`Matrix: event handler error for user ${user.id}:`, err.message);
-            }
-        });
-
-        // E2EE: 招待を自動承諾してデバイスキー交換を完了させる
-        client.on('room.invite', async (roomId) => {
-            try {
-                await client.joinRoom(roomId);
-            } catch (err) {
-                console.error(`Matrix: failed to join room ${roomId} for user ${user.id}:`, err.message);
             }
         });
 
