@@ -16,7 +16,6 @@ interface MatrixSettings {
     matrix_access_token: string;
     matrix_room_id: string;
     matrix_bot_user_id: string;
-    matrix_allowed_users: string[];
     configured: boolean;
 }
 
@@ -49,10 +48,9 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
         matrix_access_token: '',
         matrix_room_id: '',
         matrix_bot_user_id: '',
-        matrix_allowed_users: [],
         configured: false,
     });
-    const [allowedUsersInput, setAllowedUsersInput] = useState('');
+    const [tokenIsSet, setTokenIsSet] = useState(false);
     const [isPolling, setIsPolling] = useState(false);
     const [loaded, setLoaded] = useState(false);
     const [connectionTestResult, setConnectionTestResult] = useState<{
@@ -73,8 +71,8 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
 
                 if (settingsRes.ok) {
                     const data: MatrixSettings = await settingsRes.json();
-                    setSettings(data);
-                    setAllowedUsersInput(data.matrix_allowed_users.join(', '));
+                    setTokenIsSet(data.matrix_access_token === '***');
+                    setSettings({ ...data, matrix_access_token: '' });
                 }
                 if (statusRes.ok) {
                     const data = await statusRes.json();
@@ -173,10 +171,16 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
     const handleSave = async () => {
         if (!loaded) return;
         try {
-            const allowedUsers = allowedUsersInput
-                .split(',')
-                .map((u) => u.trim())
-                .filter(Boolean);
+            const body: Record<string, string | null> = {
+                matrix_homeserver_url: settings.matrix_homeserver_url || null,
+                matrix_room_id: settings.matrix_room_id || null,
+                matrix_bot_user_id: settings.matrix_bot_user_id || null,
+            };
+
+            // Only include access token if user entered a new one
+            if (settings.matrix_access_token) {
+                body.matrix_access_token = settings.matrix_access_token;
+            }
 
             const response = await fetch(getApiPath('matrix/settings'), {
                 method: 'POST',
@@ -184,13 +188,7 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
                     'Content-Type': 'application/json',
                     'x-csrf-token': await getCsrfToken(),
                 },
-                body: JSON.stringify({
-                    matrix_homeserver_url: settings.matrix_homeserver_url || null,
-                    matrix_access_token: settings.matrix_access_token || null,
-                    matrix_room_id: settings.matrix_room_id || null,
-                    matrix_bot_user_id: settings.matrix_bot_user_id || null,
-                    matrix_allowed_users: allowedUsers,
-                }),
+                body: JSON.stringify(body),
             });
 
             if (!response.ok) {
@@ -198,12 +196,14 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
                 throw new Error(data.error || 'Failed to save Matrix settings');
             }
 
+            const newTokenIsSet = tokenIsSet || !!settings.matrix_access_token;
             const isConfigured = !!(
                 settings.matrix_homeserver_url &&
-                settings.matrix_access_token &&
-                settings.matrix_room_id
+                newTokenIsSet &&
+                settings.matrix_bot_user_id
             );
-            setSettings((prev) => ({ ...prev, configured: isConfigured }));
+            if (settings.matrix_access_token) setTokenIsSet(true);
+            setSettings((prev) => ({ ...prev, configured: isConfigured, matrix_access_token: '' }));
             showSuccessToast(t('profile.matrix.settingsSaved', 'Matrix settings saved successfully.'));
 
             if (isConfigured && !isPolling) {
@@ -240,7 +240,7 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
                         <p>
                             {t(
                                 'profile.matrix.description',
-                                'Connect tududi to a Matrix room to add items to your inbox via messages. Create a bot account on your homeserver and paste its credentials below.'
+                                'Connect tududi to Matrix. The bot listens for @mentions (pill mentions) in any room it has joined. Mention the bot in any room to add items to your inbox. Create a bot account on your homeserver and paste its credentials below.'
                             )}
                         </p>
                     </div>
@@ -279,7 +279,7 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
                                 }))
                             }
                             placeholder={
-                                settings.configured
+                                tokenIsSet
                                     ? t('profile.matrix.tokenSet', '(token already set — leave blank to keep)')
                                     : 'syt_...'
                             }
@@ -313,15 +313,15 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
                         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                             {t(
                                 'profile.matrix.botUserIdHelp',
-                                "The bot's full Matrix user ID. Used to ignore the bot's own messages."
+                                "The bot's full Matrix user ID. Required for pill mention detection — the bot only processes messages that @mention this user."
                             )}
                         </p>
                     </div>
 
-                    {/* Room ID */}
+                    {/* Notification Room ID */}
                     <div>
                         <label className={labelClass}>
-                            {t('profile.matrix.roomId', 'Room ID')}
+                            {t('profile.matrix.notificationRoomId', 'Notification Room ID')}
                         </label>
                         <input
                             type="text"
@@ -337,28 +337,8 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
                         />
                         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                             {t(
-                                'profile.matrix.roomIdHelp',
-                                'Find it in Element: Room Settings → Advanced → Internal room ID.'
-                            )}
-                        </p>
-                    </div>
-
-                    {/* Allowed Users */}
-                    <div>
-                        <label className={labelClass}>
-                            {t('profile.matrix.allowedUsers', 'Allowed Users')}
-                        </label>
-                        <input
-                            type="text"
-                            value={allowedUsersInput}
-                            onChange={(e) => setAllowedUsersInput(e.target.value)}
-                            placeholder="@alice:example.com, @bob:example.com"
-                            className={inputClass}
-                        />
-                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                            {t(
-                                'profile.matrix.allowedUsersHelp',
-                                'Comma-separated list of Matrix user IDs allowed to send messages. Leave blank to allow all users in the room.'
+                                'profile.matrix.notificationRoomIdHelp',
+                                'Room where task summaries and notifications will be sent. Required for task summaries. Find it in Element: Room Settings → Advanced → Internal room ID.'
                             )}
                         </p>
                     </div>
@@ -501,9 +481,9 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
                 <div className="mt-4">
                     <button
                         type="button"
-                        disabled={!settings.configured}
+                        disabled={!settings.configured || !settings.matrix_room_id}
                         className={`px-4 py-2 rounded-md ${
-                            !settings.configured
+                            !settings.configured || !settings.matrix_room_id
                                 ? 'bg-gray-300 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-not-allowed'
                                 : 'bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600'
                         }`}
@@ -516,6 +496,14 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
                             {t(
                                 'profile.matrix.requiredForSummaries',
                                 'Matrix integration must be configured to use task summaries.'
+                            )}
+                        </p>
+                    )}
+                    {settings.configured && !settings.matrix_room_id && (
+                        <p className="mt-2 text-xs text-red-500">
+                            {t(
+                                'profile.matrix.roomIdRequiredForSummaries',
+                                'Notification Room ID is required to send task summaries.'
                             )}
                         </p>
                     )}

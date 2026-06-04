@@ -62,7 +62,6 @@ export interface Profile {
     matrix_access_token: string | null;
     matrix_room_id: string | null;
     matrix_bot_user_id: string | null;
-    matrix_allowed_users: string | null;
     task_summary_enabled: boolean;
     task_summary_frequency: string;
     task_intelligence_enabled: boolean;

@@ -17,21 +17,23 @@ const matrixController = {
                 matrix_access_token,
                 matrix_room_id,
                 matrix_bot_user_id,
-                matrix_allowed_users,
             } = req.body;
 
             const user = await User.findByPk(userId);
             if (!user) return res.status(404).json({ error: 'User not found' });
 
-            await user.update({
+            const updates = {
                 matrix_homeserver_url: matrix_homeserver_url || null,
-                matrix_access_token: matrix_access_token || null,
                 matrix_room_id: matrix_room_id || null,
                 matrix_bot_user_id: matrix_bot_user_id || null,
-                matrix_allowed_users: Array.isArray(matrix_allowed_users)
-                    ? matrix_allowed_users.join(',')
-                    : (matrix_allowed_users || null),
-            });
+            };
+
+            // Only update access token when a new value is explicitly provided
+            if (matrix_access_token && matrix_access_token !== '***') {
+                updates.matrix_access_token = matrix_access_token;
+            }
+
+            await user.update(updates);
 
             res.json({ success: true, message: 'Matrix settings saved' });
         } catch (error) {
@@ -53,10 +55,7 @@ const matrixController = {
                 matrix_access_token: user.matrix_access_token ? '***' : '',
                 matrix_room_id: user.matrix_room_id || '',
                 matrix_bot_user_id: user.matrix_bot_user_id || '',
-                matrix_allowed_users: user.matrix_allowed_users
-                    ? user.matrix_allowed_users.split(',').map((u) => u.trim()).filter(Boolean)
-                    : [],
-                configured: !!(user.matrix_homeserver_url && user.matrix_access_token && user.matrix_room_id),
+                configured: !!(user.matrix_homeserver_url && user.matrix_access_token && user.matrix_bot_user_id),
             });
         } catch (error) {
             logError('Matrix: error getting settings:', error);
