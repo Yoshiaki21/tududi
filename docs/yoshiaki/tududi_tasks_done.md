@@ -335,3 +335,21 @@
   - `Notes.tsx`: タイトル（`h1`）とコンテンツエリア（`div`）の `onClick` → `onDoubleClick` に変更、`title` を "Click to edit" → "ダブルクリックして編集" に更新
   - `NoteDetails.tsx`: コンテンツエリアのラッパー `div` に `onDoubleClick={handleEditNote}` を追加、ホバー時のボーダーエフェクトとツールチップ "ダブルクリックして編集" を追加
 - **備考**: プロジェクト概要（`ProjectDetails.tsx`）のダブルクリック編集と同じ操作感に統一。チェックボックスへの影響なし（`stopPropagation` で保護済み）。鉛筆ボタンは単一クリックのまま残存
+
+---
+
+## タスク19: Markdownコードブロックのコピーボタン機能修正
+
+- **完了日**: 2026-06-04
+- **動作確認**: ✅ 済み
+- **修正ファイル**:
+  - `frontend/components/Shared/MarkdownRenderer.tsx`
+  - `frontend/styles/markdown.css`
+- **原因**: "Copy" ボタンが CSS 疑似要素（`::after`）で見た目だけ実装されており、クリックイベントを受け取れないため機能していなかった
+- **変更内容**:
+  - `MarkdownRenderer.tsx`: `pre` コンポーネントを `div.relative.group` でラップし、本物の `<button>` 要素を追加。クリック時に `navigator.clipboard.writeText()` でコードをコピー。2秒間「✓ Copied」表示後に「Copy」に戻る
+  - `markdown.css`: 機能しない `pre:hover::after` 疑似要素を削除。`pre` の `position: relative` と `margin` も削除（ラッパー `div` と Tailwind `mb-4` に移譲）
+- **確認項目**:
+  - コードブロックにホバーすると "Copy" ボタンが表示される
+  - クリックするとコードがクリップボードにコピーされる
+  - コピー後 2 秒間「✓ Copied」と表示される
