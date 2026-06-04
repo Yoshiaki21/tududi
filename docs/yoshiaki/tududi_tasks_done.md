@@ -338,6 +338,61 @@
 
 ---
 
+## タスク20: Matrix連携 — pill メンション対応 ＋ 全ルーム対象化
+
+- **完了日**: 2026-06-04
+- **動作確認**: ✅ 済み
+- **修正ファイル**:
+  - `backend/modules/matrix/matrixPoller.js`
+- **変更内容**:
+  - `isAuthorizedMatrixUser` 関数を削除し `isBotMentioned` 関数に置き換え
+    - `event.content['m.mentions'].user_ids`（Matrix spec 1.7+）→ `formatted_body` の pill リンク → `body` テキストのフォールバック順で検出
+  - `room.message` ハンドラーからルームIDフィルター（`matrix_room_id` による絞り込み）を削除し、botが参加しているすべてのルームを対象化
+  - `room.message` ハンドラーに `isBotMentioned` チェックを追加（pill メンションがある発言のみ inbox に追加）
+  - `processMessage` 内の `isAuthorizedMatrixUser` 呼び出しを削除
+  - `room.invite` ハンドラー（招待の自動承諾）を削除 — roomへの参加は手動管理に変更
+- **設計方針**:
+  - セキュリティ境界を「許可ユーザーリスト」ではなく「botを参加させるroomかどうか」で制御
+  - `matrix_bot_user_id` が未設定の場合は `isBotMentioned` が常に false を返すため、メッセージは処理されない（設定必須）
+
+---
+
+## タスク21: Matrix設定 — アクセストークン上書きバグ修正 ＋ UI仕様変更
+
+- **完了日**: 2026-06-04
+- **動作確認**: ✅ 済み
+- **修正ファイル**:
+  - `backend/modules/matrix/controller.js`
+  - `frontend/components/Profile/tabs/MatrixTab.tsx`
+  - `frontend/components/Profile/types.ts`
+
+### バグ修正: アクセストークンが `'***'` で上書きされる問題
+
+- **原因**:
+  1. `getSettings` がトークンをマスクして `'***'` を返す
+  2. `MatrixTab` がそれをそのまま state にセット
+  3. 保存時に `'***'` をそのままPOSTしてしまい、DBのトークンが `'***'` で上書きされていた
+- **修正内容**:
+  - `controller.js` `saveSettings`: `matrix_access_token` が空・`'***'` の場合はDBを更新しないよう変更（`updates` オブジェクトを条件付きで構築）
+  - `MatrixTab.tsx`: ロード時に `matrix_access_token` は常に空文字でstateに格納。`tokenIsSet` フラグ（boolean）で「既に設定済み」を管理。保存時はトークン入力欄に新しい値がある場合のみ送信
+
+### 仕様変更: `matrix_room_id` を通知専用ルームとして維持、`matrix_allowed_users` を廃止
+
+- **変更内容**:
+  - `controller.js` `saveSettings`: `matrix_allowed_users` の保存処理を削除
+  - `controller.js` `getSettings`: `matrix_allowed_users` をAPIレスポンスから削除。`configured` の条件を `homeserver + token + bot_user_id`（`matrix_room_id` 不要）に変更
+  - `MatrixTab.tsx`:
+    - `allowedUsersInput` state と「Allowed Users」フィールドを削除
+    - 「Room ID」→「Notification Room ID」にラベル変更。説明文をタスクサマリー・通知の送信先専用であることを明示
+    - Bot User ID の説明文を「pill メンション検出に必須」と更新
+    - 「Send Test Summary」ボタンを `matrix_room_id` 未設定でも無効化（Notification Room ID が必要であるメッセージを追加）
+    - 接続確認済みバナー（configured）の表示条件を新しい `configured` 定義（room_id不要）に合わせて更新
+    - アクセストークンのプレースホルダー表示を `settings.configured` から `tokenIsSet` フラグに変更
+  - `types.ts`: `Profile` インターフェースから `matrix_allowed_users` フィールドを削除
+- **保持した動作**: タスクサマリー・通知の送信先（`matrix_room_id`）は引き続きDB・UIに残存。`matrixNotificationService.js`・`taskSummaryService.js`・`taskScheduler.js` は変更なし
+
+---
+
 ## タスク19: Markdownコードブロックのコピーボタン機能修正
 
 - **完了日**: 2026-06-04
