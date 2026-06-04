@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -306,12 +306,45 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                             );
                         }
                     },
-                    pre: ({ ...props }) => (
-                        <pre
-                            className="mb-4 rounded-lg overflow-x-auto"
-                            {...props}
-                        />
-                    ),
+                    pre: ({ children, ...props }) => {
+                        const [copied, setCopied] = useState(false);
+
+                        const handleCopy = () => {
+                            const el = (props as any).ref?.current ?? document.createElement('pre');
+                            // Extract text from children
+                            const getText = (node: React.ReactNode): string => {
+                                if (typeof node === 'string') return node;
+                                if (typeof node === 'number') return String(node);
+                                if (Array.isArray(node)) return node.map(getText).join('');
+                                if (React.isValidElement(node)) {
+                                    return getText((node.props as any).children);
+                                }
+                                return '';
+                            };
+                            const text = getText(children);
+                            navigator.clipboard.writeText(text).then(() => {
+                                setCopied(true);
+                                setTimeout(() => setCopied(false), 2000);
+                            });
+                        };
+
+                        return (
+                            <div className="relative group mb-4">
+                                <pre
+                                    className="rounded-lg overflow-x-auto"
+                                    {...props}
+                                >
+                                    {children}
+                                </pre>
+                                <button
+                                    onClick={handleCopy}
+                                    className="absolute top-2 right-2 px-2 py-1 text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 text-white dark:bg-white/80 dark:text-black"
+                                >
+                                    {copied ? '✓ Copied' : 'Copy'}
+                                </button>
+                            </div>
+                        );
+                    },
 
                     // Customize blockquote styles
                     blockquote: ({ ...props }) => (
