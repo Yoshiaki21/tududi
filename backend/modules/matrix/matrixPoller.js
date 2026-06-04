@@ -13,6 +13,22 @@ const processedEvents = new Map(); // userId -> Set<event_id>
 // リトライ待機中のユーザーID（重複リトライ防止）
 const pendingRetries = new Set();
 
+function extractCleanText(event) {
+    const body = event.content?.body;
+    const formattedBody = event.content?.formatted_body;
+
+    if (formattedBody && event.content?.format === 'org.matrix.custom.html') {
+        const cleaned = formattedBody
+            .replace(/<a href="https:\/\/matrix\.to\/#\/@[^"]*">[^<]*<\/a>/g, '')
+            .replace(/<[^>]*>/g, '')
+            .replace(/^[:\s]+/, '')
+            .trim();
+        return cleaned || body;
+    }
+
+    return body;
+}
+
 function isBotMentioned(event, botUserId) {
     if (!botUserId) return false;
 
@@ -174,7 +190,7 @@ async function start(userId) {
                     oldest.forEach((id) => seen.delete(id));
                 }
 
-                const text = event.content?.body;
+                const text = extractCleanText(event);
                 if (!text) return;
 
                 await processMessage(currentUser, {

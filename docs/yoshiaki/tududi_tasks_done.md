@@ -408,3 +408,22 @@
   - コードブロックにホバーすると "Copy" ボタンが表示される
   - クリックするとコードがクリップボードにコピーされる
   - コピー後 2 秒間「✓ Copied」と表示される
+
+---
+
+## タスク22: Matrix連携 — pill メンション部分を inbox から除去
+
+- **完了日**: 2026-06-04
+- **動作確認**: ✅ 済み
+- **修正ファイル**:
+  - `backend/modules/matrix/matrixPoller.js`
+- **変更内容**:
+  - `extractCleanText(event)` 関数を追加
+    - `event.content.format === 'org.matrix.custom.html'` かつ `formatted_body` がある場合、`https://matrix.to/#/@` 形式の Matrix ユーザーメンション `<a>` タグを正規表現で除去
+    - 残った HTML タグを除去し、先頭の `: ` などを trim
+    - `formatted_body` がない場合は `body` をそのまま返す（後方互換）
+  - `room.message` ハンドラー内の `const text = event.content?.body` を `const text = extractCleanText(event)` に置き換え
+- **背景**:
+  - pill メンション送信時、Matrix の `body` にはメンション表示名が `Tududi Bot: 動作テスト2` の形式で含まれる
+  - `formatted_body` には `<a href="https://matrix.to/#/@bot:server">Tududi Bot</a>: 動作テスト2` の HTML が含まれる
+  - `body` をそのまま使うとメンション部分ごと inbox に入ってしまうため、`formatted_body` から除去して本文のみを抽出する
