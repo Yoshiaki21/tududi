@@ -238,6 +238,10 @@ async function start(userId) {
                 // Only process messages that mention the bot
                 if (!isBotMentioned(event, currentUser.matrix_bot_user_id)) return;
 
+                // Log which room the message came from to aid E2EE diagnostics
+                const isConfiguredRoom = currentUser.matrix_room_id && roomId === currentUser.matrix_room_id;
+                console.log(`Matrix: message received in ${roomId}${isConfiguredRoom ? ' [configured room]' : ''} from ${event.sender}`);
+
                 // Deduplicate
                 if (seen.has(event.event_id)) return;
                 seen.add(event.event_id);
@@ -266,6 +270,8 @@ async function start(userId) {
             try {
                 const currentUser = await User.findByPk(user.id);
                 if (!currentUser) return;
+
+                console.log(`Matrix: decryption failed in ${roomId} event ${event.event_id} from ${event.sender}: ${_err?.message}`);
 
                 // 設定済みルーム以外は無視
                 if (!currentUser.matrix_room_id || roomId !== currentUser.matrix_room_id) return;
@@ -310,6 +316,17 @@ async function start(userId) {
     }
 }
 
+function closeMachine(client) {
+    try {
+        // matrix-bot-sdk does not call machine.close() in client.stop(), so we do
+        // it explicitly to prevent a Rust/Tokio runtime panic on process exit.
+        const machine = client.crypto?.engine?.machine;
+        if (machine && typeof machine.close === 'function') {
+            machine.close();
+        }
+    } catch (_) {}
+}
+
 async function stop(userId) {
     // 型を整数に統一（APIから文字列で渡される場合があるため）
     const numericId = Number(userId);
@@ -318,6 +335,7 @@ async function stop(userId) {
     const client = activeClients.get(numericId);
     if (!client) return;
 
+    closeMachine(client);
     try {
         await client.stop();
     } catch (_) {}
@@ -337,5 +355,12 @@ function getStatus() {
         userIds: Array.from(activeClients.keys()),
     };
 }
+
+// Close all OlmMachines on process exit to avoid Rust/Tokio runtime panic.
+process.once('exit', () => {
+    for (const [, client] of activeClients) {
+        closeMachine(client);
+    }
+});
 
 module.exports = { start, stop, getStatus, sendMatrixMessage };

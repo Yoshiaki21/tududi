@@ -411,6 +411,81 @@
 
 ---
 
+## タスク23: Matrix通知送信の実装（sources バリデーション修正 + 送信処理追加）
+
+- **完了日**: 2026-06-10
+- **動作確認**: 未確認
+- **修正ファイル**:
+  - `backend/models/notification.js`
+  - `backend/modules/matrix/matrixNotificationService.js`
+  - `backend/modules/notifications/service.js`
+- **変更内容**:
+  - `notification.js` : `validSources` に `'matrix'` を追加（バリデーションエラー解消）
+  - `notification.js` : `createNotification` に `sendMatrixNotificationToUser` 呼び出しを追加（24h スパム防止・`wasChannelRecentlySent` チェック付き）
+  - `matrixNotificationService.js` : `sendMatrixMessage` の第5引数に `user.id` を渡してE2EEクライアントを使用するよう修正
+  - `notifications/service.js` : テスト通知に `shouldSendMatrixNotification` チェックを追加、`User.findByPk` の `attributes` に matrix フィールドを追加
+- **背景**:
+  - `dueTaskService.js` / `dueProjectService.js` はすでに `sources.push('matrix')` していたが `validSources` にmatrixがなくバリデーションエラーで通知レコード自体が作られていなかった
+  - `createNotification` にMatrix送信処理がなく、sourcesにmatrixを追加しても実際に送信されなかった
+  - テスト通知もMatrixの判定・送信が未実装だった
+
+---
+
+## タスク24: 通知テスト送信の CSRF トークン対応
+
+- **完了日**: 2026-06-10
+- **動作確認**: 未確認
+- **修正ファイル**:
+  - `frontend/components/Profile/tabs/NotificationsTab.tsx`
+- **変更内容**:
+  - `getCsrfToken` を import 追加
+  - `fetch('/api/test-notifications/trigger', ...)` に `'x-csrf-token': csrfToken` ヘッダーを追加
+- **原因**: POSTリクエストに CSRF トークンが付与されておらず、`app.js` のCSRFミドルウェアで500エラーになっていた
+
+---
+
+## タスク25: E2EEルームの復号失敗時にキー共有リクエストを送信
+
+- **完了日**: 2026-06-10
+- **動作確認**: 未確認
+- **修正ファイル**:
+  - `backend/modules/matrix/matrixPoller.js`
+- **変更内容**:
+  - `requestedSessions` Map を追加（userId → Set<`${roomId}:${sessionId}`>）
+  - `requestMissingRoomKey` 関数を追加:
+    - `client.getWhoAmI()` でbotのデバイスIDを取得
+    - `m.room_key_request` を to-device メッセージとして送信者に送信
+    - 同一セッションへの重複リクエストを `requestedSessions` で防止
+    - 送信失敗時は sessionKey を削除してリトライを許可
+  - `room.failed_decryption` ハンドラーを追加:
+    - 設定済みルーム以外・自分自身のメッセージを無視
+    - `requestMissingRoomKey` を呼び出し、初回のみルームに「復号できませんでした。承認をお願いします」を返信
+  - `stop()` 時に `requestedSessions` をクリーンアップ
+- **動作フロー**:
+  1. E2EEルームのメッセージが復号失敗 → `room.failed_decryption` 発火
+  2. キーリクエストをメッセージ送信者の全デバイスへ送信
+  3. ルームにガイドメッセージを返信（初回のみ）
+  4. Element側でユーザーが「共有する」を承認 → 以降復号成功
+
+---
+
+## タスク26: キーリクエストをbot自身のデバイスにも送信
+
+- **完了日**: 2026-06-10
+- **動作確認**: 未確認
+- **修正ファイル**:
+  - `backend/modules/matrix/matrixPoller.js`
+- **変更内容**:
+  - `requestMissingRoomKey` 内で `whoami.user_id`（botのMatrix User ID）を取得
+  - `sendToDevices` の送信先に bot 自身のユーザーIDを追加
+- **背景**:
+  - botアカウントをブラウザ（Element Web）でログインするとすべてのメッセージが復号できることが判明
+  - ブラウザセッションとbot-sdkは同一アカウントの別デバイスで、ブラウザセッションはキーを保持している
+  - `m.room_key_request` を同一アカウントの別デバイスに送ると Element が自動的にキーを転送する仕組みを利用
+  - 従来は送信者（別アカウント・人間ユーザー）にのみ送っていたため Elementに無視されていた
+
+---
+
 ## タスク22: Matrix連携 — pill メンション部分を inbox から除去
 
 - **完了日**: 2026-06-04
@@ -427,3 +502,33 @@
   - pill メンション送信時、Matrix の `body` にはメンション表示名が `Tududi Bot: 動作テスト2` の形式で含まれる
   - `formatted_body` には `<a href="https://matrix.to/#/@bot:server">Tududi Bot</a>: 動作テスト2` の HTML が含まれる
   - `body` をそのまま使うとメンション部分ごと inbox に入ってしまうため、`formatted_body` から除去して本文のみを抽出する
+
+---
+
+## タスク23: Matrix E2EE 復号不具合修正
+
+- **完了日**: 2026-06-10
+- **修正ファイル**:
+  - `backend/modules/matrix/matrixClient.js`
+  - `backend/modules/matrix/matrixPoller.js`
+- **症状**:
+  - E2EEありルームでメッセージが復号できない → inbox追加不可
+  - Element上でBotデバイスが「暗号化をサポートしていないため認証できません」と表示
+- **根本原因**:
+  1. **クリプトストアが非永続化**: `data/matrix-store/` はDockerボリューム外 → コンテナ再作成でデバイスキーが消失
+  2. **OlmMachineの未クリーンアップ**: `storeType=undefined` でNAPI Rust/Tokioランタイムがプロセス終了時にパニック → `abort`クラッシュ
+- **修正内容**:
+  - `matrixClient.js`:
+    - `@matrix-org/matrix-sdk-crypto-nodejs` から `StoreType` をインポート
+    - ストアパスを `process.cwd() + 'data/matrix-store/'` から `db/matrix-store/` (Dockerボリューム内) に変更
+    - `DB_FILE` 環境変数を参照してDBディレクトリを動的に解決
+    - `RustSdkCryptoStorageProvider(cryptoDir, StoreType.Sqlite)` に `StoreType.Sqlite` を明示
+    - 旧パス（`data/matrix-store/`）から新パス（`db/matrix-store/`）への自動マイグレーション追加
+  - `matrixPoller.js`:
+    - `closeMachine(client)` ヘルパーを追加（`client.crypto?.engine?.machine.close()`）
+    - `stop()` 内で `closeMachine()` を呼び出し
+    - `process.once('exit', ...)` で全クライアントの `closeMachine()` を実行
+- **技術的背景**:
+  - `storeType=undefined` で `OlmMachine.initialize()` してもSQLite作成は成功するが、プロセス終了時にRustの `tokio_runtime.rs` でパニックし `exit code 134` でabort
+  - `machine.close()` を明示的に呼ぶことでパニックを回避できる
+  - SQLite WALモードでクラッシュセーフだが、新パスへの移行が本質的な修正
