@@ -28,7 +28,8 @@ async function sendMatrixNotification(user, notification) {
             user.matrix_homeserver_url,
             user.matrix_access_token,
             user.matrix_room_id,
-            formattedMessage
+            formattedMessage,
+            user.id
         );
 
         return { success: true };

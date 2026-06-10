@@ -65,6 +65,7 @@ class NotificationsService {
         const { User, Notification } = require('../../models');
         const {
             shouldSendTelegramNotification,
+            shouldSendMatrixNotification,
             ensureNotificationPreferences,
         } = require('../../utils/notificationPreferences');
 
@@ -75,6 +76,9 @@ class NotificationsService {
                 'notification_preferences',
                 'telegram_bot_token',
                 'telegram_chat_id',
+                'matrix_homeserver_url',
+                'matrix_access_token',
+                'matrix_room_id',
             ],
         });
 
@@ -141,6 +145,9 @@ class NotificationsService {
         const sources = [];
         if (shouldSendTelegramNotification(user, config.preferenceKey)) {
             sources.push('telegram');
+        }
+        if (shouldSendMatrixNotification(user, config.preferenceKey)) {
+            sources.push('matrix');
         }
 
         const notification = await Notification.createNotification({

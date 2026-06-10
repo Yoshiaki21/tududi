@@ -73,7 +73,7 @@ module.exports = (sequelize) => {
                         if (!Array.isArray(value)) {
                             throw new Error('Sources must be an array');
                         }
-                        const validSources = ['telegram', 'mobile', 'email'];
+                        const validSources = ['telegram', 'mobile', 'email', 'matrix'];
                         const invalidSources = value.filter(
                             (s) => !validSources.includes(s)
                         );
@@ -176,6 +176,16 @@ module.exports = (sequelize) => {
             );
         }
 
+        if (sources.includes('matrix')) {
+            await sendMatrixNotificationToUser(
+                userId,
+                title,
+                message,
+                Notification,
+                notification
+            );
+        }
+
         return notification;
     };
 
@@ -265,6 +275,56 @@ module.exports = (sequelize) => {
             }
         } catch (error) {
             console.error('Failed to send Telegram notification:', error);
+        }
+    }
+
+    async function sendMatrixNotificationToUser(
+        userId,
+        title,
+        message,
+        NotificationModel,
+        notificationInstance
+    ) {
+        try {
+            const matrixService = require('../modules/matrix/matrixNotificationService');
+
+            if (!message) {
+                return;
+            }
+
+            if (
+                notificationInstance &&
+                notificationInstance.wasChannelRecentlySent(
+                    'matrix',
+                    24 * 60 * 60 * 1000
+                )
+            ) {
+                return;
+            }
+
+            const UserModel = NotificationModel.sequelize.models.User;
+            const user = await UserModel.findByPk(userId, {
+                attributes: [
+                    'id',
+                    'name',
+                    'matrix_homeserver_url',
+                    'matrix_access_token',
+                    'matrix_room_id',
+                ],
+            });
+
+            if (user && matrixService.isMatrixConfigured(user)) {
+                await matrixService.sendMatrixNotification(user, {
+                    title,
+                    message,
+                });
+
+                if (notificationInstance) {
+                    await notificationInstance.markChannelAsSent('matrix');
+                }
+            }
+        } catch (error) {
+            console.error('Failed to send Matrix notification:', error);
         }
     }
 
