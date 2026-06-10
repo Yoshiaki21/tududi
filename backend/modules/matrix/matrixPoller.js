@@ -153,11 +153,14 @@ async function requestMissingRoomKey(client, user, roomId, encryptedEvent) {
             keyRequestBody.body.sender_key = encryptedEvent.content.sender_key;
         }
 
-        await client.sendToDevices('m.room_key_request', {
-            [sender]: { '*': keyRequestBody },
-        });
+        const botUserId = whoami.user_id;
+        const recipients = { [sender]: { '*': keyRequestBody } };
+        if (botUserId && botUserId !== sender) {
+            recipients[botUserId] = { '*': keyRequestBody };
+        }
+        await client.sendToDevices('m.room_key_request', recipients);
 
-        console.log(`Matrix: sent key request for session ${sessionId} to ${sender}`);
+        console.log(`Matrix: sent key request for session ${sessionId} to ${sender} and ${botUserId}`);
         return true;
     } catch (error) {
         console.error(`Matrix: key request failed:`, error.message);
