@@ -13,6 +13,9 @@ const processedEvents = new Map(); // userId -> Set<event_id>
 // リトライ待機中のユーザーID（重複リトライ防止）
 const pendingRetries = new Set();
 
+// 既にキー要求済みのセッション（重複リクエスト防止）
+const requestedSessions = new Map(); // userId -> Set<`${roomId}:${sessionId}`>
+
 function extractCleanText(event) {
     const body = event.content?.body;
     const formattedBody = event.content?.formatted_body;
@@ -111,6 +114,58 @@ async function handleBotCommand(command, user, roomId) {
     }
 }
 
+async function requestMissingRoomKey(client, user, roomId, encryptedEvent) {
+    const sender = encryptedEvent.sender;
+    const sessionId = encryptedEvent.content?.session_id;
+    const algorithm = encryptedEvent.content?.algorithm;
+
+    if (!sender || !sessionId || !algorithm) return false;
+    if (user.matrix_bot_user_id && sender === user.matrix_bot_user_id) return false;
+
+    let userSessions = requestedSessions.get(user.id);
+    if (!userSessions) {
+        userSessions = new Set();
+        requestedSessions.set(user.id, userSessions);
+    }
+
+    const sessionKey = `${roomId}:${sessionId}`;
+    if (userSessions.has(sessionKey)) return false;
+    userSessions.add(sessionKey);
+
+    if (userSessions.size > 200) {
+        const oldest = Array.from(userSessions).slice(0, 50);
+        oldest.forEach((k) => userSessions.delete(k));
+    }
+
+    try {
+        const whoami = await client.getWhoAmI();
+        const botDeviceId = whoami.device_id;
+        if (!botDeviceId) return false;
+
+        const requestId = `tududi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const keyRequestBody = {
+            action: 'request',
+            body: { algorithm, room_id: roomId, session_id: sessionId },
+            request_id: requestId,
+            requesting_device_id: botDeviceId,
+        };
+        if (encryptedEvent.content?.sender_key) {
+            keyRequestBody.body.sender_key = encryptedEvent.content.sender_key;
+        }
+
+        await client.sendToDevices('m.room_key_request', {
+            [sender]: { '*': keyRequestBody },
+        });
+
+        console.log(`Matrix: sent key request for session ${sessionId} to ${sender}`);
+        return true;
+    } catch (error) {
+        console.error(`Matrix: key request failed:`, error.message);
+        userSessions.delete(sessionKey);
+        return false;
+    }
+}
+
 async function processMessage(user, { roomId, text, sender, eventId }) {
     try {
         if (text.startsWith('/')) {
@@ -204,6 +259,32 @@ async function start(userId) {
             }
         });
 
+        client.on('room.failed_decryption', async (roomId, event, _err) => {
+            try {
+                const currentUser = await User.findByPk(user.id);
+                if (!currentUser) return;
+
+                // 設定済みルーム以外は無視
+                if (!currentUser.matrix_room_id || roomId !== currentUser.matrix_room_id) return;
+
+                // 自分自身のメッセージは無視
+                if (currentUser.matrix_bot_user_id && event.sender === currentUser.matrix_bot_user_id) return;
+
+                const isNewRequest = await requestMissingRoomKey(client, currentUser, roomId, event);
+                if (isNewRequest) {
+                    await sendMatrixMessage(
+                        currentUser.matrix_homeserver_url,
+                        currentUser.matrix_access_token,
+                        roomId,
+                        '⚠️ メッセージを復号できませんでした。\n暗号化キーの共有リクエストを送信しました。Elementの通知から「共有する」を承認してください。\n（承認は同じキーが使われている間は1回のみ必要です）',
+                        user.id
+                    );
+                }
+            } catch (err) {
+                console.error(`Matrix: failed_decryption handler error for user ${user.id}:`, err.message);
+            }
+        });
+
         await client.start();
 
         activeClients.set(user.id, client);
@@ -240,6 +321,7 @@ async function stop(userId) {
 
     activeClients.delete(numericId);
     processedEvents.delete(numericId);
+    requestedSessions.delete(numericId);
     // crypto ストレージのロック解放を待つ（新クライアントとの競合防止）
     await new Promise((resolve) => setTimeout(resolve, 1000));
     console.log(`Matrix: stopped client for user ${numericId}`);
