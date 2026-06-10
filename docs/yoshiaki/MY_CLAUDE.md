@@ -39,6 +39,22 @@
 | 18 | ノートプレビューエリアをダブルクリック編集に変更 | ✅完了 (2026-06-03) |
 | 22 | Matrix連携 — pill メンション部分を inbox から除去 | ✅完了 (2026-06-04) |
 
+## Matrix E2EE クロス署名（未対応の警告について）
+
+Elementで表示される以下の警告は現時点で未対応：
+- "Encrypted by a device not verified by its owner"
+- "誰かが不明なセクションを使用しています"
+
+### 対応予定
+[matrix-bot-sdk PR #389](https://github.com/turt2live/matrix-bot-sdk/pull/389) がマージ・リリースされれば解消できる見込み。
+- 内容: `confirmIdentityWithRecoveryKey(recoveryKey)` でBotデバイスをセルフ署名
+- 依存の `@matrix-org/matrix-sdk-crypto-nodejs` v0.5.1 は 2026-04-23 リリース済み
+- PR 自体は 2026-04-27 時点でレビュー待ち（未マージ）
+
+### 次回 Matrix 関連修正時にやること
+1. PR #389 がマージされているか確認する
+2. マージ済みなら `matrix-bot-sdk` を最新版にアップグレードして `confirmIdentityWithRecoveryKey` を組み込む
+
 ## 参照先
 - 新規タスク仕様: `docs/yoshiaki/tududi_tasks.md`
 - 完了記録: `docs/yoshiaki/tududi_tasks_done.md`
