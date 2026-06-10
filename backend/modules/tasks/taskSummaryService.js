@@ -339,7 +339,8 @@ const sendSummaryToUser = async (userId) => {
                     user.matrix_homeserver_url,
                     user.matrix_access_token,
                     user.matrix_room_id,
-                    plainSummary
+                    plainSummary,
+                    user.id
                 );
             } catch (matrixError) {
                 console.warn(

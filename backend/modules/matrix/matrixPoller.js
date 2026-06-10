@@ -285,7 +285,7 @@ async function start(userId) {
                         currentUser.matrix_homeserver_url,
                         currentUser.matrix_access_token,
                         roomId,
-                        '⚠️ メッセージを復号できませんでした。\n暗号化キーの共有リクエストを送信しました。Elementの通知から「共有する」を承認してください。\n（承認は同じキーが使われている間は1回のみ必要です）',
+                        '⚠️ メッセージを復号できませんでした。\n**もう一度メッセージを送信してください。** Elementが新しい暗号化セッションを作成し、次から正常に動作するようになります。\n（Elementの設定で「暗号化されていないメッセージを許可」が有効な場合は無効にしてください）',
                         user.id
                     );
                 }

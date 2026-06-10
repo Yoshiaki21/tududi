@@ -146,7 +146,8 @@ const matrixController = {
                 user.matrix_homeserver_url,
                 user.matrix_access_token,
                 user.matrix_room_id,
-                '📋 This is a test summary from tududi!'
+                '📋 This is a test summary from tududi!',
+                user.id
             );
 
             res.json({ success: true });
