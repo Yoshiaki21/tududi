@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { getCsrfToken } from '../../../utils/csrfService';
 import {
     BellIcon,
     BellAlertIcon,
@@ -189,10 +190,12 @@ const NotificationsTab: React.FC<NotificationsTabProps> = ({
         setTestMessage('');
 
         try {
+            const csrfToken = await getCsrfToken();
             const response = await fetch('/api/test-notifications/trigger', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    'x-csrf-token': csrfToken,
                 },
                 body: JSON.stringify({ type: selectedTestType }),
             });
