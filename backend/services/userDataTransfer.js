@@ -84,6 +84,8 @@ async function exportAttachments(attachments = []) {
             original_filename: a.original_filename,
             file_size: a.file_size,
             mime_type: a.mime_type,
+            // yoshiaki21: 添付の表示名も持ち運ぶ
+            title: a.title ?? null,
             data: await readAttachmentData(a),
         });
     }
@@ -304,6 +306,13 @@ async function exportOwnData(userId) {
             notification_preferences: user.notification_preferences,
             ai_profile: user.ai_profile,
             keyboard_shortcuts: user.keyboard_shortcuts,
+            // yoshiaki21: 独自フィールド（人工単価・Matrix 連携）
+            default_unit_price: user.default_unit_price,
+            matrix_homeserver_url: user.matrix_homeserver_url,
+            matrix_access_token: user.matrix_access_token,
+            matrix_room_id: user.matrix_room_id,
+            matrix_bot_user_id: user.matrix_bot_user_id,
+            matrix_allowed_users: user.matrix_allowed_users,
             avatar_image_data: await readUploadedImage(
                 user.avatar_image,
                 'avatars'
@@ -617,6 +626,8 @@ async function importOwnData(
                     user_id: userId,
                     original_filename:
                         attachment.original_filename || file.storedFilename,
+                    // yoshiaki21: 添付の表示名
+                    title: attachment.title ?? null,
                     stored_filename: file.storedFilename,
                     file_size: file.size,
                     mime_type:
@@ -662,6 +673,14 @@ async function importOwnData(
                 notification_preferences: bu.notification_preferences,
                 ai_profile: bu.ai_profile,
                 keyboard_shortcuts: bu.keyboard_shortcuts,
+                // yoshiaki21: 独自フィールド。古いバックアップでは undefined
+                // なので下のループで落ち、既存の値は残る
+                default_unit_price: bu.default_unit_price,
+                matrix_homeserver_url: bu.matrix_homeserver_url,
+                matrix_access_token: bu.matrix_access_token,
+                matrix_room_id: bu.matrix_room_id,
+                matrix_bot_user_id: bu.matrix_bot_user_id,
+                matrix_allowed_users: bu.matrix_allowed_users,
             };
             for (const key of Object.keys(profileUpdates)) {
                 if (profileUpdates[key] === undefined)
@@ -824,6 +843,8 @@ async function importOwnData(
                         is_maintenance: !!project.is_maintenance,
                         is_template: !!project.is_template,
                         template_category: project.template_category ?? null,
+                        // yoshiaki21: 人工単価
+                        unit_price: project.unit_price ?? null,
                         area_id: await resolve(
                             Area,
                             project.area_uid,
@@ -901,6 +922,8 @@ async function importOwnData(
                     habit_reminder_time: task.habit_reminder_time,
                     habit_strength: task.habit_strength || 0,
                     habit_color: task.habit_color,
+                    // yoshiaki21: 作業時間
+                    work_hours: task.work_hours ?? null,
                     assigned_to: mapPerson(task.assigned_to),
                     involves: Array.isArray(task.involves)
                         ? task.involves.map(mapPerson).filter(Boolean)
@@ -960,6 +983,8 @@ async function importOwnData(
                         user_id: userId,
                         original_filename:
                             attachment.original_filename || file.storedFilename,
+                        // yoshiaki21: 添付の表示名
+                        title: attachment.title ?? null,
                         stored_filename: file.storedFilename,
                         file_size: file.size,
                         mime_type:

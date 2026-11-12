@@ -529,4 +529,125 @@ describe('Backup export and import round trip (format 2)', () => {
         );
         expect(content).toBe('note bytes');
     });
+
+    // yoshiaki21: 独自フィールド（工数・人工単価・Matrix 連携・添付の表示名）
+    describe('fork fields', () => {
+        const matrixSettings = {
+            matrix_homeserver_url: 'https://matrix.example.com',
+            matrix_access_token: 'syt_test_token',
+            matrix_room_id: '!room:example.com',
+            matrix_bot_user_id: '@bot:example.com',
+            matrix_allowed_users: '@me:example.com',
+        };
+
+        it('carries work hours, unit prices, Matrix settings and attachment titles', async () => {
+            await User.update(
+                { default_unit_price: 40000, ...matrixSettings },
+                { where: { id: source.id } }
+            );
+            const project = await Project.create({
+                name: 'Billable',
+                user_id: source.id,
+                unit_price: 50000,
+            });
+            await Task.create({
+                name: 'Billable work',
+                user_id: source.id,
+                project_id: project.id,
+                work_hours: 2.5,
+            });
+
+            for (const dir of ['project-files', 'tasks']) {
+                await fs.mkdir(path.join(config.uploadPath, dir), {
+                    recursive: true,
+                });
+            }
+            await fs.writeFile(
+                path.join(config.uploadPath, 'project-files', 'fork-rt.pdf'),
+                'project bytes'
+            );
+            await fs.writeFile(
+                path.join(config.uploadPath, 'tasks', 'fork-rt.txt'),
+                'task bytes'
+            );
+            await ProjectAttachment.create({
+                project_id: project.id,
+                user_id: source.id,
+                original_filename: 'estimate.pdf',
+                title: '見積書',
+                stored_filename: 'fork-rt.pdf',
+                file_size: 13,
+                mime_type: 'application/pdf',
+                file_path: 'project-files/fork-rt.pdf',
+            });
+            const task = await Task.findOne({
+                where: { user_id: source.id, name: 'Billable work' },
+            });
+            await TaskAttachment.create({
+                task_id: task.id,
+                user_id: source.id,
+                original_filename: 'log.txt',
+                title: '作業ログ',
+                stored_filename: 'fork-rt.txt',
+                file_size: 10,
+                mime_type: 'text/plain',
+                file_path: 'tasks/fork-rt.txt',
+            });
+
+            const backup = await exportUserData(source.id);
+            expect(backup.user).toMatchObject({
+                default_unit_price: 40000,
+                ...matrixSettings,
+            });
+
+            await importUserData(target.id, backup);
+
+            const importedUser = await User.findByPk(target.id);
+            expect(importedUser.default_unit_price).toBe(40000);
+            for (const [key, value] of Object.entries(matrixSettings)) {
+                expect(importedUser[key]).toBe(value);
+            }
+
+            const importedProject = await Project.findOne({
+                where: { user_id: target.id, name: 'Billable' },
+            });
+            expect(importedProject.unit_price).toBe(50000);
+
+            const importedTask = await Task.findOne({
+                where: { user_id: target.id, name: 'Billable work' },
+            });
+            expect(importedTask.work_hours).toBe(2.5);
+            expect(importedTask.project_id).toBe(importedProject.id);
+
+            const projectFile = await ProjectAttachment.findOne({
+                where: { user_id: target.id, project_id: importedProject.id },
+            });
+            expect(projectFile.title).toBe('見積書');
+            const taskFile = await TaskAttachment.findOne({
+                where: { user_id: target.id, task_id: importedTask.id },
+            });
+            expect(taskFile.title).toBe('作業ログ');
+        });
+
+        it('keeps existing fork settings when the backup has none', async () => {
+            await User.update(
+                { default_unit_price: 30000, ...matrixSettings },
+                { where: { id: target.id } }
+            );
+            const backup = await exportUserData(source.id);
+            // A backup made before these fields were exported
+            delete backup.user.default_unit_price;
+            for (const key of Object.keys(matrixSettings)) {
+                delete backup.user[key];
+            }
+
+            await importUserData(target.id, backup);
+
+            const importedUser = await User.findByPk(target.id);
+            expect(importedUser.default_unit_price).toBe(30000);
+            for (const [key, value] of Object.entries(matrixSettings)) {
+                expect(importedUser[key]).toBe(value);
+            }
+        });
+    });
 });

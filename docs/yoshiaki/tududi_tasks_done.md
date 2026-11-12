@@ -565,3 +565,14 @@
   - backend テスト: 307 スイート全通過
   - frontend テスト: 1054 件中 3 件失敗（MermaidDiagram / roleLabels / MarkdownRenderer.publicLinks）。**本家 v1.14.0 のままでも同じく失敗**することを確認済み（独自変更とは無関係）
   - 試験環境 `tududi-backup/`（本番データのコピー）でコンテナ起動・マイグレーション成功を確認
+
+## タスク25: バックアップのエクスポート/インポートに独自データを含める
+
+- **完了日**: 2026-11-12
+- **背景**: 本家のバックアップは復元するフィールドを明示列挙しているため、独自データが失われていた（`unit_price`・`work_hours` はエクスポートされるがインポートで捨てられ、`default_unit_price`・`matrix_*`・添付 `title` はエクスポートもされない）。v2（PostgreSQL）移行は JSON バックアップ経由なので、その前提づくりも兼ねる
+- **変更**: `backend/services/userDataTransfer.js`（変更箇所に `// yoshiaki21:` コメント）
+  - エクスポート: プロフィールに `default_unit_price`・`matrix_*`（5 項目）、添付に `title`
+  - インポート: プロフィールに同 6 項目（古いバックアップでは undefined なので既存値を保持）、プロジェクト `unit_price`、タスク `work_hours`、プロジェクト/ノート/タスク添付の `title`
+- **テスト**: `backend/tests/integration/backup-roundtrip.test.js` に `fork fields` を追加（ラウンドトリップ、古いバックアップで既存設定が消えないこと）。backend 307 スイート全通過、lint エラー 0
+- **制約**: Matrix 暗号ストアはファイルなのでバックアップ対象外（移行時は手でコピー）。プロジェクト説明欄の旧 URL（`/api/uploads/projects/...`）は書き換えない
+
