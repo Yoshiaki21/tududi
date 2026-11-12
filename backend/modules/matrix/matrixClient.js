@@ -6,7 +6,10 @@ const {
     MatrixClient,
     SimpleFsStorageProvider,
     RustSdkCryptoStorageProvider,
-} = require('matrix-bot-sdk');
+} = require('@vector-im/matrix-bot-sdk');
+// SDK の RustSdkCryptoStoreType は const enum の型だけの再エクスポートで実行時は
+// undefined になるため、crypto-nodejs から直接取る。package.json で SDK と同じ
+// バージョン範囲を直接依存にしてある
 const { StoreType } = require('@matrix-org/matrix-sdk-crypto-nodejs');
 
 // Resolve to backend root (modules/matrix → modules → backend)

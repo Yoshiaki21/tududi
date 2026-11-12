@@ -138,7 +138,7 @@ const matrixController = {
                     .json({ error: 'Matrix integration is not configured' });
             }
 
-            const { MatrixClient } = require('matrix-bot-sdk');
+            const { MatrixClient } = require('@vector-im/matrix-bot-sdk');
             const client = new MatrixClient(
                 user.matrix_homeserver_url,
                 user.matrix_access_token

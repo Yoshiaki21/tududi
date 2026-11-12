@@ -10,7 +10,8 @@
 - `safeAddColumns` のテーブル名は**小文字**で渡す（`'tasks'`, `'projects'`, `'users'`）
 - 人工単価の優先順位: `project.unit_price ?? user.default_unit_price ?? 25000`
 - 8時間 = 1人工
-- Docker ベースイメージ: `node:22-trixie-slim`（glibc 2.40 必須）
+- Docker ベースイメージ: `node:24-trixie-slim`（Element 版 matrix-bot-sdk が Node >= 24 必須。本家は Node 22 のため、本家マージ時は Dockerfile / CI の Node バージョン行を 24 に保つ）
+- Matrix SDK は `@vector-im/matrix-bot-sdk`（Element 版）。`@matrix-org/matrix-sdk-crypto-nodejs` は SDK と同じ範囲で直接依存にする（SDK の `RustSdkCryptoStoreType` は型だけで実行時 undefined のため、`StoreType` を crypto-nodejs から直接 require している）
 
 ## タスク状況
 | # | タイトル | 状態 |
@@ -41,6 +42,7 @@
 | 23 | Matrix E2EE 復号不具合修正 | ✅完了 (2026-06-10) |
 | 24 | 本家 v1.14.0 取り込み | ✅完了 (2026-11-12, `merge-upstream-v1.14.0`) |
 | 25 | バックアップのエクスポート/インポートに独自データを含める | ✅完了 (2026-11-12) |
+| 26 | Node 24 化 ＋ Element 版 matrix-bot-sdk へ移行 | 🔄実機の Matrix 確認待ち (2026-11-12) |
 
 ## 本家との同期状況
 - 取り込み済み: **v1.14.0** (`0da352fb`)。本家は 2026-11 時点で v2.1.0
@@ -72,10 +74,15 @@ Elementで表示される以下の警告は現時点で未対応：
   4. crypto-nodejs 0.6.2 で自動ルームキー転送が無効化。独自の `requestMissingRoomKey` は要動作確認
   5. `require('matrix-bot-sdk')` 3 箇所（matrixClient.js, matrixPoller.js, controller.js）を `@vector-im/matrix-bot-sdk` に置換
 
-### 次回 Matrix 関連修正時にやること
-1. Element 版への移行可否を決める（Node 24 化とセットで CVE も解消できる）
-2. 移行する場合: ユーザー設定に Matrix リカバリーキー欄（暗号化保存）を追加し、起動時に `isRecoveryAvailable()` → `confirmIdentityWithRecoveryKey()` でセルフ署名
-3. 本家 SDK に留まる場合: PR #389 のマージ状況を再確認
+### 追加調査 (2026-11-12)
+- PR #389 自体が `engines.node >=24` と crypto-nodejs `^0.5.1` を要求 → PR を自前で当てても Node 24 は必須で、CVE（修正は 0.6.0）も残る。本家 SDK は 0.8.0 以降 1 コミットのみでマージ見込みは低い → **Element 版を採用**
+- Element 版の最新は 0.11.0-element.0 (2026-11-11, crypto-nodejs `^0.7.0`, undici)。crypto-nodejs 0.6.1+ は linux-x64/arm64 の musl バイナリもあり、v2（本家は node:22-alpine）で alpine に寄せる余地あり（未検証）
+- Node 22 は 2027-04-30 でサポート終了、Node 24 は 2028-04 まで
+
+### 移行状況（タスク26）
+- 済: Dockerfile/CI を Node 24、`@vector-im/matrix-bot-sdk` 0.11.0-element.0 + crypto-nodejs 0.7.0 に置換。lint / tsc / backend 全通過 / frontend は本家と同じ 3 件のみ失敗。試験コンテナが Node 24 で起動
+- 残: 実機での Matrix 送受信・E2EE 復号・`requestMissingRoomKey` の確認（試験環境は Matrix サーバーに接続できない）。本番切替前に `db/matrix-store` をバックアップ（crypto ストアはダウングレード不可）
+- 次: ユーザー設定に Matrix リカバリーキー欄（暗号化保存）を追加し、起動時に `isRecoveryAvailable()` → `confirmIdentityWithRecoveryKey()` でセルフ署名
 
 ## 参照先
 - 新規タスク仕様: `docs/yoshiaki/tududi_tasks.md`

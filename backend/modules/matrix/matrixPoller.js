@@ -92,7 +92,7 @@ async function sendMatrixMessage(
         }
     }
     // フォールバック: 新規クライアントで送信（非暗号化ルーム用）
-    const { MatrixClient } = require('matrix-bot-sdk');
+    const { MatrixClient } = require('@vector-im/matrix-bot-sdk');
     const client = new MatrixClient(homeserverUrl, accessToken);
     await client.sendMessage(roomId, {
         msgtype: 'm.text',

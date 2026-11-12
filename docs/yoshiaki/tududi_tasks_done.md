@@ -576,3 +576,15 @@
 - **テスト**: `backend/tests/integration/backup-roundtrip.test.js` に `fork fields` を追加（ラウンドトリップ、古いバックアップで既存設定が消えないこと）。backend 307 スイート全通過、lint エラー 0
 - **制約**: Matrix 暗号ストアはファイルなのでバックアップ対象外（移行時は手でコピー）。プロジェクト説明欄の旧 URL（`/api/uploads/projects/...`）は書き換えない
 
+## タスク26: Node 24 化 ＋ Element 版 matrix-bot-sdk へ移行
+
+- **日付**: 2026-11-12（実機の Matrix 確認待ち）
+- **背景**: 本家 matrix-bot-sdk 0.8.0 は crypto-nodejs 0.4.0 固定で CVE-2026-45056 が残り、クロス署名も未対応。PR #389 も Node 24 必須かつ crypto 0.5.1 止まりのため、Element 版を採用
+- **変更**:
+  - `Dockerfile`: `node:22-trixie-slim` → `node:24-trixie-slim`（builder / production）
+  - `.github/workflows/ci.yml`, `upgrade-docker.yml`: `node-version` を 24 に
+  - `package.json`: `matrix-bot-sdk ^0.8.0` → `@vector-im/matrix-bot-sdk 0.11.0-element.0`、`@matrix-org/matrix-sdk-crypto-nodejs ^0.7.0` を直接依存に追加。lock 再生成
+  - `backend/modules/matrix/{matrixClient,matrixPoller,controller}.js`: require 先を変更
+- **注意点**: SDK の `RustSdkCryptoStoreType` は const enum の型だけの再エクスポートで実行時 undefined。undefined を渡すと終了時に Rust panic が起きるため、`StoreType` は crypto-nodejs から直接 require（そのために直接依存にした）
+- **検証**: Node 24 の builder で lint エラー 0、tsc OK、backend 307 スイート全通過、frontend は本家と同じ 3 件のみ失敗。試験コンテナが Node 24.22.3 で起動（Matrix はネットワーク都合で接続不可）
+
