@@ -170,6 +170,11 @@ module.exports = (sequelize) => {
                 allowNull: true,
                 comment: 'Comma-separated list of allowed Matrix user IDs',
             },
+            // Bot のリカバリーキー（Security Key）。secretCipher で暗号化して保存
+            matrix_recovery_key: {
+                type: DataTypes.TEXT,
+                allowNull: true,
+            },
             features: {
                 type: DataTypes.JSON,
                 allowNull: true,

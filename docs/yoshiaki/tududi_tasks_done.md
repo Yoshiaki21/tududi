@@ -588,3 +588,16 @@
 - **注意点**: SDK の `RustSdkCryptoStoreType` は const enum の型だけの再エクスポートで実行時 undefined。undefined を渡すと終了時に Rust panic が起きるため、`StoreType` は crypto-nodejs から直接 require（そのために直接依存にした）
 - **検証**: Node 24 の builder で lint エラー 0、tsc OK、backend 307 スイート全通過、frontend は本家と同じ 3 件のみ失敗。試験コンテナが Node 24.22.3 で起動（Matrix はネットワーク都合で接続不可）
 
+## タスク27: Matrix リカバリーキー欄とクロス署名
+
+- **日付**: 2026-11-12（実機の Matrix 確認待ち）
+- **目的**: Element の「所有者が検証していないデバイスで暗号化されています」警告を解消する（bot のデバイスを bot 自身のクロス署名鍵で署名する）
+- **バックエンド**:
+  - マイグレーション `yoshiaki21-20261112000001-add-matrix-recovery-key.js`（`users.matrix_recovery_key` TEXT）、モデル追加
+  - `backend/modules/matrix/crossSigning.js`: キーの暗号化/復号（`shared/crypto/secretCipher`）、`confirmIdentity`（状態: verified / no_key / no_recovery / key_unreadable / failed / unavailable）、`createIdentity`（リカバリー未設定のアカウントのみ）、`getStatus`
+  - `matrixPoller.js`: クライアント起動後に自動検証（非同期・失敗しても継続）、`getActiveClient` を公開
+  - API: `GET /matrix/cross-signing`, `PUT|DELETE /matrix/recovery-key`, `POST /matrix/cross-signing/verify`, `POST /matrix/cross-signing/create`。`GET /matrix/settings` に `recovery_key_set`
+  - バックアップに `matrix_recovery_key`（暗号化のまま）を追加
+- **フロントエンド**: `MatrixCrossSigningSection.tsx`（Matrix タブ内）、`utils/matrixCrossSigningService.ts`
+- **テスト**: `tests/unit/modules/matrix/crossSigning.test.js`（11件）、`tests/integration/matrix-cross-signing.test.js`（6件）、`MatrixCrossSigningSection.test.tsx`（6件）、backup-roundtrip にリカバリーキー。Node 24 で lint エラー 0・tsc OK・backend 309 スイート全通過・frontend は本家と同じ 3 件のみ失敗
+

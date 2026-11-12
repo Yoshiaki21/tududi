@@ -11,5 +11,10 @@ router.post('/matrix/stop-polling', matrixController.stopPolling);
 router.get('/matrix/polling-status', matrixController.getPollingStatus);
 router.post('/matrix/test-summary', matrixController.testSummary);
 router.post('/matrix/test-connection', matrixController.testConnection);
+router.get('/matrix/cross-signing', matrixController.getCrossSigningStatus);
+router.put('/matrix/recovery-key', matrixController.saveRecoveryKey);
+router.delete('/matrix/recovery-key', matrixController.deleteRecoveryKey);
+router.post('/matrix/cross-signing/verify', matrixController.verifyDevice);
+router.post('/matrix/cross-signing/create', matrixController.createIdentity);
 
 module.exports = router;

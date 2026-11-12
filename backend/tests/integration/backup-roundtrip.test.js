@@ -538,6 +538,8 @@ describe('Backup export and import round trip (format 2)', () => {
             matrix_room_id: '!room:example.com',
             matrix_bot_user_id: '@bot:example.com',
             matrix_allowed_users: '@me:example.com',
+            // stored encrypted; carried through as is
+            matrix_recovery_key: 'enc:v1:aXY=:dGFn:Y2lwaGVy',
         };
 
         it('carries work hours, unit prices, Matrix settings and attachment titles', async () => {

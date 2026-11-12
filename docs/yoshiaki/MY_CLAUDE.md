@@ -43,6 +43,7 @@
 | 24 | 本家 v1.14.0 取り込み | ✅完了 (2026-11-12, `merge-upstream-v1.14.0`) |
 | 25 | バックアップのエクスポート/インポートに独自データを含める | ✅完了 (2026-11-12) |
 | 26 | Node 24 化 ＋ Element 版 matrix-bot-sdk へ移行 | 🔄実機の Matrix 確認待ち (2026-11-12) |
+| 27 | Matrix リカバリーキー欄とクロス署名 | 🔄実機確認待ち (2026-11-12) |
 
 ## 本家との同期状況
 - 取り込み済み: **v1.14.0** (`0da352fb`)。本家は 2026-11 時点で v2.1.0
@@ -82,7 +83,13 @@ Elementで表示される以下の警告は現時点で未対応：
 ### 移行状況（タスク26）
 - 済: Dockerfile/CI を Node 24、`@vector-im/matrix-bot-sdk` 0.11.0-element.0 + crypto-nodejs 0.7.0 に置換。lint / tsc / backend 全通過 / frontend は本家と同じ 3 件のみ失敗。試験コンテナが Node 24 で起動
 - 残: 実機での Matrix 送受信・E2EE 復号・`requestMissingRoomKey` の確認（試験環境は Matrix サーバーに接続できない）。本番切替前に `db/matrix-store` をバックアップ（crypto ストアはダウングレード不可）
-- 次: ユーザー設定に Matrix リカバリーキー欄（暗号化保存）を追加し、起動時に `isRecoveryAvailable()` → `confirmIdentityWithRecoveryKey()` でセルフ署名
+- 次: タスク27（クロス署名）の実機確認
+
+### クロス署名（タスク27）
+- プロフィール → Matrix タブの「Device Verification (Cross-Signing)」でリカバリーキー（bot アカウントの Security Key）を保存。`users.matrix_recovery_key` に `secretCipher`（TUDUDI_SESSION_SECRET 由来の鍵）で暗号化して保存し、API は設定有無しか返さない
+- クライアント起動後に自動で `confirmIdentityWithRecoveryKey()`（`backend/modules/matrix/crossSigning.js`）。失敗しても送受信は継続し、結果は画面に表示
+- bot アカウントにリカバリー未設定なら画面から新規作成（`createIdentity()`、生成したキーは一度だけ表示）。既にリカバリーがあるアカウントでは作らない
+- バックアップには暗号化されたまま入る。TUDUDI_SESSION_SECRET が違う環境では復号できないので再入力
 
 ## 参照先
 - 新規タスク仕様: `docs/yoshiaki/tududi_tasks.md`

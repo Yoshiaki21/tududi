@@ -313,6 +313,8 @@ async function exportOwnData(userId) {
             matrix_room_id: user.matrix_room_id,
             matrix_bot_user_id: user.matrix_bot_user_id,
             matrix_allowed_users: user.matrix_allowed_users,
+            // 暗号化されたまま持ち運ぶ。同じ TUDUDI_SESSION_SECRET の環境でのみ復号できる
+            matrix_recovery_key: user.matrix_recovery_key,
             avatar_image_data: await readUploadedImage(
                 user.avatar_image,
                 'avatars'
@@ -681,6 +683,7 @@ async function importOwnData(
                 matrix_room_id: bu.matrix_room_id,
                 matrix_bot_user_id: bu.matrix_bot_user_id,
                 matrix_allowed_users: bu.matrix_allowed_users,
+                matrix_recovery_key: bu.matrix_recovery_key,
             };
             for (const key of Object.keys(profileUpdates)) {
                 if (profileUpdates[key] === undefined)

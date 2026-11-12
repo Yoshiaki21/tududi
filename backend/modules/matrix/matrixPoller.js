@@ -1,6 +1,7 @@
 'use strict';
 
 const { createMatrixClient } = require('./matrixClient');
+const crossSigning = require('./crossSigning');
 const { InboxItem, User } = require('../../models');
 const { Op } = require('sequelize');
 
@@ -348,6 +349,10 @@ async function start(userId) {
 
         activeClients.set(user.id, client);
         console.log(`Matrix: started client for user ${user.id}`);
+
+        // リカバリーキーが設定されていれば bot のデバイスをクロス署名する。
+        // 失敗してもメッセージの送受信は続けられるので、起動は待たせない
+        crossSigning.confirmIdentity(client, user).catch(() => {});
     } catch (error) {
         console.error(
             `Matrix: failed to start client for user ${user.id}:`,
@@ -399,9 +404,14 @@ async function stop(userId) {
     activeClients.delete(numericId);
     processedEvents.delete(numericId);
     requestedSessions.delete(numericId);
+    crossSigning.clearLastResult(numericId);
     // crypto ストレージのロック解放を待つ（新クライアントとの競合防止）
     await new Promise((resolve) => setTimeout(resolve, 1000));
     console.log(`Matrix: stopped client for user ${numericId}`);
+}
+
+function getActiveClient(userId) {
+    return activeClients.get(Number(userId)) || null;
 }
 
 function getStatus() {
@@ -419,4 +429,10 @@ process.once('exit', () => {
     }
 });
 
-module.exports = { start, stop, getStatus, sendMatrixMessage };
+module.exports = {
+    start,
+    stop,
+    getStatus,
+    getActiveClient,
+    sendMatrixMessage,
+};

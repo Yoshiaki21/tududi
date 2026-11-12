@@ -6,6 +6,7 @@ import {
     ClipboardDocumentListIcon,
 } from '@heroicons/react/24/outline';
 import MatrixIcon from '../../Shared/Icons/MatrixIcon';
+import MatrixCrossSigningSection from './MatrixCrossSigningSection';
 import { getApiPath } from '../../../config/paths';
 import { getCsrfToken } from '../../../utils/csrfService';
 import { useToast } from '../../Shared/ToastContext';
@@ -410,6 +411,11 @@ const MatrixTab: React.FC<MatrixTabProps> = ({
                     )}
                 </div>
             </div>
+
+            <MatrixCrossSigningSection
+                configured={settings.configured}
+                isPolling={isPolling}
+            />
 
             {/* Task Summary Notifications */}
             <div className="p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">

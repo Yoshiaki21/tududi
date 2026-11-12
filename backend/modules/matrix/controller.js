@@ -3,6 +3,8 @@
 const { User } = require('../../models');
 const matrixPoller = require('./matrixPoller');
 const matrixNotificationService = require('./matrixNotificationService');
+const crossSigning = require('./crossSigning');
+const secretCipher = require('../../shared/crypto/secretCipher');
 const { logError } = require('../../services/logService');
 const { getAuthenticatedUserId } = require('../../utils/request-utils');
 
@@ -61,6 +63,7 @@ const matrixController = {
                 matrix_access_token: user.matrix_access_token ? '***' : '',
                 matrix_room_id: user.matrix_room_id || '',
                 matrix_bot_user_id: user.matrix_bot_user_id || '',
+                recovery_key_set: !!user.matrix_recovery_key,
                 configured: !!(
                     user.matrix_homeserver_url &&
                     user.matrix_access_token &&
@@ -199,6 +202,134 @@ const matrixController = {
             res.status(500).json({ error: error.message });
         }
     },
+
+    // --- クロス署名（bot デバイスのセルフ検証） ---
+
+    async getCrossSigningStatus(req, res) {
+        try {
+            const user = await findCurrentUser(req, res);
+            if (!user) return;
+            const client = matrixPoller.getActiveClient(user.id);
+            res.json(await crossSigning.getStatus(client, user));
+        } catch (error) {
+            logError('Matrix: error getting cross-signing status:', error);
+            res.status(500).json({
+                error: 'Failed to get cross-signing status',
+            });
+        }
+    },
+
+    async saveRecoveryKey(req, res) {
+        try {
+            const user = await findCurrentUser(req, res);
+            if (!user) return;
+
+            const recoveryKey =
+                typeof req.body?.recovery_key === 'string'
+                    ? req.body.recovery_key.trim()
+                    : '';
+            if (!recoveryKey) {
+                return res
+                    .status(400)
+                    .json({ error: 'Recovery key is required' });
+            }
+            if (!secretCipher.hasKeyMaterial()) {
+                return res.status(400).json({
+                    error: 'Set TUDUDI_SESSION_SECRET (or TUDUDI_OIDC_SECRET_ENCRYPTION_KEY) to store the recovery key encrypted',
+                });
+            }
+
+            await user.update({
+                matrix_recovery_key:
+                    crossSigning.encryptRecoveryKey(recoveryKey),
+            });
+
+            // クライアントが動いていればすぐ検証する
+            const client = matrixPoller.getActiveClient(user.id);
+            if (client) await crossSigning.confirmIdentity(client, user);
+            res.json(await crossSigning.getStatus(client, user));
+        } catch (error) {
+            logError('Matrix: error saving recovery key:', error);
+            res.status(500).json({ error: 'Failed to save recovery key' });
+        }
+    },
+
+    async deleteRecoveryKey(req, res) {
+        try {
+            const user = await findCurrentUser(req, res);
+            if (!user) return;
+            await user.update({ matrix_recovery_key: null });
+            crossSigning.clearLastResult(user.id);
+            const client = matrixPoller.getActiveClient(user.id);
+            res.json(await crossSigning.getStatus(client, user));
+        } catch (error) {
+            logError('Matrix: error deleting recovery key:', error);
+            res.status(500).json({ error: 'Failed to delete recovery key' });
+        }
+    },
+
+    async verifyDevice(req, res) {
+        try {
+            const user = await findCurrentUser(req, res);
+            if (!user) return;
+            const client = matrixPoller.getActiveClient(user.id);
+            if (!client) {
+                return res.status(400).json({
+                    error: 'Start Matrix polling before verifying the device',
+                });
+            }
+            await crossSigning.confirmIdentity(client, user);
+            res.json(await crossSigning.getStatus(client, user));
+        } catch (error) {
+            logError('Matrix: error verifying device:', error);
+            res.status(500).json({ error: 'Failed to verify device' });
+        }
+    },
+
+    async createIdentity(req, res) {
+        try {
+            const user = await findCurrentUser(req, res);
+            if (!user) return;
+            const client = matrixPoller.getActiveClient(user.id);
+            if (!client) {
+                return res.status(400).json({
+                    error: 'Start Matrix polling before setting up cross-signing',
+                });
+            }
+            if (!secretCipher.hasKeyMaterial()) {
+                return res.status(400).json({
+                    error: 'Set TUDUDI_SESSION_SECRET (or TUDUDI_OIDC_SECRET_ENCRYPTION_KEY) to store the recovery key encrypted',
+                });
+            }
+
+            const recoveryKey = await crossSigning.createIdentity(client, user);
+            await user.update({
+                matrix_recovery_key:
+                    crossSigning.encryptRecoveryKey(recoveryKey),
+            });
+            res.json({
+                recovery_key: recoveryKey,
+                status: await crossSigning.getStatus(client, user),
+            });
+        } catch (error) {
+            logError('Matrix: error creating cross-signing identity:', error);
+            res.status(400).json({ error: error.message });
+        }
+    },
 };
+
+async function findCurrentUser(req, res) {
+    const userId = getAuthenticatedUserId(req);
+    if (!userId) {
+        res.status(401).json({ error: 'Authentication required' });
+        return null;
+    }
+    const user = await User.findByPk(userId);
+    if (!user) {
+        res.status(404).json({ error: 'User not found' });
+        return null;
+    }
+    return user;
+}
 
 module.exports = matrixController;
