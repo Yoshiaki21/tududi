@@ -38,6 +38,17 @@
 | 17 | 添付ファイル孤立クリーンアップ（Phase 1削除時即時 + Phase 2手動ボタン） | ✅完了 (2026-06-01) |
 | 18 | ノートプレビューエリアをダブルクリック編集に変更 | ✅完了 (2026-06-03) |
 | 22 | Matrix連携 — pill メンション部分を inbox から除去 | ✅完了 (2026-06-04) |
+| 23 | Matrix E2EE 復号不具合修正 | ✅完了 (2026-06-10) |
+| 24 | 本家 v1.14.0 取り込み | ✅完了 (2026-11-12, `merge-upstream-v1.14.0`) |
+
+## 本家との同期状況
+- 取り込み済み: **v1.14.0** (`0da352fb`)。本家は 2026-11 時点で v2.1.0
+- **本家 v2.0.0 で SQLite 廃止・PostgreSQL 専用** (e77dc529)。v2 へ進む前に別タスクで以下が必要:
+  - データ移行: 本家の JSON バックアップは独自カラム（`work_hours`, `unit_price`, `default_unit_price`, `matrix_*`）を含まない → エクスポート/インポートの拡張か独自移行スクリプトが必要
+  - Matrix crypto ストアの保存先が `DB_FILE` のディレクトリ依存（`backend/modules/matrix/matrixClient.js`）→ v2 では `DB_FILE` が無くなるので専用ボリューム/環境変数に変更
+  - v2 は 1.x マイグレーションを `migrations/archive` に移し、新規 DB はモデルから作成 → 独自マイグレーションの扱いを再設計
+- 添付ファイル（プロジェクト/ノート）は v1.14.0 取り込みで**本家実装に移行済み**。独自実装は削除
+- 本家で作り直された画面（ノート、プロジェクト詳細/モーダル、通知設定）は「本家版＋独自機能を移植」の方針で維持する
 
 ## Matrix E2EE クロス署名（未対応の警告について）
 
@@ -45,15 +56,23 @@ Elementで表示される以下の警告は現時点で未対応：
 - "Encrypted by a device not verified by its owner"
 - "誰かが不明なセクションを使用しています"
 
-### 対応予定
-[matrix-bot-sdk PR #389](https://github.com/turt2live/matrix-bot-sdk/pull/389) がマージ・リリースされれば解消できる見込み。
-- 内容: `confirmIdentityWithRecoveryKey(recoveryKey)` でBotデバイスをセルフ署名
-- 依存の `@matrix-org/matrix-sdk-crypto-nodejs` v0.5.1 は 2026-04-23 リリース済み
-- PR 自体は 2026-04-27 時点でレビュー待ち（未マージ）
+### 調査結果 (2026-11-11)
+- `matrix-bot-sdk` 本家: 最新 0.8.0 (2026-01) のまま。[PR #389](https://github.com/turt2live/matrix-bot-sdk/pull/389) は**未マージ (open)**
+- ⚠️ 現在の `@matrix-org/matrix-sdk-crypto-nodejs` 0.4.0 には **CVE-2026-45056**（High, to-device 送信者なりすまし）が残る。修正は 0.6.0 以降だが、本家 SDK は `^0.4.0` 固定のため入手不可
+- Element 版フォーク **`@vector-im/matrix-bot-sdk`** (repo: element-hq/matrix-bot-sdk) が 0.9.0-element.0 (2026-05) でクロス署名対応。最新 0.10.1-element.0 (2026-09)、crypto-nodejs `^0.6.6`
+  - `client.crypto.confirmIdentityWithRecoveryKey(key)` / `isRecoveryAvailable()` / `createIdentity(key?)`
+  - 使用中の API（`MatrixClient`, `SimpleFsStorageProvider`, `RustSdkCryptoStorageProvider(dir, StoreType)`, `getWhoAmI`, `sendToDevices`, `start/stop/on`, 内部 `client.crypto.engine.machine`）はすべて互換
+- Element 版へ移行する場合の影響:
+  1. **Node >= 24 必須**（SDK・crypto-nodejs とも）→ Dockerfile を `node:24-trixie-slim`、CI も更新。本家は node 22 なので本家取り込み時の Dockerfile コンフリクトが増える。bcrypt / sqlite3 は N-API なので問題ない見込み（要ビルド確認）
+  2. 0.10.0 で HTTP クライアントが `request`→`undici`（`setRequestFn` は未使用なので影響なし）
+  3. crypto ストアは 0.4→0.6 で前方マイグレーションされ**ダウングレード不可** → 切替前に `tududi_db/matrix-store` をバックアップ
+  4. crypto-nodejs 0.6.2 で自動ルームキー転送が無効化。独自の `requestMissingRoomKey` は要動作確認
+  5. `require('matrix-bot-sdk')` 3 箇所（matrixClient.js, matrixPoller.js, controller.js）を `@vector-im/matrix-bot-sdk` に置換
 
 ### 次回 Matrix 関連修正時にやること
-1. PR #389 がマージされているか確認する
-2. マージ済みなら `matrix-bot-sdk` を最新版にアップグレードして `confirmIdentityWithRecoveryKey` を組み込む
+1. Element 版への移行可否を決める（Node 24 化とセットで CVE も解消できる）
+2. 移行する場合: ユーザー設定に Matrix リカバリーキー欄（暗号化保存）を追加し、起動時に `isRecoveryAvailable()` → `confirmIdentityWithRecoveryKey()` でセルフ署名
+3. 本家 SDK に留まる場合: PR #389 のマージ状況を再確認
 
 ## 参照先
 - 新規タスク仕様: `docs/yoshiaki/tududi_tasks.md`

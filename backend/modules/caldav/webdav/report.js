@@ -7,8 +7,11 @@ const {
 } = require('./utils');
 const { generateETag } = require('../utils/etag-generator');
 const taskRepository = require('../../tasks/repository');
+const { CALDAV_TASK_INCLUDES } = require('../task-includes');
 const vtodoSerializer = require('../icalendar/vtodo-serializer');
 const { Op } = require('sequelize');
+const { ciLike } = require('../../../utils/db-dialect');
+const { canReadTask, visibleTaskWhere } = require('../access');
 
 async function handleReport(req, res) {
     try {
@@ -30,7 +33,74 @@ async function handleReport(req, res) {
                 .json({ error: 'Invalid calendar-query request' });
         }
 
-        const where = { user_id: userId };
+        const userTimezone = req.currentUser.timezone || 'UTC';
+
+        if (queryRequest.isMultiget) {
+            const responses = [];
+
+            for (const href of queryRequest.hrefs) {
+                const match = href.match(/\/([^/]+)\.ics$/);
+                if (!match) {
+                    responses.push(
+                        buildResponse(
+                            href,
+                            buildPropstat({}, 'HTTP/1.1 404 Not Found')
+                        )
+                    );
+                    continue;
+                }
+
+                const uid = decodeURIComponent(match[1]);
+                const task = await taskRepository.findByUid(uid, {
+                    include: CALDAV_TASK_INCLUDES,
+                });
+
+                if (!(await canReadTask(task, userId))) {
+                    responses.push(
+                        buildResponse(
+                            href,
+                            buildPropstat({}, 'HTTP/1.1 404 Not Found')
+                        )
+                    );
+                    continue;
+                }
+
+                try {
+                    const etag = generateETag(task);
+                    const vtodo = await vtodoSerializer.serializeTaskToVTODO(
+                        task,
+                        { userTimezone }
+                    );
+                    const propstat = buildPropstat({
+                        'D:getetag': etag,
+                        'C:calendar-data': vtodo,
+                    });
+                    responses.push(buildResponse(href, propstat));
+                } catch (error) {
+                    console.error(
+                        `Error building multiget response for ${uid}:`,
+                        error
+                    );
+                    responses.push(
+                        buildResponse(
+                            href,
+                            buildPropstat(
+                                {},
+                                'HTTP/1.1 500 Internal Server Error'
+                            )
+                        )
+                    );
+                }
+            }
+
+            const xml = buildMultistatus(responses);
+            return res
+                .status(207)
+                .set('Content-Type', 'application/xml; charset=utf-8')
+                .send(xml);
+        }
+
+        const where = {};
 
         if (queryRequest.filters.timeRange) {
             const { start, end } = queryRequest.filters.timeRange;
@@ -68,19 +138,23 @@ async function handleReport(req, res) {
 
             if (property === 'SUMMARY') {
                 where.name = caseless
-                    ? { [Op.like]: `%${value}%` }
+                    ? ciLike(`%${value}%`)
                     : { [Op.substring]: value };
             }
         }
 
-        const tasks = await taskRepository.findAll(where);
+        const tasks = await taskRepository.findAll(
+            { [Op.and]: [await visibleTaskWhere(userId), where] },
+            { include: CALDAV_TASK_INCLUDES }
+        );
 
         const responses = [];
         for (const task of tasks) {
             const response = await buildCalendarQueryResponse(
                 task,
                 username,
-                queryRequest
+                queryRequest,
+                userTimezone
             );
             if (response) {
                 responses.push(response);
@@ -98,7 +172,12 @@ async function handleReport(req, res) {
     }
 }
 
-async function buildCalendarQueryResponse(task, username, queryRequest) {
+async function buildCalendarQueryResponse(
+    task,
+    username,
+    queryRequest,
+    userTimezone
+) {
     try {
         const href = buildHref(username, task.uid);
         const etag = generateETag(task);
@@ -112,7 +191,9 @@ async function buildCalendarQueryResponse(task, username, queryRequest) {
         );
 
         if (includeCalendarData) {
-            const vtodo = await vtodoSerializer.serializeTaskToVTODO(task);
+            const vtodo = await vtodoSerializer.serializeTaskToVTODO(task, {
+                userTimezone,
+            });
             props['C:calendar-data'] = vtodo;
         }
 

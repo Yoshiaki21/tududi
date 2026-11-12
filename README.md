@@ -8,8 +8,8 @@
 
 <p align="center">
   <h2 align="center">Productivity made simple</p></h2>
-  <p align="center">Organize your life and projects with a clear, hierarchical structure,<br>
-  smart recurring tasks, and seamless Telegram integration.<br>
+  <p align="center">Organize your life and projects with a clear, hierarchical structure<br>
+  and smart recurring tasks.<br>
   Get focused, stay productive, and keep your data private.
   </p>
 </p>
@@ -49,18 +49,21 @@ For the thinking behind tududi, read:
     - **Flexible Scheduling**: Set custom intervals (every 2 weeks, every 3 months, etc.)
     - **End Date Control**: Optional end dates for recurring series
 - **Project Sharing & Collaboration**: Share projects with team members and collaborate effectively
+- **Families & Small Teams**: One workspace for a household or a team, described in [People, Members and Roles](docs/19-people-and-roles.md):
+    - **Roles**: Admin, user and guest, each with a list of what it can do
+    - **Groups**: Share a project, area or goal with several people at once
+    - **Members without an email**: Add a child or another household member who has no email, put them in a group, assign them tasks and give them a sign-in link so they can sign in
+    - **One People list**: Members and contacts in one list. Add members yourself with the invite permission, or turn a contact into a member without losing the tasks assigned to them
+    - **Assign to anyone**: Give a task to a member or to a contact such as a plumber, and see everyone's day on one Everyone board
 - **Quick Notes**: Create, update, delete, or assign text notes to projects.
 - **Tags**: Create tags for tasks and notes to enhance organization.
 - **Project Tracking**: Organize tasks into projects. Each project can contain multiple tasks and/or multiple notes.
 - **Area Categorization**: Group projects into areas for better organization and focus.
 - **Due Date Tracking**: Set due dates for tasks and view them based on due date categories.
 - **Responsive Design**: Accessible from various devices, ensuring a consistent experience across desktops, tablets, and mobile phones.
-- **Multi-Language Support**: Available in 24 languages with full localization support for a truly global productivity experience.
-- **Telegram Integration**:
-    - Create tasks directly through Telegram messages
-    - Receive daily digests of your tasks
-    - Quick capture of ideas and todos on the go
-- **Open API & Access Tokens**: Versioned Swagger docs exposed at `/api/v1` plus personal API keys for integrating tududi with your own tooling or automations.
+- **Installable PWA**: Add tududi to your home screen on Android, iOS, and desktop browsers for a native app-like experience. The app stays readable from cache when offline, and write operations are queued and synced automatically when connectivity returns.
+- **Multi-Language Support**: Available in 26 languages with full localization support for a truly global productivity experience.
+- **Open API & Access Tokens**: Interactive Swagger docs at `/api-docs` plus personal API keys for integrating tududi with your own tooling or automations.
 - **OIDC/SSO Authentication**: Enterprise-ready Single Sign-On support with:
     - Multiple OIDC providers (Google, Okta, Keycloak, Authentik, PocketID, Azure AD, and more)
     - Just-In-Time (JIT) user provisioning
@@ -92,13 +95,26 @@ docker run \
   -e TUDUDI_USER_EMAIL=admin@example.com \
   -e TUDUDI_USER_PASSWORD=your-secure-password \
   -e TUDUDI_SESSION_SECRET=$(openssl rand -hex 64) \
-  -v ~/tududi_db:/app/backend/db \
-  -v ~/tududi_uploads:/app/backend/uploads \
+  -v ~/tududi_db:/app/db \
+  -v ~/tududi_uploads:/app/uploads \
+  -v ~/tududi_backups:/app/backups \
   -p 3002:3002 \
   -d chrisvel/tududi:latest
 ```
 
 Navigate to [http://localhost:3002](http://localhost:3002) and login with your credentials.
+
+If people reach tududi at another address (for example `http://zima.local:3002` or `https://tududi.example.com`), add `-e BASE_URL=<that address>` so links in emails (account verification, password reset) point there instead of `localhost`.
+
+### Using docker-compose
+
+The repo also includes a `docker-compose.yml`. It reads its configuration from a `.env` file, so copy the example first:
+
+```bash
+cp .env.example .env
+# edit .env with your values, then:
+docker-compose up -d
+```
 
 ### Reverse Proxy Setup
 
@@ -134,7 +150,7 @@ docker run \
   -e OIDC_CLIENT_SECRET=your-client-secret \
   -e OIDC_SCOPE="openid profile email" \
   -e OIDC_AUTO_PROVISION=true \
-  -e TUDUDI_BASE_URL=https://your-domain.com \
+  -e BASE_URL=https://your-domain.com \
   ...
 ```
 
@@ -169,13 +185,12 @@ docker run \
 
 ### CalDAV Synchronization
 
-Tududi supports the industry-standard CalDAV protocol, enabling seamless task synchronization with popular CalDAV clients and servers.
+Tududi supports the industry-standard CalDAV protocol, enabling seamless task synchronization with popular CalDAV clients and servers. It's enabled by default.
 
 **Quick Setup:**
 
 ```bash
 docker run \
-  -e CALDAV_ENABLED=true \
   -e ENCRYPTION_KEY=$(openssl rand -hex 32) \
   ...
 ```
@@ -200,6 +215,47 @@ Connect Tududi to external CalDAV servers like Nextcloud, Baikal, or other CalDA
 
 **Documentation:** See [docs/11-caldav-sync.md](docs/11-caldav-sync.md) for client setup guides, server configuration, and troubleshooting.
 
+### Database: SQLite or PostgreSQL
+
+Tududi stores everything in a single SQLite file by default, which is all a personal instance needs. For larger or multi-user deployments you can point it at PostgreSQL instead by setting `DATABASE_URL` (for example `postgres://tududi:secret@db:5432/tududi`). The database may be empty; the schema is created on first start. A complete compose setup with a bundled PostgreSQL service is in [docs/examples/docker-compose.postgres.yml](docs/examples/docker-compose.postgres.yml) (copy it next to your `.env` as `docker-compose.yml`), and the deployment guide is [docs/16-postgresql.md](docs/16-postgresql.md).
+
+### Upgrading
+
+Every start backs up the SQLite file next to it (`db-backup-<timestamp>.sqlite3`), then runs pending migrations; the container refuses to start if a migration fails, so the backup is always the state before the upgrade.
+
+#### Upgrading to a release with PostgreSQL support
+
+SQLite stays the default and existing databases are used as they are. Make sure your `.env` does **not** contain a `DATABASE_URL` or `DB_DIALECT` left over from another application: either one switches tududi to PostgreSQL. As a safety net, the container refuses to start when PostgreSQL is selected but a populated SQLite database is present at `DB_FILE`; unset the variable to keep your data, or set `TUDUDI_ALLOW_DIALECT_SWITCH=true` if you really want an empty PostgreSQL database.
+
+#### v1.1.x to v1.2.x: Volume path change
+
+The Docker volume mount path changed in v1.2.0 from `/app/backend/db` to `/app/db`. If you are upgrading from v1.1.x and your `docker-compose.yml` still uses the old path, **new data will be lost on container recreation** because writes go to an anonymous Docker volume that is discarded when the container is recreated.
+
+**How to check:** Look at your `docker-compose.yml` volumes section:
+
+```yaml
+# OLD (v1.1.x) - update this
+volumes:
+  - ./tududi_db:/app/backend/db
+  - ./uploads:/app/backend/uploads
+
+# NEW (v1.2.x+) - use these paths
+volumes:
+  - ./tududi_db:/app/db
+  - ./uploads:/app/uploads
+  - ./backups:/app/backups
+```
+
+**Migration steps:**
+
+1. Stop the container: `docker-compose down`
+2. Update `docker-compose.yml` to use the new volume paths (see above)
+3. Start the container: `docker-compose up -d`
+
+Your existing data directory (`./tududi_db`) stays the same - only the mount point inside the container changes. No data copying is needed when using bind mounts.
+
+> **Note:** While you still use the old path, Tududi will print a warning at startup and continue using the old location to prevent data loss. Once you update the volume mount, the warning disappears and writes go to the correct persistent location.
+
 ### 📚 Documentation
 
 For detailed setup instructions, configuration options, and getting started guides, visit:
@@ -210,6 +266,7 @@ For detailed setup instructions, configuration options, and getting started guid
 - **[Configuration](https://docs.tududi.com/getting-started/configuration)** - Environment variables and advanced settings
 - **[First Steps](https://docs.tududi.com/getting-started/first-steps)** - Learn the basics and get productive
 - **[Project Sharing](https://docs.tududi.com/features/project-sharing)** - Collaborate with your team
+- **[People, Members and Roles](docs/19-people-and-roles.md)** - Families and teams: roles, groups, members without an email and assigning tasks
 
 ## 🚧 Development
 
@@ -301,7 +358,7 @@ For questions or comments, please [open an issue](https://github.com/chrisvel/tu
 
 Join the tududi community:
 
-[![Discord](https://img.shields.io/badge/Discord-Join%20Server-7289da?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/fkbeJ9CmcH)  
+[![Discord](https://img.shields.io/badge/Discord-Join%20Server-7289da?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/fkbeJ9CmcH)
 [![Reddit](https://img.shields.io/reddit/subreddit-subscribers/tududi?color=ff4500&label=Reddit&logo=reddit&logoColor=white&style=for-the-badge)](https://www.reddit.com/r/tududi/)
 
 ## 🌟 Please check my other projects!

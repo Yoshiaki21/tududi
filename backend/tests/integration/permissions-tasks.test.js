@@ -1,6 +1,6 @@
 const request = require('supertest');
 const app = require('../../app');
-const { Task, Project } = require('../../models');
+const { Task, Project, Permission } = require('../../models');
 const { createTestUser } = require('../helpers/testUtils');
 
 describe('Tasks Permissions', () => {
@@ -20,15 +20,15 @@ describe('Tasks Permissions', () => {
             .send({ email: user.email, password: 'password123' });
     });
 
-    it("GET /api/task/:id should return 403 for other user's task", async () => {
+    it('GET /api/task/:id should return 404 (routes are keyed by uid)', async () => {
         const otherTask = await Task.create({
             name: 'Other Task',
             user_id: otherUser.id,
         });
 
         const res = await agent.get(`/api/task/${otherTask.id}`);
-        expect(res.status).toBe(403);
-        expect(res.body.error).toBe('Forbidden');
+        expect(res.status).toBe(404);
+        expect(res.body.error).toBe('Task not found.');
     });
 
     it("GET /api/task/:uid should return 403 for other user's task", async () => {
@@ -148,5 +148,53 @@ describe('Tasks Permissions', () => {
             (task) => task.id
         );
         expect(suggestedTaskIds).not.toContain(otherTask.id);
+    });
+
+    describe('Subtask access via shared project (#1425)', () => {
+        it('should let a project collaborator open a subtask created by another collaborator', async () => {
+            const project = await Project.create({
+                name: 'Shared Project',
+                user_id: user.id,
+            });
+            await Permission.create({
+                user_id: otherUser.id,
+                resource_type: 'project',
+                resource_uid: project.uid,
+                access_level: 'rw',
+                propagation: 'direct',
+                granted_by_user_id: user.id,
+            });
+
+            const parentTask = await Task.create({
+                name: 'Parent Task',
+                user_id: user.id,
+                project_id: project.id,
+            });
+
+            const createRes = await agent
+                .patch(`/api/task/${parentTask.uid}`)
+                .send({
+                    subtasks: [
+                        { name: 'Subtask', isNew: true, status: 'not_started' },
+                    ],
+                });
+            expect(createRes.status).toBe(200);
+            expect(createRes.body.subtasks).toHaveLength(1);
+            const subtaskUid = createRes.body.subtasks[0].uid;
+
+            const otherAgent = request.agent(app);
+            await otherAgent
+                .post('/api/login')
+                .send({ email: otherUser.email, password: 'password123' });
+
+            const getRes = await otherAgent.get(`/api/task/${subtaskUid}`);
+            expect(getRes.status).toBe(200);
+            expect(getRes.body.uid).toBe(subtaskUid);
+
+            const deleteRes = await otherAgent.delete(
+                `/api/task/${subtaskUid}`
+            );
+            expect(deleteRes.status).toBe(200);
+        });
     });
 });

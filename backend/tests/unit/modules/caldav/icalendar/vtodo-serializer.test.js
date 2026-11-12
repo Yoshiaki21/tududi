@@ -10,7 +10,7 @@ describe('VTODO Serializer', () => {
         status: 0,
         priority: 1,
         note: 'Test note',
-        due_date: new Date('2026-05-01T12:00:00Z'),
+        due_date: new Date('2026-05-01T00:00:00Z'),
         created_at: new Date('2026-04-01T10:00:00Z'),
         updated_at: new Date('2026-04-14T15:00:00Z'),
     };
@@ -28,6 +28,25 @@ describe('VTODO Serializer', () => {
         expect(vtodoString).toContain('UID:test-task-123');
         expect(vtodoString).toContain('SUMMARY:Test Task');
         expect(vtodoString).toContain('DTSTAMP:');
+    });
+
+    // RFC 5545 3.8.7.2: DTSTAMP is a UTC date-time, so it ends in Z. The old
+    // ICAL.Time.now() wrote the process' local time without one (#1905).
+    it('should write DTSTAMP in UTC', async () => {
+        const vtodoString = await serializeTaskToVTODO(basicTask);
+        expect(vtodoString).toMatch(/DTSTAMP:\d{8}T\d{6}Z/);
+    });
+
+    it('should omit PRIORITY for a task with no priority', async () => {
+        const noPriorityTask = { ...basicTask, priority: null };
+        const undefinedPriorityTask = { ...basicTask, priority: undefined };
+
+        expect(await serializeTaskToVTODO(noPriorityTask)).not.toContain(
+            'PRIORITY'
+        );
+        expect(await serializeTaskToVTODO(undefinedPriorityTask)).not.toContain(
+            'PRIORITY'
+        );
     });
 
     it('should map tududi status to iCalendar STATUS', async () => {
@@ -75,18 +94,33 @@ describe('VTODO Serializer', () => {
         expect(vtodoString).toContain('DESCRIPTION:Test note');
     });
 
-    it('should include DUE date', async () => {
+    it('should include DUE date as VALUE=DATE (no time, no UTC shift)', async () => {
         const vtodoString = await serializeTaskToVTODO(basicTask);
-        expect(vtodoString).toContain('DUE:20260501T120000Z');
+        expect(vtodoString).toContain('DUE;VALUE=DATE:20260501');
+        expect(vtodoString).not.toContain('DUE:20260501T');
     });
 
-    it('should include DTSTART for defer_until', async () => {
+    it('should include DTSTART for defer_until as VALUE=DATE', async () => {
         const task = {
             ...basicTask,
-            defer_until: new Date('2026-04-25T09:00:00Z'),
+            defer_until: new Date('2026-04-25T00:00:00Z'),
         };
         const vtodoString = await serializeTaskToVTODO(task);
-        expect(vtodoString).toContain('DTSTART:20260425T090000Z');
+        expect(vtodoString).toContain('DTSTART;VALUE=DATE:20260425');
+        expect(vtodoString).not.toContain('DTSTART:20260425T');
+    });
+
+    it('should include VALARM with absolute TRIGGER when reminder_at is set', async () => {
+        const task = {
+            ...basicTask,
+            reminder_at: new Date('2026-06-04T09:00:00Z'),
+        };
+        const vtodoString = await serializeTaskToVTODO(task);
+        expect(vtodoString).toContain('BEGIN:VALARM');
+        expect(vtodoString).toContain('ACTION:DISPLAY');
+        expect(vtodoString).toContain('TRIGGER');
+        expect(vtodoString).toContain('20260604T090000Z');
+        expect(vtodoString).toContain('END:VALARM');
     });
 
     it('should include COMPLETED date for completed tasks', async () => {
@@ -176,5 +210,62 @@ describe('VTODO Serializer', () => {
         expect(vtodoString).toContain('BEGIN:VTODO');
         expect(vtodoString).toContain('UID:minimal-task');
         expect(vtodoString).toContain('SUMMARY:Minimal Task');
+    });
+
+    // #1928: a task with a due time keeps it on the way out; a date-only task
+    // stays VALUE=DATE (#1146).
+    it('should write a timed due date as a UTC DATE-TIME', async () => {
+        const vtodoString = await serializeTaskToVTODO(
+            {
+                ...basicTask,
+                due_date: new Date('2026-10-20T07:00:00Z'),
+                due_has_time: true,
+            },
+            { userTimezone: 'Europe/Berlin' }
+        );
+        expect(vtodoString).toContain('DUE:20261020T070000Z');
+        expect(vtodoString).not.toContain('DUE;VALUE=DATE');
+    });
+
+    it('should keep a date-only due date as VALUE=DATE', async () => {
+        const vtodoString = await serializeTaskToVTODO(
+            {
+                ...basicTask,
+                due_date: new Date('2026-10-20T21:59:59.999Z'),
+                due_has_time: false,
+            },
+            { userTimezone: 'Europe/Berlin' }
+        );
+        expect(vtodoString).toContain('DUE;VALUE=DATE:20261020');
+    });
+
+    it('should write DTSTART as a UTC DATE-TIME next to a timed DUE', async () => {
+        const vtodoString = await serializeTaskToVTODO(
+            {
+                ...basicTask,
+                due_date: new Date('2026-10-20T07:00:00Z'),
+                due_has_time: true,
+                // 2026-10-17 00:00 in Europe/Berlin
+                defer_until: new Date('2026-10-16T22:00:00Z'),
+            },
+            { userTimezone: 'Europe/Berlin' }
+        );
+        expect(vtodoString).toContain('DUE:20261020T070000Z');
+        expect(vtodoString).toContain('DTSTART:20261016T220000Z');
+        expect(vtodoString).not.toContain('VALUE=DATE');
+    });
+
+    it('should keep DTSTART as VALUE=DATE next to a date-only DUE', async () => {
+        const vtodoString = await serializeTaskToVTODO(
+            {
+                ...basicTask,
+                due_date: new Date('2026-10-20T21:59:59.999Z'),
+                due_has_time: false,
+                defer_until: new Date('2026-10-16T22:00:00Z'),
+            },
+            { userTimezone: 'Europe/Berlin' }
+        );
+        expect(vtodoString).toContain('DUE;VALUE=DATE:20261020');
+        expect(vtodoString).toContain('DTSTART;VALUE=DATE:20261017');
     });
 });

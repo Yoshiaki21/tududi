@@ -5,11 +5,15 @@ const {
     Project,
     Task,
     Note,
+    Person,
     Permission,
     TaskAttachment,
     sequelize,
 } = require('../../models');
-const { createTestUser } = require('../helpers/testUtils');
+const {
+    createTestUser,
+    acceptAllInvitations,
+} = require('../helpers/testUtils');
 
 describe('Project Sharing Integration Tests', () => {
     let ownerUser, sharedUser, ownerAgent, sharedUserAgent, project;
@@ -56,6 +60,7 @@ describe('Project Sharing Integration Tests', () => {
             target_user_email: sharedUser.email,
             access_level: 'rw',
         });
+        await acceptAllInvitations(sharedUserAgent);
     });
 
     afterAll(async () => {
@@ -87,6 +92,31 @@ describe('Project Sharing Integration Tests', () => {
             expect(sharedProject).toBeDefined();
             expect(sharedProject.is_shared).toBe(true);
             expect(sharedProject.share_count).toBeGreaterThan(0);
+        });
+
+        test('project with only a pending invitation still shows as shared', async () => {
+            const pendingResponse = await ownerAgent.post('/api/project').send({
+                name: 'Pending Share Project',
+            });
+            const pendingProject = pendingResponse.body;
+            await ownerAgent.post('/api/shares').send({
+                resource_type: 'project',
+                resource_uid: pendingProject.uid,
+                target_user_email: sharedUser.email,
+                access_level: 'ro',
+            });
+
+            const listResponse = await ownerAgent.get('/api/projects');
+            const listed = listResponse.body.projects.find(
+                (p) => p.uid === pendingProject.uid
+            );
+            expect(listed.is_shared).toBe(true);
+            expect(listed.share_count).toBe(0);
+
+            const detailResponse = await ownerAgent.get(
+                `/api/project/${pendingProject.uid}`
+            );
+            expect(detailResponse.body.is_shared).toBe(true);
         });
 
         test('owner can fetch share list with emails via /api/shares', async () => {
@@ -198,8 +228,7 @@ describe('Project Sharing Integration Tests', () => {
             expect(foundTask).toBeUndefined();
         });
 
-        test('shared user should see tasks due today in shared projects', async () => {
-            // Create a task due today in shared project
+        test('shared user sees a task due today in a shared project once it is assigned to them', async () => {
             const today = new Date().toISOString().split('T')[0];
             const taskDueTodayResponse = await ownerAgent
                 .post('/api/task')
@@ -212,19 +241,30 @@ describe('Project Sharing Integration Tests', () => {
                 });
             const taskDueToday = taskDueTodayResponse.body;
 
-            // Fetch today's tasks as shared user with include_lists to get tasks_due_today
-            const response = await sharedUserAgent.get(
-                '/api/tasks?type=today&include_lists=true'
+            const fetchDueToday = async () => {
+                const response = await sharedUserAgent.get(
+                    '/api/tasks?type=today&include_lists=true'
+                );
+                expect(response.status).toBe(200);
+                expect(response.body.tasks_due_today).toBeDefined();
+                return response.body.tasks_due_today.find(
+                    (t) => t.id === taskDueToday.id
+                );
+            };
+
+            // Someone else's task in a shared project stays on the project
+            // page, out of the shared user's Today.
+            expect(await fetchDueToday()).toBeUndefined();
+
+            const sharedSelf = await Person.findOne({
+                where: { linked_user_id: sharedUser.id },
+            });
+            await Task.update(
+                { assigned_to: sharedSelf.uid },
+                { where: { id: taskDueToday.id } }
             );
 
-            expect(response.status).toBe(200);
-            expect(response.body.tasks).toBeDefined();
-
-            // Task should appear in tasks_due_today since it has a due date but today=false
-            expect(response.body.tasks_due_today).toBeDefined();
-            const foundTask = response.body.tasks_due_today.find(
-                (t) => t.id === taskDueToday.id
-            );
+            const foundTask = await fetchDueToday();
             expect(foundTask).toBeDefined();
             expect(foundTask.name).toBe('Task due today in shared project');
         });
@@ -614,6 +654,43 @@ describe('Project Sharing Integration Tests', () => {
                 `/api/tasks/${taskInSharedProject.uid}/attachments/${attachment.uid}`
             );
             expect(deleteResponse.status).toBe(403);
+        });
+    });
+
+    describe('Issue 1140: Task due_date in shared project detail view', () => {
+        test('GET /api/task/:uid returns due_date for shared project task', async () => {
+            const dueDate = '2025-08-15';
+
+            const taskResponse = await ownerAgent.post('/api/task').send({
+                name: 'Task with due date in shared project',
+                project_id: project.id,
+                due_date: dueDate,
+                priority: 1,
+                status: 0,
+            });
+            expect(taskResponse.status).toBe(201);
+            const task = taskResponse.body;
+            expect(task.uid).toBeDefined();
+
+            const response = await sharedUserAgent.get(`/api/task/${task.uid}`);
+
+            expect(response.status).toBe(200);
+            expect(response.body.due_date).toBe(dueDate);
+        });
+
+        test('GET /api/task/:uid returns 200 (not 403) for shared project task', async () => {
+            const taskResponse = await ownerAgent.post('/api/task').send({
+                name: 'Task in shared project',
+                project_id: project.id,
+                priority: 1,
+                status: 0,
+            });
+            expect(taskResponse.status).toBe(201);
+            const task = taskResponse.body;
+
+            const response = await sharedUserAgent.get(`/api/task/${task.uid}`);
+
+            expect(response.status).toBe(200);
         });
     });
 });

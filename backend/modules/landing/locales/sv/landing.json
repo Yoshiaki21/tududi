@@ -1,0 +1,539 @@
+{
+  "meta": {
+    "langSwitcherLabel": "Byt språk",
+    "langSwitcherCurrent": "Språk: {{name}}",
+    "description": "Fånga allt, planera dagen med AI runt din kalender och håll områden, mål, projekt, anteckningar och vanor i ett system. En MCP-server med {{tools}} verktyg låter AI-agenter jobba med din lista. Ett tududi Cloud-konto är klart på en minut.",
+    "title": "tududi: uppgiftshanterare och livshanteringssystem, med MCP för AI-agenter"
+  },
+  "nav": {
+    "demo": "Livedemo",
+    "features": "Funktioner",
+    "ai": "AI & MCP",
+    "pricing": "Priser",
+    "faq": "FAQ",
+    "blog": "Blogg",
+    "signIn": "Logga in",
+    "toggle": "Öppna menyn",
+    "plan": "Planera dagen"
+  },
+  "hero": {
+    "ctaDemo": "Prova livedemon",
+    "demoNote": "En riktig hostad instans med exempeldata, delad och återställs regelbundet",
+    "screenshotAlt": "tududis gränssnitt med vyn Idag och de planerade uppgifterna",
+    "cloudNote": "Ingen server att sätta upp. Månadsvis eller årsvis, och du kan avsluta när du vill.",
+    "ctaPrimary": "Kom igång nu",
+    "lede": "Fånga allt, planera dagen med AI runt din kalender och håll områden, mål, projekt, anteckningar och vanor i ett system. Skapa ett Cloud-konto på en minut.",
+    "titleLine1": "Produktivitet gjort enkel",
+    "titleLine2": "",
+    "ctaTrial": "Starta din kostnadsfria provperiod på {{days}} dagar",
+    "cloudNoteTrial": "Gratis i {{days}} dagar, inget kort behövs. Sedan månadsvis eller årsvis, säg upp när som helst.",
+    "badge": "För upptagna människor, inget att installera"
+  },
+  "proof": {
+    "stars": "stjärnor på GitHub",
+    "languages": "{{count}} språk",
+    "dockerPulls": "Docker-nedladdningar",
+    "discord": "Discord-medlemmar",
+    "minute": "Uppsatt på en minut",
+    "guarantee": "14 dagars pengarna-tillbaka-garanti"
+  },
+  "press": {
+    "featuredIn": "Omnämnda i",
+    "eyebrow": "Press",
+    "title": "Ta inte bara vårt ord för det",
+    "sub": "Vad recensenter skrev efter att själva ha kört tududi.",
+    "readLink": "Läs recensionen"
+  },
+  "ai": {
+    "kicker": "AI & MCP",
+    "cards": {
+      "capture": {
+        "title": "Fånga upp och sök från chatten",
+        "body": "Lägg till, hitta och slutför uppgifter utan att lämna samtalet."
+      },
+      "dataStays": {
+        "body": "MCP-anslutningen går direkt till din egen tududi-instans, på Cloud eller på din egen server. Ingenting går via en tredje part.",
+        "title": "Den pratar med din instans"
+      },
+      "openProtocol": {
+        "title": "Öppet protokoll, ingen inlåsning",
+        "body": "Byggt på det öppna Model Context Protocol. Fungerar med Claude och andra MCP-klienter."
+      }
+    },
+    "footnoteClients": "Samma sak fungerar med Cursor, Windsurf, Cline och alla andra MCP-klienter.",
+    "footnoteDocsLink": "Läs MCP-dokumentationen →",
+    "assistantTitle": "AI-assistent",
+    "assistantLede": "Ett separat, valfritt lager som läser dina data och skriver tillbaka sammanfattningar på vanlig svenska. Fungerar med alla OpenAI-kompatibla leverantörer, även egenhostade som Ollama.",
+    "assistantCards": {
+      "task": {
+        "title": "Uppgiftsinsikter",
+        "body": "Föreslagna nästa steg för en specifik uppgift, framtagna när du ber om dem."
+      },
+      "project": {
+        "title": "Projektinsikter",
+        "body": "En snabb bedömning av ett projekts hälsa: vad som rör sig och vad som står stilla."
+      },
+      "plan": {
+        "title": "Planera dagen",
+        "body": "Fördelar din dag i ledig tid runt mötena, med ett skäl för varje block."
+      },
+      "wrapUp": {
+        "title": "Dagens sammanfattning",
+        "body": "I slutet av dagen: vad som blev gjort, ett mönster att notera och vad som ska med till i morgon."
+      }
+    },
+    "demo": {
+      "answer1Html": "Börja med <strong>Släpp faktureringsmigreringen</strong>. Den ska vara klar idag, och tre uppgifter i <strong>Betalningar</strong> väntar bakom den.",
+      "answer2Html": "Klart. <strong>Granska omdesign-utkast</strong> ska nu vara klart på fredag, och <strong>Lås upp Betalningar-kön</strong> ligger i projektet Betalningar, klart idag.",
+      "ask1": "Vad bör jag fokusera på idag, och ligger något efter?",
+      "ask2": "Flytta omdesign-granskningen till fredag och lägg till en uppgift för att låsa upp Betalningar.",
+      "badge": "tududi MCP",
+      "caption": "En exempelsession. Din agent ansluter direkt till din egen instans via MCP.",
+      "composer": "Svara Claude…",
+      "groupTitle": "Värt att veta",
+      "rows": {
+        "habit": {
+          "label": "Serie i riskzonen",
+          "text": "Morgongenomgång, 12 dagar i rad, inte loggad ännu idag"
+        },
+        "overdue": {
+          "label": "Försenad",
+          "text": "2 uppgifter i Hem, den äldsta sedan 6 dagar"
+        },
+        "stalled": {
+          "label": "Avstannad",
+          "text": "Omdesign av webbplatsen, ingen aktivitet på 11 dagar"
+        }
+      },
+      "toolLabel": "Använde tududi",
+      "windowTitle": "Claude Desktop"
+    },
+    "footnoteIncluded": "MCP ingår i tududi Cloud och i varje självhostad instans.",
+    "ledeHtml": "tududi levererar en MCP-server som exponerar <strong>{{tools}} verktyg</strong>, som täcker uppgifter, projekt, områden, mål, vanor, anteckningar, personer, taggar, vyer, inkorgen, sökning och mätvärden. Anslut Claude eller vilken MCP-kompatibel agent som helst direkt till din egen instans, oavsett om det är ditt Cloud-konto eller en server du kör själv. Anslutningen går till din instans istället för via en mellanliggande relä, en strukturell skillnad som Todoist och Notion inte kan erbjuda, oavsett vad de lovar.",
+    "titleLine1": "Ett riktigt system",
+    "titleLine2": "som din AI-agent faktiskt kan använda"
+  },
+  "features": {
+    "eyebrow": "Funktioner",
+    "title": "Ett komplett system för ett organiserat liv",
+    "showAll": "Visa alla {{count}} funktioner",
+    "preview": "Förhandsgranska",
+    "closePreview": "Stäng förhandsgranskning",
+    "groups": {
+      "planDay": "Fånga & planera",
+      "planFocus": "Planera & fokusera",
+      "tasksProjects": "Uppgifter & projekt",
+      "accessAnywhere": "Åtkomst överallt",
+      "privacyCollab": "Integritet & samarbete"
+    },
+    "cards": {
+      "capture": {
+        "title": "En ruta för allt",
+        "body": "Lägg till inkorgsobjekt, uppgifter, anteckningar eller projekt var som helst ifrån, med filer. En inklistrad skärmbild blir själva objektet."
+      },
+      "nlpDates": {
+        "title": "Datum med vanliga ord",
+        "body": "“tomorrow”, “next fri”, “every weekday”: datum och upprepningar läses medan du skriver, tillsammans med #taggar, +Projekt och @person."
+      },
+      "planMyDay": {
+        "title": "Planera dagen",
+        "body": "En planerare som lägger uppgifter i ledig tid runt dina möten, med längd, rangordnade förslag och tips."
+      },
+      "todayCalendar": {
+        "title": "I dag med din kalender",
+        "body": "Anslut Google-, Apple- eller Outlook-kalendrar och se möten bredvid dina uppgifter, med aktuellt block överst."
+      },
+      "aiPlanning": {
+        "title": "Dagsplanering med AI",
+        "body": "Gör ett utkast till dagen med AI, få uppskattade längder och en kvällssammanfattning som tar med det ofärdiga."
+      },
+      "goals": {
+        "title": "Mål",
+        "body": "Sätt resultat för en säsong eller ett år, och se vilka Områden och Projekt som faktiskt för dem framåt."
+      },
+      "hierarchy": {
+        "title": "Hierarkisk struktur",
+        "body": "Mål och Områden ligger sida vid sida i toppen: långsiktiga resultat och pågående delar av livet. Båda innehåller Projekt, som innehåller Uppgifter."
+      },
+      "lifeAreas": {
+        "title": "Hantera livsområden",
+        "body": "Ordna projekt efter livsområde - Arbete, Privat, Hälsa, Lärande."
+      },
+      "views": {
+        "title": "Vyer",
+        "body": "Smarta sparade sökningar som ”Idag”, ”Försenat” eller ”Någon gång”. Ett klick, utan att bygga om ett filter varje gång."
+      },
+      "matrixKanban": {
+        "title": "Eisenhower-matris & Kanban",
+        "body": "Växla till en Eisenhower-matris eller en Kanban-tavla när frågan helt enkelt är: vad gör jag just nu."
+      },
+      "insights": {
+        "title": "Produktivitetsinsikter",
+        "body": "Se trender för slutförande och belastning per projekt, så att du vet vart din tid faktiskt tar vägen."
+      },
+      "people": {
+        "title": "Personer",
+        "body": "Tilldela uppgifter till personer och se med en blick vilka som är med i ett projekt."
+      },
+      "habits": {
+        "title": "Vaneuppföljning",
+        "body": "Följ återkommande vanor vid sidan av uppgifter och projekt, med enkla serier och historik."
+      },
+      "recurring": {
+        "title": "Smarta återkommande uppgifter",
+        "body": "Dagliga, veckovisa och månatliga mönster, med upprepning baserad på slutförande och förälder-barn-relationer."
+      },
+      "richTasks": {
+        "title": "Rik uppgiftsstruktur",
+        "body": "Prioriteringar, förfallodatum, taggar och smart sortering. Kraftfull filtrering för att hitta det som betyder något."
+      },
+      "subtasks": {
+        "title": "Deluppgifter & nedbrytning",
+        "body": "Bryt ner komplexa uppgifter i hanterbara deluppgifter, med uppföljning av framsteg."
+      },
+      "notes": {
+        "title": "Projektdokumentation",
+        "body": "Formaterade anteckningar för projekt, med fullständig sökning och ordning."
+      },
+      "tags": {
+        "title": "Flexibelt taggsystem",
+        "body": "Egna taggar för uppgifter och anteckningar, med omedelbar filtrering och ordning över projektgränser."
+      },
+      "search": {
+        "title": "Smart filtrering & sökning",
+        "body": "Fritextsökning plus filter på projekt, tagg, prioritet eller förfallodatum. Hitta vilken uppgift som helst på några sekunder."
+      },
+      "pwa": {
+        "title": "Installera som app",
+        "body": "Lägg till tududi på hemskärmen eller skrivbordet som en PWA. Fungerar offline och synkar när du är uppkopplad igen."
+      },
+      "oidc": {
+        "title": "OIDC- / SSO-inloggning",
+        "body": "Logga in med din befintliga identitetsleverantör: Authentik, Keycloak, Google Workspace eller vilken OIDC-kompatibel leverantör som helst."
+      },
+      "i18n": {
+        "title": "Stöd för flera språk",
+        "body": "Tillgänglig på {{count}} språk med fullständig lokalisering."
+      },
+      "caldav": {
+        "title": "CalDAV-synkronisering",
+        "body": "Tvåvägssynk av uppgifter med Apple Påminnelser, tasks.org, Thunderbird och alla CalDAV-kompatibla appar."
+      },
+      "api": {
+        "title": "API-åtkomst & Swagger",
+        "body": "Versionerad Swagger-dokumentation och personliga åtkomsttoken för egna integrationer."
+      },
+      "privacy": {
+        "title": "Integritet och kontroll",
+        "body": "Håll dina data privata. Hosta själv för full kontroll, eller välj en Managed-instans med krypterade säkerhetskopior."
+      },
+      "collab": {
+        "title": "Samarbete i projekt",
+        "body": "Dela projekt med detaljerade behörigheter - endast läsa eller läsa och skriva."
+      }
+    },
+    "sub": "tududi kombinerar mål, projekt, uppgifter, anteckningar och smarta vyer i ett lugnt, fokuserat system. Låt oss driva det för dig, eller driv det själv om du föredrar det."
+  },
+  "pricing": {
+    "eyebrow": "Priser",
+    "title": "Betala för dig själv, eller för ditt team",
+    "mostPopular": "POPULÄRAST",
+    "earlyBird": "LANSERINGSPRIS",
+    "perYear": "/år per person",
+    "plans": {
+      "cloud": {
+        "name": "Cloud",
+        "soloName": "Pro",
+        "or": "eller",
+        "launchNote": "Early bird-årspris, ditt så länge du är prenumerant.",
+        "action": "Kom igång →",
+        "features": [
+          "Igång på en minut, utan server att sätta upp",
+          "Obegränsat med uppgifter, projekt och anteckningar, plus bilagor",
+          "För en person. Vill du lägga till fler? Välj ett Team-abonnemang",
+          "Dagsplanering med AI, MCP, kalenderflöden, CalDAV och Telegram-boten",
+          "Uppdateringar och dagliga säkerhetskopior skötta för dig, med {{proStorageGb}} GB lagring",
+          "Exportera allt när du vill, ta bort ditt konto själv"
+        ],
+        "priceNote": "Allt ingår. Avsluta när du vill.",
+        "actionTrial": "Prova gratis →",
+        "priceNoteTrial": "{{days}} dagar gratis, inget kort behövs. Säg upp när som helst.",
+        "trialNote": "Provperioden har AI-assistenten med en mindre kvot och en medlem som du kan lägga till. Offentliga anteckningslänkar öppnas när du prenumererar."
+      },
+      "team": {
+        "name": "Team",
+        "perPersonMonth": "/månad per person",
+        "perPersonYear": "/år per person",
+        "sizes": "Säljs i storlekar på {{sizes}} platser, du inräknad. Ett team på 5 kostar {{example}} i månaden.",
+        "moreThan": "Fler än {{max}} personer?",
+        "contact": "Hör av dig",
+        "action": "Starta ditt team →",
+        "features": [
+          "Allt i Pro, för alla i teamet",
+          "Lägg till personer upp till din storlek och byt till en större storlek när som helst",
+          "Delade projekt, grupper och en Alla-tavla över vem som gör vad",
+          "Var och en behåller sina egna privata uppgifter och anteckningar",
+          "Ett abonnemang, betalt av kontoägaren"
+        ]
+      },
+      "picker": {
+        "label": "Vem är det för?",
+        "solo": "Bara jag",
+        "team": "Team på {{n}}",
+        "perMonth": "/månad",
+        "perYear": "/år"
+      }
+    },
+    "fineprint": "Avsluta när som helst och exportera allt. Om tududi Cloud någonsin stänger får du dina data och en guide för att hosta själv. Skälig användning gäller för lagring och API-volym. 14 dagars pengarna-tillbaka-garanti, inga frågor.",
+    "perMonth": "/månad per person",
+    "nextPrice": "Från {{date}} blir priset per person {{monthly}} i månaden eller {{annual}} om året. Prenumerera innan dess för att behålla dagens pris så länge du är prenumerant.",
+    "sub": "Alla abonnemang har alla funktioner. Pro är för en person, och ett Team-abonnemang har en fast storlek som du lägger till personer upp till."
+  },
+  "compare": {
+    "title": "Snabb jämförelse",
+    "sub": "Så står sig tududi Cloud mot apparna den oftast jämförs med, på deras personliga abonnemang.",
+    "footnote": "Todoist Pro, TickTick Premium och Notion Plus, från deras offentliga prissidor i september 2026. Kolla deras webbplatser för aktuella priser. Deras priser är amerikanska listpriser i dollar.",
+    "rows": {
+      "price": "Pris, årsvis",
+      "aiIncluded": "AI ingår",
+      "dayPlanner": "Planera dagen runt kalendern",
+      "habits": "Vanespårning",
+      "goals": "Mål, områden och projekt",
+      "notes": "Anteckningar bredvid uppgifterna",
+      "matrix": "Eisenhowermatris",
+      "kanban": "Kanbantavlor",
+      "views": "Sparade smarta vyer",
+      "people": "Tilldela uppgifter till personer",
+      "caldav": "Uppgiftssynk via CalDAV",
+      "mcp": "MCP-server för AI-agenter"
+    },
+    "values": {
+      "perYear": "{{price}}/år",
+      "businessOnly": "Endast Business-abonnemang",
+      "separateApp": "Separat app",
+      "diy": "Bygg själv"
+    }
+  },
+  "waitlist": {
+    "placeholder": "du@email.com",
+    "inputLabel": "E-postadress"
+  },
+  "signup": {
+    "note": "Vi sparar din adress och datumet du lämnade den, bara för att skicka nyheter och uppdateringar. Vi delar den aldrig.",
+    "joined": "Du prenumererar. Nyheter och uppdateringar kommer via e-post."
+  },
+  "langs": {
+    "heading": "Tillgänglig på {{count}} språk världen över"
+  },
+  "community": {
+    "title": "Gå med i tududi-gemenskapen",
+    "sub": "Prata med andra tududi-användare, få hjälp och håll dig uppdaterad"
+  },
+  "footer": {
+    "colProduct": "Produkt",
+    "colCommunity": "Community & support",
+    "colSupport": "Stötta",
+    "linkCoffee": "Bjud på en kaffe",
+    "subTitle": "Nyheter och uppdateringar via e-post",
+    "subBody": "Nyheter och uppdateringar om produkten då och då. Ingen spam, avsluta när du vill.",
+    "subSubmit": "Anmäl mig",
+    "rights": "Alla rättigheter förbehållna.",
+    "tagline": "Ett lugnt, komplett system för att organisera liv och arbete.",
+    "linkTerms": "Villkor",
+    "linkPrivacy": "Integritet",
+    "linkRefunds": "Återbetalning",
+    "linkContact": "Kontakt",
+    "linkCookies": "Cookieinställningar"
+  },
+  "consent": {
+    "label": "Cookieval",
+    "body": "Vi använder cookies för att förbättra din upplevelse på den här webbplatsen. De sätts bara om du godkänner dem.",
+    "accept": "Godkänn",
+    "decline": "Avvisa"
+  },
+  "js": {
+    "showFewer": "Visa färre",
+    "copy": "Kopiera",
+    "copied": "Kopierat"
+  },
+  "faq": {
+    "items": {
+      "freePlan": {
+        "a": "Nej. Pro kostar {{monthly}} i månaden eller {{price}} om året för en person, och Team-abonnemang kostar lika mycket per person i fasta storlekar. Det finns ingen gratisnivå, ingen provperiodsklocka och inget kort som tyst börjar debiteras senare. Det finns en 14 dagars pengarna-tillbaka-garanti om det inte passar dig, och det finns en livedemo på den här sidan om du vill se dig omkring först.",
+        "q": "Finns det en gratisnivå eller provperiod på tududi Cloud?",
+        "aTrial": "Det finns ingen gratisplan, men varje nytt konto får en kostnadsfri provperiod på {{days}} dagar, utan kort. Provperioden har AI-assistenten med en mindre kvot och en medlem som du kan lägga till. Offentliga anteckningslänkar öppnas när du prenumererar. Om du inte prenumererar blir kontot skrivskyddat i 30 dagar så att du kan exportera dina data, och raderas sedan. Efter provperioden kostar Pro {{monthly}} i månaden eller {{price}} om året, och Team-abonnemang kostar lika mycket per person. Det kostnadsfria sättet att använda tududi är att köra det på din egen server, det är samma applikation."
+      },
+      "leaving": {
+        "q": "Kan jag lämna, och vad händer med mina data?",
+        "a": "Ja, när som helst. Exportera allt som en enda fil från din profil och importera den i en självhostad tududi, som läser samma format. Att ta bort kontot raderar dina data, bilagor och säkerhetskopior från våra servrar och avslutar alla prenumerationer."
+      },
+      "aiOptional": {
+        "a": "Nej. Båda AI-lagren är avstängda tills du aktiverar dem, och tududi är ett komplett system utan dem. Om du aldrig aktiverar dem saknas ingenting och ingenting tjatar på dig.",
+        "q": "Måste jag använda AI-funktionerna?"
+      },
+      "aiPrivacy": {
+        "a": "Det beror på vilket av de två lagren du menar, och skillnaden spelar roll. MCP-servern körs inuti din egen instans: en agent som Claude Desktop ansluter direkt till den instansen, så samtalet sker mellan din agent och din egen tududi snarare än en mellanhand. AI-assistenten är annorlunda. Den anropar en OpenAI-kompatibel leverantör, så om du pekar den mot en hostad leverantör går innehållet i dessa förfrågningar till den leverantören. Peka den istället mot en lokal modell, som Ollama eller LM Studio, och ingenting lämnar din maskin. Den förblir avstängd tills du anger en nyckel, så det är alltid ditt val, inte ett standardläge.",
+        "q": "Skickas mina data till ett AI-företag?"
+      },
+      "commercialUse": {
+        "a": "Ja, och du behöver inte köpa något först. MIT-licensen tillåter kommersiell användning, även inom ett företag och i en kommersiell produkt, utan intäktsgräns och utan något att rapportera. Om din ekonomiavdelning behöver en faktura faktureras ett Cloud-abonnemang via vår betalningsleverantör och ger en. Ingenting på denna sida säljer ett tillstånd, för det tillståndet är redan ditt.",
+        "q": "Kan jag använda tududi på jobbet, eller i mitt företag?"
+      },
+      "maintained": {
+        "a": "Ja. Det utvecklas huvudsakligen av en underhållare, med bidrag från communityn, och släpps ofta. Varje version listas på GitHubs releasesida, länkad från ändringsloggen i menyn ovan, så att du kan bedöma takten själv snarare än att lita på vårt ord. Utvecklingen sker öppet: ärenden, en offentlig färdplan, och en Discord där frågor besvaras.",
+        "linkLabel": "Se alla releaser",
+        "q": "Underhålls tududi aktivt?"
+      },
+      "mcp": {
+        "a": "MCP är Model Context Protocol, en öppen standard för att koppla AI-agenter till verkliga system. tududi levererar en MCP-server som exponerar {{tools}} verktyg för uppgifter, projekt, områden, mål, vanor, anteckningar, personer, taggar, vyer, inkorgen, sökning och mätvärden, så att en agent kan fånga, hitta, uppdatera och avsluta arbete istället för att bara prata om det. Det är valfritt, ingår i Cloud och i varje självhostad instans, och fungerar med Claude Desktop, Cursor, Windsurf, Cline, eller vilken annan MCP-klient som helst.",
+        "q": "Vad är MCP, och vad kan en agent faktiskt göra?"
+      },
+      "shutdown": {
+        "a": "Appen är MIT-licensierad och källkoden är offentlig, så den kan inte tas ifrån dig. Vem som helst kan fortsätta köra den, och du kan forka den. På tududi Cloud lever dina data i en standard tududi-databas istället för ett proprietärt format, så om tjänsten någonsin skulle stänga ner skulle du få dina data och en guide för att flytta dem till din egen server.",
+        "q": "Vad händer med mina data om tududi försvinner?"
+      },
+      "trust": {
+        "q": "Kan jag lita på er med mina data?",
+        "a": "Du behöver inte ta oss på orden. tududi är öppen källkod, så vem som helst kan läsa exakt hur det hanterar dina data. På Cloud förblir allt du lägger in ditt: exportera det som en enda fil när du vill, radera ditt konto själv, och det finns en 14 dagars pengarna-tillbaka-garanti om det visar sig inte passa dig."
+      }
+    },
+    "eyebrow": "FAQ",
+    "groups": {
+      "managed": "AI, MCP & Cloud",
+      "project": "Licens & projekt"
+    },
+    "permalink": "Länk till detta svar",
+    "sub": "Licensen, AI:n, och vad som händer med dina data. Om något saknas, fråga på Discord.",
+    "title": "Frågor värda att besvara innan du bestämmer dig"
+  },
+  "cloud": {
+    "ctaPricing": "Se priset",
+    "ctaPrimary": "Kom igång",
+    "includes": [
+      "Obegränsat med uppgifter, projekt och anteckningar",
+      "För en person. Team-abonnemang lägger till personer i fasta storlekar",
+      "Bilagor och filuppladdningar",
+      "Dagsplanering med AI, MCP, kalenderflöden, CalDAV och Telegram-boten",
+      "Dagliga säkerhetskopior och hanterade uppdateringar",
+      "Support via e-post",
+      "Exportera allt, när du vill"
+    ],
+    "lede": "Samma system i båda fallen. Skillnaden är vem som håller det igång, patchat och säkerhetskopierat vid tre på natten.",
+    "metaDescription": "tududi Cloud är samma system med öppen källkod, som körs på våra servrar med uppdateringar, säkerhetskopior och e-post skötta åt dig. Pro för en person eller ett Team-abonnemang för en grupp, månadsvis eller årsvis, avsluta när som helst.",
+    "metaTitle": "tududi Cloud: det hostade tududi, driftat för dig",
+    "note": "Samma MIT-licensierade app. Exportera allt, när du vill.",
+    "orAnnual": "eller",
+    "priceNote": "Debiteras av vår betalningsleverantör. Priserna exkluderar tillämpliga skatter.",
+    "pricingSub": "Allt ingår. Avsluta när du vill.",
+    "pricingTitle": "Pro för dig, Team för alla",
+    "reasons": {
+      "backups": {
+        "body": "Databasen dumpas varje natt och förvaras utanför den maskin som betjänar dig. Du kan också exportera allt själv när du vill.",
+        "title": "Säkerhetskopior du inte behöver komma ihåg"
+      },
+      "email": {
+        "body": "Verifieringar, lösenordsåterställningar och påminnelser skickas via en uppvärmd sändningsdomän, vilket är krångligt och tråkigt att ställa in själv.",
+        "title": "E-post som kommer fram"
+      },
+      "noOps": {
+        "body": "Ingen VPS att hyra, ingen Docker att uppdatera, ingen reverse proxy eller certifikat att förnya. Du loggar in och det är där.",
+        "title": "Ingen server att driva"
+      },
+      "sameApp": {
+        "body": "Inga cloud-exklusiva funktioner och ingen stympad självhostad build. Om vi någonsin lägger ner tjänsten får du dina data och en migreringsguide.",
+        "title": "Exakt samma app"
+      },
+      "support": {
+        "body": "En person som känner koden svarar. Med självhosting har du communityn, vilket är bra, men ingen är skyldig att svara.",
+        "title": "Någon att mejla"
+      },
+      "updates": {
+        "body": "Nya versioner når ditt konto utan en pull, en omstart eller en migrering du måste bevaka.",
+        "title": "Uppdateringar tillämpade för dig"
+      }
+    },
+    "title": "Varför använda tududi Cloud?",
+    "whyEyebrow": "Cloud",
+    "whySub": "Inte funktioner. Varje funktion finns även i den självhostade byggen.",
+    "whyTitle": "Vad du egentligen betalar för",
+    "ctaTrial": "Prova gratis",
+    "pricingSubTrial": "Prova gratis i {{days}} dagar, utan kort. Sedan ingår allt, säg upp när du vill."
+  },
+  "finalCta": {
+    "primary": "Kom igång",
+    "secondary": "Se priser",
+    "sub": "Vi driver servern, uppdateringarna och säkerhetskopiorna. Du får systemet, och en 14-dagars pengarna-tillbaka-garanti om det inte är för dig.",
+    "title": "Bli organiserad på en minut",
+    "subTrial": "Vi driver servern, uppdateringarna och säkerhetskopiorna. Prova gratis i {{days}} dagar, utan kort.",
+    "primaryTrial": "Prova gratis"
+  },
+  "contact": {
+    "title": "Kontakta oss",
+    "lede": "Frågor om tududi Cloud, betalning eller ditt konto? Skicka ett meddelande så svarar vi via e-post.",
+    "name": "Namn",
+    "email": "E-post",
+    "message": "Meddelande",
+    "submit": "Skicka meddelande",
+    "sent": "Tack, ditt meddelande är på väg. Vi svarar via e-post.",
+    "invalid": "Fyll i ditt namn, en giltig e-postadress och ett meddelande.",
+    "failed": "Meddelandet kunde inte skickas just nu. Mejla oss på"
+  },
+  "plan": {
+    "eyebrow": "Planera dagen",
+    "title": "Från en flyktig tanke till en färdig dag",
+    "sub": "Fånga saker när de dyker upp, planera dagen runt dina möten med AI och ta den ett block i taget.",
+    "stepLabel": "Steg {{n}}",
+    "steps": {
+      "capture": {
+        "title": "Fånga allt, med vanliga ord",
+        "body": "En lägg till-ruta för inkorg, uppgifter, anteckningar och projekt, överallt i appen. Skriv som du tänker så fyller tududi i resten.",
+        "points": [
+          "“next fri”, “in 3 days” eller “every first monday” sätter datum eller upprepning",
+          "#taggar, +Projekt och @person fångas upp medan du skriver",
+          "Klistra in en skärmbild eller släpp filer så följer de med"
+        ],
+        "alt": "Lägg till-rutan gör en mening till en återkommande uppgift med tagg och projekt"
+      },
+      "plan": {
+        "title": "Planera dagen, med AI (eller inte)",
+        "body": "Planeraren visar vad som får plats i dag, i den ordning du väljer. Ge varje uppgift en längd och lägg den i ledig tid mellan möten, eller låt AI göra ett utkast till hela dagen.",
+        "points": [
+          "Rangordnade förslag: försenat, förfaller i dag, pågår, sedan resten",
+          "Utkast med AI fyller ledig tid runt möten, och Ångra återställer",
+          "Tips varnar för en överbokad dag och luckor där en uppgift passar"
+        ],
+        "alt": "Dagsplaneraren med uppgifter och möten på en tidslinje"
+      },
+      "today": {
+        "title": "I dag, med din kalender",
+        "body": "Starta dagen så visar I dag bara det du bestämt: blocket du ska vara på nu, sedan agendan, med dina Google-, Apple- eller Outlook-möten emellan.",
+        "points": [
+          "Markera klar eller skjut upp från Nu-kortet",
+          "Kalenderflöden som bara läses, lagrade krypterat",
+          "En AI-sammanfattning på kvällen flyttar det ofärdiga till i morgon"
+        ],
+        "alt": "I dag med nästa uppgift, agendan och möten från två kalendrar"
+      }
+    }
+  },
+  "pains": {
+    "eyebrow": "Den mentala belastningen",
+    "title": "Att organisera är inte det svåra. Att komma ihåg är det.",
+    "sub": "De flesta appar ger dig ännu ett ställe att skriva in saker. Problemet var aldrig att skriva. Det är att bära allt i huvudet.",
+    "items": {
+      "oneHead": {
+        "title": "Allt bor i ditt huvud",
+        "body": "Tandläkaren, bilförsäkringen, presenten, blanketten som skulle in i fredags. Allt finns där inne, och inget läggs någonsin ner."
+      },
+      "notesApp": {
+        "title": "En anteckningsapp är inte ett system",
+        "body": "En rad skriven vid midnatt läses av ingen, inte heller av dig. Den scrollar bort och oron kommer tillbaka en vecka senare."
+      },
+      "tooManyApps": {
+        "title": "En app för varje hörn",
+        "body": "En kalender här, en lista där, påminnelser i telefonen, ett kalkylblad för flytten. Fem ställen att titta på, och det du behöver är aldrig det som är öppet."
+      }
+    },
+    "turn": "Skriv det en gång. Ge det en plats. Låt det lämna ditt huvud."
+  }
+}

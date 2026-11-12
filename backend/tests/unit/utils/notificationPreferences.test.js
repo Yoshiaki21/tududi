@@ -1,5 +1,8 @@
 const {
     shouldSendInAppNotification,
+    shouldSendPushNotification,
+    deliverySources,
+    reminderSources,
     getDefaultNotificationPreferences,
     ensureNotificationPreferences,
     NOTIFICATION_TYPE_MAPPING,
@@ -16,30 +19,72 @@ describe('notificationPreferences utils', () => {
                     email: false,
                     push: false,
                     telegram: false,
+                    apprise: false,
+                    matrix: false,
                 },
                 overdueTasks: {
                     inApp: true,
                     email: false,
                     push: false,
                     telegram: false,
+                    apprise: false,
+                    matrix: false,
                 },
                 dueProjects: {
                     inApp: true,
                     email: false,
                     push: false,
                     telegram: false,
+                    apprise: false,
+                    matrix: false,
                 },
                 overdueProjects: {
                     inApp: true,
                     email: false,
                     push: false,
                     telegram: false,
+                    apprise: false,
+                    matrix: false,
                 },
                 deferUntil: {
                     inApp: true,
                     email: false,
                     push: false,
                     telegram: false,
+                    apprise: false,
+                    matrix: false,
+                },
+                taskAssigned: {
+                    inApp: true,
+                    email: false,
+                    push: false,
+                    telegram: false,
+                    apprise: false,
+                    matrix: false,
+                },
+                habitReminders: {
+                    inApp: true,
+                    email: false,
+                    push: false,
+                    telegram: false,
+                    apprise: false,
+                    matrix: false,
+                },
+                taskReminders: {
+                    inApp: true,
+                    email: false,
+                    push: false,
+                    telegram: false,
+                    apprise: false,
+                    matrix: false,
+                },
+                comments: {
+                    inApp: true,
+                    email: false,
+                    push: false,
+                    telegram: false,
+                    apprise: false,
+                    matrix: false,
                 },
             });
         });
@@ -203,6 +248,10 @@ describe('notificationPreferences utils', () => {
                 task_overdue: 'overdueTasks',
                 project_due_soon: 'dueProjects',
                 project_overdue: 'overdueProjects',
+                task_assigned: 'taskAssigned',
+                task_reminder: 'taskReminders',
+                comment_added: 'comments',
+                mention: 'comments',
             });
         });
     });
@@ -241,12 +290,16 @@ describe('notificationPreferences utils', () => {
                     email: true,
                     push: false,
                     telegram: true,
+                    apprise: false,
+                    matrix: false,
                 },
                 overdueTasks: {
                     inApp: true,
                     email: false,
                     push: false,
                     telegram: false,
+                    apprise: false,
+                    matrix: false,
                 },
             };
 
@@ -262,18 +315,24 @@ describe('notificationPreferences utils', () => {
                 email: false,
                 push: false,
                 telegram: false,
+                apprise: false,
+                matrix: false,
             });
             expect(result.overdueProjects).toEqual({
                 inApp: true,
                 email: false,
                 push: false,
                 telegram: false,
+                apprise: false,
+                matrix: false,
             });
             expect(result.deferUntil).toEqual({
                 inApp: true,
                 email: false,
                 push: false,
                 telegram: false,
+                apprise: false,
+                matrix: false,
             });
         });
 
@@ -291,12 +350,16 @@ describe('notificationPreferences utils', () => {
                 email: true,
                 push: false,
                 telegram: false,
+                apprise: false,
+                matrix: false,
             });
             expect(result.overdueTasks).toEqual({
                 inApp: true,
                 email: false,
                 push: false,
                 telegram: false,
+                apprise: false,
+                matrix: false,
             });
         });
 
@@ -307,30 +370,72 @@ describe('notificationPreferences utils', () => {
                     email: true,
                     push: false,
                     telegram: true,
+                    apprise: false,
+                    matrix: false,
                 },
                 overdueTasks: {
                     inApp: true,
                     email: false,
                     push: true,
                     telegram: false,
+                    apprise: false,
+                    matrix: false,
                 },
                 dueProjects: {
                     inApp: true,
                     email: false,
                     push: false,
                     telegram: false,
+                    apprise: false,
+                    matrix: false,
                 },
                 overdueProjects: {
                     inApp: false,
                     email: false,
                     push: false,
                     telegram: false,
+                    apprise: false,
+                    matrix: false,
                 },
                 deferUntil: {
                     inApp: true,
                     email: true,
                     push: false,
                     telegram: true,
+                    apprise: false,
+                    matrix: false,
+                },
+                taskAssigned: {
+                    inApp: false,
+                    email: true,
+                    push: false,
+                    telegram: false,
+                    apprise: false,
+                    matrix: false,
+                },
+                habitReminders: {
+                    inApp: false,
+                    email: false,
+                    push: false,
+                    telegram: true,
+                    apprise: false,
+                    matrix: false,
+                },
+                taskReminders: {
+                    inApp: false,
+                    email: false,
+                    push: false,
+                    telegram: true,
+                    apprise: false,
+                    matrix: false,
+                },
+                comments: {
+                    inApp: true,
+                    email: false,
+                    push: true,
+                    telegram: false,
+                    apprise: false,
+                    matrix: false,
                 },
             };
 
@@ -347,6 +452,8 @@ describe('notificationPreferences utils', () => {
                     email: false,
                     push: false,
                     telegram: false,
+                    apprise: false,
+                    matrix: false,
                 },
             };
 
@@ -358,10 +465,77 @@ describe('notificationPreferences utils', () => {
                 email: false,
                 push: false,
                 telegram: false,
+                apprise: false,
+                matrix: false,
             });
 
             // Valid type should be preserved
             expect(result.overdueTasks).toEqual(input.overdueTasks);
+        });
+    });
+
+    describe('shouldSendPushNotification', () => {
+        const withPrefs = (prefs) => ({ notification_preferences: prefs });
+
+        it('is off without preferences', () => {
+            expect(shouldSendPushNotification(null, 'task_due_soon')).toBe(
+                false
+            );
+            expect(
+                shouldSendPushNotification(withPrefs(null), 'task_due_soon')
+            ).toBe(false);
+        });
+
+        it('follows the push flag of the mapped preference key', () => {
+            const user = withPrefs({
+                dueTasks: { inApp: true, push: true },
+                overdueTasks: { inApp: true, push: false },
+                comments: { inApp: true, push: true },
+            });
+            expect(shouldSendPushNotification(user, 'task_due_soon')).toBe(
+                true
+            );
+            expect(shouldSendPushNotification(user, 'task_overdue')).toBe(
+                false
+            );
+            expect(shouldSendPushNotification(user, 'mention')).toBe(true);
+            expect(shouldSendPushNotification(user, 'comment_added')).toBe(
+                true
+            );
+            expect(shouldSendPushNotification(user, 'deferUntil')).toBe(false);
+        });
+    });
+
+    describe('deliverySources', () => {
+        it('lists every extra channel the user turned on', () => {
+            const user = {
+                notification_preferences: {
+                    taskAssigned: { inApp: true, telegram: true, push: true },
+                    dueTasks: { inApp: true, telegram: false, push: true },
+                },
+            };
+            expect(deliverySources(user, 'task_assigned')).toEqual([
+                'telegram',
+                'push',
+            ]);
+            expect(deliverySources(user, 'task_due_soon')).toEqual(['push']);
+            expect(deliverySources(user, 'project_overdue')).toEqual([]);
+        });
+
+        it('includes matrix when the user turned it on', () => {
+            const user = {
+                notification_preferences: {
+                    dueTasks: { inApp: true, push: true, matrix: true },
+                },
+            };
+            expect(deliverySources(user, 'task_due_soon')).toEqual([
+                'push',
+                'matrix',
+            ]);
+            expect(reminderSources(user, 'task_due_soon')).toEqual([
+                'push',
+                'matrix',
+            ]);
         });
     });
 });

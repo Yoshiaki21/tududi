@@ -4,24 +4,12 @@ const https = require('https');
 const http = require('http');
 const { URL } = require('url');
 const { logError } = require('../../services/logService');
+const { assertSafeUrl, publicOnlyLookup } = require('./ssrfGuard');
 
-let nodeFetchInstance = null;
-try {
-    // eslint-disable-next-line global-require
-    nodeFetchInstance = require('node-fetch');
-} catch {
-    nodeFetchInstance = null;
-}
+const MAX_REDIRECTS = 5;
 
-const getFetchImplementation = () => {
-    if (typeof fetch === 'function') {
-        return fetch;
-    }
-    if (nodeFetchInstance) {
-        return nodeFetchInstance;
-    }
-    return null;
-};
+const getFetchImplementation = () =>
+    typeof fetch === 'function' ? fetch : null;
 
 const fetchWithTimeout = async (url, options = {}, timeoutMs = 7000) => {
     const fetchFn = getFetchImplementation();
@@ -194,39 +182,11 @@ const finalizeMetadata = (metadata, sourceUrl) => {
     return enriched;
 };
 
-async function fetchMetadataViaFetch(normalizedUrl) {
-    const response = await fetchWithTimeout(
-        normalizedUrl,
-        {
-            method: 'GET',
-            redirect: 'follow',
-            headers: {
-                'User-Agent':
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            },
-        },
-        7000
-    );
-
-    if (!response || !response.ok) {
-        return null;
-    }
-
-    const contentType = response.headers.get('content-type');
-    if (contentType && !contentType.includes('text/html')) {
-        return null;
-    }
-
-    const html = await response.text();
-    if (!html) {
-        return null;
-    }
-
-    return finalizeMetadata(extractMetadataFromHtml(html), normalizedUrl);
-}
-
-function fetchMetadataViaHttp(normalizedUrl, maxRedirects = 5) {
+// The metadata fetch uses Node's http/https clients rather than fetch() so
+// the connection can be pinned: publicOnlyLookup re-resolves the host when
+// the socket opens and refuses a private address, which closes the gap
+// between assertSafeUrl's DNS check and the request (DNS rebinding).
+function fetchMetadataViaHttp(normalizedUrl, maxRedirects = MAX_REDIRECTS) {
     return new Promise((resolve) => {
         let finished = false;
         const fallbackResolve = (metadata, sourceUrl = normalizedUrl) => {
@@ -249,6 +209,16 @@ function fetchMetadataViaHttp(normalizedUrl, maxRedirects = 5) {
                 return;
             }
 
+            assertSafeUrl(currentUrl)
+                .then(() => performRequest(currentUrl, redirectCount))
+                .catch((error) => {
+                    logError('Blocked unsafe URL for metadata fetch:', error);
+                    clearTimeout(globalTimeout);
+                    fallbackResolve(null);
+                });
+        }
+
+        function performRequest(currentUrl, redirectCount) {
             try {
                 const urlObj = new URL(currentUrl);
                 const isHttps = urlObj.protocol === 'https:';
@@ -260,9 +230,11 @@ function fetchMetadataViaHttp(normalizedUrl, maxRedirects = 5) {
                     path: urlObj.pathname + urlObj.search || '/',
                     method: 'GET',
                     timeout: 4000,
+                    lookup: publicOnlyLookup,
                     headers: {
                         'User-Agent':
                             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                     },
                 };
 
@@ -290,6 +262,13 @@ function fetchMetadataViaHttp(normalizedUrl, maxRedirects = 5) {
                     }
 
                     if (res.statusCode < 200 || res.statusCode >= 400) {
+                        conclude(null);
+                        return;
+                    }
+
+                    const contentType = res.headers['content-type'];
+                    if (contentType && !contentType.includes('text/html')) {
+                        res.resume();
                         conclude(null);
                         return;
                     }
@@ -417,14 +396,10 @@ async function fetchUrlMetadata(url) {
     }
 
     try {
-        if (getFetchImplementation()) {
-            const metadata = await fetchMetadataViaFetch(normalizedUrl);
-            if (metadata) {
-                return metadata;
-            }
-        }
+        await assertSafeUrl(normalizedUrl);
     } catch (error) {
-        logError('Error fetching URL metadata via fetch:', error);
+        logError('Blocked unsafe URL for metadata fetch:', error);
+        return null;
     }
 
     const httpMetadata = await fetchMetadataViaHttp(normalizedUrl);

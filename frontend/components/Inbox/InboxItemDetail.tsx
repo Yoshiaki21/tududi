@@ -1,26 +1,29 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
 import { InboxItem } from '../../entities/InboxItem';
 import { useTranslation } from 'react-i18next';
-import {
-    TrashIcon,
-    DocumentTextIcon,
-    FolderIcon,
-    ClipboardDocumentListIcon,
-    TagIcon,
-    GlobeAltIcon,
-} from '@heroicons/react/24/outline';
+import { XMarkIcon } from '@heroicons/react/24/outline';
 import { Task } from '../../entities/Task';
 import { Project } from '../../entities/Project';
 import { Note } from '../../entities/Note';
 import ConfirmDialog from '../Shared/ConfirmDialog';
+import InboxItemAttachments from './InboxItemAttachments';
 import { useStore } from '../../store/useStore';
+import {
+    focusAreaIdForTask,
+    getFocus,
+    mergeFocusTags,
+} from '../../utils/focus';
 import QuickCaptureInput, {
     InboxComposerFooterContext,
     QuickCaptureInputHandle,
 } from './QuickCaptureInput';
-import InboxCard from './InboxCard';
-import { isUrl } from '../../utils/urlService';
+import {
+    analyzeInboxText,
+    applyAnalysisToTask,
+    ensureAnalysisArea,
+    InboxAnalysis,
+} from '../../utils/inboxService';
+import { carriedTokens, withCarried } from '../../utils/carriedTokens';
 
 interface InboxItemDetailProps {
     item: InboxItem;
@@ -30,6 +33,8 @@ interface InboxItemDetailProps {
     openProjectModal: (project: Project | null, inboxItemUid?: string) => void;
     openNoteModal: (note: Note | null, inboxItemUid?: string) => void;
     projects: Project[];
+    isNew?: boolean;
+    onEditingChange?: (editing: boolean) => void;
 }
 
 const InboxItemDetail: React.FC<InboxItemDetailProps> = ({
@@ -40,6 +45,8 @@ const InboxItemDetail: React.FC<InboxItemDetailProps> = ({
     openProjectModal,
     openNoteModal,
     projects,
+    isNew = false,
+    onEditingChange,
 }) => {
     const { t } = useTranslation();
     const {
@@ -48,13 +55,48 @@ const InboxItemDetail: React.FC<InboxItemDetailProps> = ({
     const [showConfirmDialog, setShowConfirmDialog] = useState(false);
     const [loading, setLoading] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
+    // The edit box opens with the cleaned title (tokens like #tag, ~area,
+    // dates and @person removed). Null until the analysis returns. The
+    // removed words are carried: shown as badges and kept when saved.
+    const [cleanedEditText, setCleanedEditText] = useState<string | null>(null);
+    const [carriedEditText, setCarriedEditText] = useState('');
     const containerRef = useRef<HTMLDivElement>(null);
     const composerRef = useRef<QuickCaptureInputHandle>(null);
 
     useEffect(() => {
+        onEditingChange?.(isEditing);
+    }, [isEditing]);
+
+    useEffect(() => {
         if (!isEditing) {
+            setCleanedEditText(null);
+            setCarriedEditText('');
             return;
         }
+        let cancelled = false;
+        analyzeInboxText(fullContent)
+            .then((result) => {
+                const cleaned = result?.cleaned_content?.trim();
+                if (cancelled || !cleaned) return;
+                setCleanedEditText(cleaned);
+                setCarriedEditText(carriedTokens(fullContent, cleaned));
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+        };
+        // Only when the editor opens; the text is read once for that session.
+    }, [isEditing]);
+
+    // Tell the list in the same render that this item is opening, so its
+    // rounded corners and background change together with the card.
+    const startEditing = () => {
+        setIsEditing(true);
+        onEditingChange?.(true);
+    };
+
+    useEffect(() => {
+        if (!isEditing) return;
 
         const handleClickOutside = (event: MouseEvent) => {
             if (
@@ -84,101 +126,19 @@ const InboxItemDetail: React.FC<InboxItemDetailProps> = ({
         };
     }, [isEditing]);
 
-    const parseHashtags = (text: string): string[] => {
-        const trimmedText = text.trim();
-        const matches: string[] = [];
-
-        const words = trimmedText.split(/\s+/);
-        if (words.length === 0) return matches;
-
-        let i = 0;
-        while (i < words.length) {
-            if (words[i].startsWith('#') || words[i].startsWith('+')) {
-                let groupEnd = i;
-                while (
-                    groupEnd < words.length &&
-                    (words[groupEnd].startsWith('#') ||
-                        words[groupEnd].startsWith('+'))
-                ) {
-                    groupEnd++;
-                }
-
-                for (let j = i; j < groupEnd; j++) {
-                    if (words[j].startsWith('#')) {
-                        const tagName = words[j].substring(1);
-                        if (
-                            tagName &&
-                            /^[a-zA-Z0-9_-]+$/.test(tagName) &&
-                            !matches.includes(tagName)
-                        ) {
-                            matches.push(tagName);
-                        }
-                    }
-                }
-
-                i = groupEnd;
-            } else {
-                i++;
-            }
-        }
-
-        return matches;
-    };
-
-    const parseProjectRefs = (text: string): string[] => {
-        const trimmedText = text.trim();
-        const matches: string[] = [];
-
-        const tokens = tokenizeText(trimmedText);
-
-        let i = 0;
-        while (i < tokens.length) {
-            if (tokens[i].startsWith('#') || tokens[i].startsWith('+')) {
-                let groupEnd = i;
-                while (
-                    groupEnd < tokens.length &&
-                    (tokens[groupEnd].startsWith('#') ||
-                        tokens[groupEnd].startsWith('+'))
-                ) {
-                    groupEnd++;
-                }
-
-                for (let j = i; j < groupEnd; j++) {
-                    if (tokens[j].startsWith('+')) {
-                        let projectName = tokens[j].substring(1);
-
-                        if (
-                            projectName.startsWith('"') &&
-                            projectName.endsWith('"')
-                        ) {
-                            projectName = projectName.slice(1, -1);
-                        }
-
-                        if (projectName && !matches.includes(projectName)) {
-                            matches.push(projectName);
-                        }
-                    }
-                }
-
-                i = groupEnd;
-            } else {
-                i++;
-            }
-        }
-
-        return matches;
-    };
+    // ── Parsing helpers ───────────────────────────────────────────────────────
 
     const tokenizeText = (text: string): string[] => {
         const tokens: string[] = [];
         let currentToken = '';
         let inQuotes = false;
-        let i = 0;
 
-        while (i < text.length) {
+        for (let i = 0; i < text.length; i++) {
             const char = text[i];
-
-            if (char === '"' && (i === 0 || text[i - 1] === '+')) {
+            if (
+                char === '"' &&
+                (i === 0 || text[i - 1] === '+' || text[i - 1] === '@')
+            ) {
                 inQuotes = true;
                 currentToken += char;
             } else if (char === '"' && inQuotes) {
@@ -192,131 +152,245 @@ const InboxItemDetail: React.FC<InboxItemDetailProps> = ({
             } else {
                 currentToken += char;
             }
-            i++;
         }
-
-        if (currentToken) {
-            tokens.push(currentToken);
-        }
-
+        if (currentToken) tokens.push(currentToken);
         return tokens;
     };
 
-    const cleanTextFromTagsAndProjects = (text: string): string => {
-        const trimmedText = text.trim();
-        const tokens = tokenizeText(trimmedText);
-        const cleanedTokens: string[] = [];
+    const parseHashtags = (text: string): string[] => {
+        const words = text.trim().split(/\s+/);
+        const matches: string[] = [];
+        let i = 0;
+        while (i < words.length) {
+            if (words[i].startsWith('#') || words[i].startsWith('+')) {
+                let groupEnd = i;
+                while (
+                    groupEnd < words.length &&
+                    (words[groupEnd].startsWith('#') ||
+                        words[groupEnd].startsWith('+'))
+                )
+                    groupEnd++;
+                for (let j = i; j < groupEnd; j++) {
+                    if (words[j].startsWith('#')) {
+                        const tagName = words[j].substring(1);
+                        if (
+                            tagName &&
+                            /^[a-zA-Z0-9_-]+$/.test(tagName) &&
+                            !matches.includes(tagName)
+                        )
+                            matches.push(tagName);
+                    }
+                }
+                i = groupEnd;
+            } else {
+                i++;
+            }
+        }
+        return matches;
+    };
 
+    const parseProjectRefs = (text: string): string[] => {
+        const tokens = tokenizeText(text.trim());
+        const matches: string[] = [];
+        let i = 0;
+        while (i < tokens.length) {
+            if (tokens[i].startsWith('#') || tokens[i].startsWith('+')) {
+                let groupEnd = i;
+                while (
+                    groupEnd < tokens.length &&
+                    (tokens[groupEnd].startsWith('#') ||
+                        tokens[groupEnd].startsWith('+'))
+                )
+                    groupEnd++;
+                for (let j = i; j < groupEnd; j++) {
+                    if (tokens[j].startsWith('+')) {
+                        let projectName = tokens[j].substring(1);
+                        if (
+                            projectName.startsWith('"') &&
+                            projectName.endsWith('"')
+                        )
+                            projectName = projectName.slice(1, -1);
+                        if (projectName && !matches.includes(projectName)) {
+                            matches.push(projectName);
+                            return matches;
+                        }
+                    }
+                }
+                i = groupEnd;
+            } else {
+                i++;
+            }
+        }
+        return matches;
+    };
+
+    const cleanTextFromTagsAndProjects = (text: string): string => {
+        const tokens = tokenizeText(text.trim());
+        const cleanedTokens: string[] = [];
         let i = 0;
         while (i < tokens.length) {
             if (tokens[i].startsWith('#') || tokens[i].startsWith('+')) {
                 while (
                     i < tokens.length &&
                     (tokens[i].startsWith('#') || tokens[i].startsWith('+'))
-                ) {
+                )
                     i++;
-                }
             } else {
                 cleanedTokens.push(tokens[i]);
                 i++;
             }
         }
-
         return cleanedTokens.join(' ').trim();
     };
+
+    // Remove a raw token (e.g. "#tag" or "+project") from the item text and save
+    const removeTokenFromText = async (raw: string) => {
+        if (!onUpdate || item.uid === undefined) return;
+        const newText = (item.content || '')
+            .replace(raw, '')
+            .replace(/ {2,}/g, ' ')
+            .trim();
+        await onUpdate(item.uid, newText);
+    };
+
+    // ── Derived values ────────────────────────────────────────────────────────
 
     const fullContent = item.content || '';
     const displayText =
         item.title && item.title.trim().length > 0 ? item.title : fullContent;
     const baseContent = fullContent || displayText;
-    const cleanedPreviewText = cleanTextFromTagsAndProjects(displayText);
-    const previewText =
-        cleanedPreviewText.length > 0 ? cleanedPreviewText : displayText;
+    // Items captured through the API can end up with blank content; without a
+    // placeholder the row renders as an invisible strip that cannot be clicked.
+    const isBlank = displayText.trim().length === 0;
 
-    const hashtags = useMemo(() => {
-        const parsed = parseHashtags(fullContent);
-        const hasBookmark = parsed.some(
-            (tag) => tag.toLowerCase() === 'bookmark'
-        );
-        if (!hasBookmark && isUrl(fullContent.trim())) {
-            return [...parsed, 'bookmark'];
-        }
-        return parsed;
-    }, [fullContent]);
-    const isBookmarkItem = useMemo(
-        () => hashtags.some((tag) => tag.toLowerCase() === 'bookmark'),
-        [hashtags]
-    );
-    const projectRefs = parseProjectRefs(fullContent);
-    const hasLongContent =
-        Boolean(item.title && item.title.trim()) &&
-        item.title !== null &&
-        item.title !== fullContent;
-    const iconTooltip = isBookmarkItem
-        ? t('inbox.iconTooltip.bookmark', 'Bookmark link')
-        : t('inbox.iconTooltip.text', 'Captured text');
+    const extraLineCount =
+        displayText.split('\n').filter((l) => l.trim().length > 0).length - 1;
 
-    const slugify = (text: string) =>
-        text
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-|-$/g, '');
+    // ── Inline text segment renderer ──────────────────────────────────────────
+    // Parses the first line into plain-text + tag chip + project chip segments
 
-    const getTagLink = (tagName: string) => {
-        const tag = tags.find(
-            (t) => t.name.toLowerCase() === tagName.toLowerCase()
-        );
-        if (tag?.uid) {
-            return `/tag/${tag.uid}-${slugify(tag.name)}`;
-        }
-        return `/tag/${encodeURIComponent(tagName)}`;
-    };
-
-    const linkifyContent = (text: string): React.ReactNode => {
-        const urlRegex = /(https?:\/\/[^\s]+)/gi;
-        const matches = [...text.matchAll(urlRegex)];
-
-        if (matches.length === 0) {
-            return text;
-        }
-
+    const renderInlineSegments = (text: string): React.ReactNode => {
+        // Only render the first line for the preview
+        const firstLine = text.split('\n')[0];
+        const re =
+            /#([\w-]+)|\+(?:"([^"]+)"|(\w+))|(?<!\S)@(?:"([^"]+)"|([\w.'-]*\w))|(?<!\S)~(?:"([^"]+)"|([\w.'-]*\w))/gu;
         const nodes: React.ReactNode[] = [];
-        let lastIndex = 0;
+        let last = 0;
+        let m: RegExpExecArray | null;
+        let idx = 0;
 
-        matches.forEach((match, idx) => {
-            const start = match.index ?? 0;
-            const url = match[0];
-            if (start > lastIndex) {
+        while ((m = re.exec(firstLine)) !== null) {
+            if (m.index > last) {
                 nodes.push(
-                    <React.Fragment key={`text-${idx}-${start}`}>
-                        {text.slice(lastIndex, start)}
-                    </React.Fragment>
+                    <span key={`t-${idx}`}>
+                        {firstLine.slice(last, m.index)}
+                    </span>
                 );
             }
-            nodes.push(
-                <a
-                    key={`url-${idx}-${start}`}
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-600 dark:text-blue-400 underline-offset-2 hover:underline break-all"
-                >
-                    {url}
-                </a>
-            );
-            lastIndex = start + url.length;
-        });
+            const raw = m[0];
+            if (m[1]) {
+                // #tag
+                const tagName = m[1];
+                nodes.push(
+                    <span
+                        key={`tag-${idx}`}
+                        className="inline-flex items-center gap-0.5 mx-0.5 align-middle text-[11px] font-semibold leading-none text-blue-700 dark:text-blue-300 bg-blue-100/70 dark:bg-blue-400/10 rounded-full px-2 py-[3px]"
+                    >
+                        #{tagName}
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                void removeTokenFromText(raw);
+                            }}
+                            className="ml-0.5 opacity-50 hover:opacity-100 transition-opacity"
+                            aria-label={`Remove tag ${tagName}`}
+                        >
+                            ×
+                        </button>
+                    </span>
+                );
+            } else if (m[4] || m[5]) {
+                // @person
+                const personName = m[4] || m[5];
+                nodes.push(
+                    <span
+                        key={`person-${idx}`}
+                        className="inline-flex items-center gap-0.5 mx-0.5 align-middle text-[11px] font-semibold leading-none text-indigo-700 dark:text-indigo-300 bg-indigo-100/70 dark:bg-indigo-400/10 rounded-full px-2 py-[3px]"
+                    >
+                        @{personName}
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                void removeTokenFromText(raw);
+                            }}
+                            className="ml-0.5 opacity-50 hover:opacity-100 transition-opacity"
+                            aria-label={`Remove person ${personName}`}
+                        >
+                            ×
+                        </button>
+                    </span>
+                );
+            } else if (m[6] || m[7]) {
+                // ~area
+                const areaName = m[6] || m[7];
+                nodes.push(
+                    <span
+                        key={`area-${idx}`}
+                        className="inline-flex items-center gap-0.5 mx-0.5 align-middle text-[11px] font-semibold leading-none text-purple-700 dark:text-purple-300 bg-purple-100/70 dark:bg-purple-400/10 rounded-full px-2 py-[3px]"
+                    >
+                        ~{areaName}
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                void removeTokenFromText(raw);
+                            }}
+                            className="ml-0.5 opacity-50 hover:opacity-100 transition-opacity"
+                            aria-label={`Remove area ${areaName}`}
+                        >
+                            ×
+                        </button>
+                    </span>
+                );
+            } else {
+                // +project
+                const projectName = m[2] || m[3];
+                nodes.push(
+                    <span
+                        key={`proj-${idx}`}
+                        className="inline-flex items-center gap-0.5 mx-0.5 align-middle text-[11px] font-semibold leading-none text-green-700 dark:text-green-300 bg-green-100/70 dark:bg-green-400/10 rounded-full px-2 py-[3px]"
+                    >
+                        +{projectName}
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                void removeTokenFromText(raw);
+                            }}
+                            className="ml-0.5 opacity-50 hover:opacity-100 transition-opacity"
+                            aria-label={`Remove project ${projectName}`}
+                        >
+                            ×
+                        </button>
+                    </span>
+                );
+            }
+            last = m.index + m[0].length;
+            idx++;
+        }
 
-        if (lastIndex < text.length) {
+        if (last < firstLine.length) {
             nodes.push(
-                <React.Fragment key={`text-tail-${lastIndex}`}>
-                    {text.slice(lastIndex)}
-                </React.Fragment>
+                <span key={`t-end-${idx}`}>{firstLine.slice(last)}</span>
             );
         }
 
-        return nodes;
+        return nodes.length > 0 ? nodes : firstLine;
     };
+
+    // ── Conversion helpers ────────────────────────────────────────────────────
 
     const buildConversionPayload = (
         textOverride?: string,
@@ -340,96 +414,105 @@ const InboxItemDetail: React.FC<InboxItemDetailProps> = ({
             return existingTag || { name: hashtagName };
         });
 
-        let projectId = undefined;
+        let projectUid: string | undefined;
         if (sourceProjectRefs.length > 0) {
-            const projectName = sourceProjectRefs[0];
             const matchingProject = projects.find(
-                (project) =>
-                    project.name.toLowerCase() === projectName.toLowerCase()
+                (p) =>
+                    p.name.toLowerCase() === sourceProjectRefs[0].toLowerCase()
             );
-            if (matchingProject) {
-                projectId = matchingProject.id;
-            }
+            if (matchingProject) projectUid = matchingProject.uid;
+        }
+        // The Focus project fills in when the text names none
+        if (!projectUid && getFocus()?.project_uid) {
+            projectUid = getFocus()?.project_uid ?? undefined;
         }
 
         return {
             sourceText,
             cleanedContent: cleaned,
             tagObjects,
-            projectId,
+            projectUid,
             projectRefsList: sourceProjectRefs,
             hashtagsList: sourceHashtags,
         };
     };
 
-    const handleConvertToTask = (context?: InboxComposerFooterContext) => {
+    const handleConvertToTask = async (
+        context?: InboxComposerFooterContext
+    ) => {
+        const payload = buildConversionPayload(
+            context?.text,
+            context?.hashtags,
+            context?.projectRefs,
+            context?.cleanedText
+        );
+        // Re-analyze against the capture time so "tomorrow" means the day
+        // after the item was added. A date dismissed in the composer stays
+        // dismissed: its live analysis then has no date.
+        let analysis: InboxAnalysis | null = null;
         try {
-            const payload = buildConversionPayload(
-                context?.text,
-                context?.hashtags,
-                context?.projectRefs,
-                context?.cleanedText
-            );
-
-            const newTask: Task = {
-                name: payload.cleanedContent || displayText,
+            analysis = await analyzeInboxText(payload.sourceText, {
+                referenceDate: item.created_at,
+                parseDates: context?.analysis
+                    ? !!context.analysis.parsed_due_date
+                    : true,
+            });
+            analysis = await ensureAnalysisArea(analysis);
+        } catch (error) {
+            console.error('Failed to analyze inbox item:', error);
+        }
+        // A ~area in the text means the task is not for the Focus, so the
+        // Focus project is dropped unless the text named a project itself.
+        const projectUid =
+            analysis?.parsed_area && payload.projectRefsList.length === 0
+                ? undefined
+                : payload.projectUid;
+        const newTask: Task = applyAnalysisToTask(
+            {
+                name:
+                    analysis?.cleaned_content ||
+                    payload.cleanedContent ||
+                    displayText,
                 status: 'not_started',
                 priority: null,
-                tags: payload.tagObjects,
-                project_id: payload.projectId,
+                tags: mergeFocusTags(
+                    payload.tagObjects.map((tag) => tag.name),
+                    getFocus()
+                ).map(
+                    (name) =>
+                        payload.tagObjects.find((tag) => tag.name === name) ??
+                        tags.find(
+                            (tag) =>
+                                tag.name.toLowerCase() === name.toLowerCase()
+                        ) ?? { name }
+                ),
+                project_uid: projectUid,
+                area_id: focusAreaIdForTask(
+                    getFocus(),
+                    projectUid,
+                    useStore.getState().areasStore?.areas ?? []
+                ),
                 completed_at: null,
-            };
-
-            if (item.uid !== undefined) {
-                void openTaskModal(newTask, item.uid);
-            } else {
-                void openTaskModal(newTask);
-            }
-        } catch (error) {
-            console.error('Error converting to task:', error);
-        }
-    };
-
-    const handleSubmitEdit = async (text: string) => {
-        if (!onUpdate || item.uid === undefined) {
-            return;
-        }
-
-        const trimmedCurrent = baseContent.trim();
-        const trimmedNew = text.trim();
-
-        if (trimmedCurrent === trimmedNew) {
-            setIsEditing(false);
-            return;
-        }
-
-        await onUpdate(item.uid, text);
+            },
+            analysis
+        );
+        void openTaskModal(newTask, item.uid);
     };
 
     const handleConvertToProject = (context?: InboxComposerFooterContext) => {
-        try {
-            const payload = buildConversionPayload(
-                context?.text,
-                context?.hashtags,
-                context?.projectRefs,
-                context?.cleanedText
-            );
-
-            const newProject: Project = {
-                name: payload.cleanedContent || displayText,
-                description: '',
-                status: 'planned',
-                tags: payload.tagObjects,
-            };
-
-            if (item.uid !== undefined) {
-                openProjectModal(newProject, item.uid);
-            } else {
-                openProjectModal(newProject);
-            }
-        } catch (error) {
-            console.error('Error converting to project:', error);
-        }
+        const payload = buildConversionPayload(
+            context?.text,
+            context?.hashtags,
+            context?.projectRefs,
+            context?.cleanedText
+        );
+        const newProject: Project = {
+            name: payload.cleanedContent || displayText,
+            description: '',
+            status: 'planned',
+            tags: payload.tagObjects,
+        };
+        openProjectModal(newProject, item.uid);
     };
 
     const handleConvertToNote = async (
@@ -437,40 +520,31 @@ const InboxItemDetail: React.FC<InboxItemDetailProps> = ({
     ) => {
         const sourceText = context?.text ?? baseContent;
         let title = sourceText.split('\n')[0] || sourceText.substring(0, 50);
-        let content = sourceText;
         let isBookmark = false;
 
         try {
-            const { isUrl: detectUrl, extractUrlTitle } = await import(
-                '../../utils/urlService'
-            );
-
+            const { isUrl: detectUrl, extractUrlTitle } =
+                await import('../../utils/urlService');
             if (detectUrl(sourceText.trim())) {
                 setLoading(true);
                 try {
-                    const timeoutPromise = new Promise((_, reject) =>
-                        setTimeout(() => reject(new Error('Timeout')), 3000)
-                    );
-
                     const result = (await Promise.race([
                         extractUrlTitle(sourceText.trim()),
-                        timeoutPromise,
+                        new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error('Timeout')), 3000)
+                        ),
                     ])) as any;
-
-                    if (result && result.title) {
+                    if (result?.title) {
                         title = result.title;
-                        content = sourceText;
                         isBookmark = true;
                     }
-                } catch (titleError) {
-                    console.error('Error extracting URL title:', titleError);
+                } catch {
                     isBookmark = true;
                 } finally {
                     setLoading(false);
                 }
             }
-        } catch (error) {
-            console.error('Error checking URL or extracting title:', error);
+        } catch {
             setLoading(false);
         }
 
@@ -480,185 +554,94 @@ const InboxItemDetail: React.FC<InboxItemDetailProps> = ({
             context?.projectRefs,
             context?.cleanedText
         );
-
         const bookmarkTag = isBookmark ? [{ name: 'bookmark' }] : [];
         const tagObjects = [...payload.tagObjects, ...bookmarkTag];
-
         const finalTitle =
-            title === content ? payload.cleanedContent || sourceText : title;
-        const finalContent = payload.cleanedContent || sourceText;
+            title === sourceText ? payload.cleanedContent || sourceText : title;
 
         const newNote: Note = {
             title: finalTitle,
-            content: finalContent,
+            content: payload.cleanedContent || sourceText,
             tags: tagObjects,
-            project_uid: payload.projectId,
+            project_uid: payload.projectUid,
         };
+        openNoteModal(newNote, item.uid);
+    };
 
-        if (item.uid !== undefined) {
-            openNoteModal(newNote, item.uid);
-        } else {
-            openNoteModal(newNote);
+    const handleSubmitEdit = async (text: string) => {
+        if (!onUpdate || item.uid === undefined) return;
+        // An untouched box saves nothing, so the stored text keeps its
+        // tokens where they were.
+        if (
+            baseContent.trim() === text.trim() ||
+            (cleanedEditText !== null &&
+                withCarried(cleanedEditText, carriedEditText).trim() ===
+                    text.trim())
+        ) {
+            setIsEditing(false);
+            return;
         }
+        await onUpdate(item.uid, text);
     };
 
-    const renderComposerFooter = (context: InboxComposerFooterContext) => (
-        <div className="pt-3 mt-3 border-t border-gray-100 dark:border-gray-800">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                    {loading && <div className="spinner h-4 w-4" />}
-                    <button
-                        onClick={() => handleConvertToTask(context)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-200 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-md hover:bg-blue-100 dark:hover:bg-blue-900/40 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-200 dark:focus:ring-offset-gray-900"
-                    >
-                        <span className="flex items-center gap-1">
-                            <span className="sm:hidden text-sm font-semibold leading-none">
-                                +
-                            </span>
-                            <ClipboardDocumentListIcon className="h-4 w-4" />
-                            <span className="hidden sm:inline">
-                                {t('inbox.createTask', 'Task')}
-                            </span>
-                        </span>
-                    </button>
-                    <button
-                        onClick={() => handleConvertToNote(context)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-purple-700 dark:text-purple-200 bg-purple-50 dark:bg-purple-900/20 border border-purple-100 dark:border-purple-800 rounded-md hover:bg-purple-100 dark:hover:bg-purple-900/40 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-200 dark:focus:ring-offset-gray-900"
-                    >
-                        <span className="flex items-center gap-1">
-                            <span className="sm:hidden text-sm font-semibold leading-none">
-                                +
-                            </span>
-                            <DocumentTextIcon className="h-4 w-4" />
-                            <span className="hidden sm:inline">
-                                {t('inbox.createNote', 'Note')}
-                            </span>
-                        </span>
-                    </button>
-                    <button
-                        onClick={() => handleConvertToProject(context)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-green-700 dark:text-green-200 bg-green-50 dark:bg-green-900/20 border border-green-100 dark:border-green-800 rounded-md hover:bg-green-100 dark:hover:bg-green-900/40 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-200 dark:focus:ring-offset-gray-900"
-                    >
-                        <span className="flex items-center gap-1">
-                            <span className="sm:hidden text-sm font-semibold leading-none">
-                                +
-                            </span>
-                            <FolderIcon className="h-4 w-4" />
-                            <span className="hidden sm:inline">
-                                {t('inbox.createProject', 'Project')}
-                            </span>
-                        </span>
-                    </button>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                    <button
-                        onClick={handleDelete}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-300 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 rounded-md hover:bg-red-100 dark:hover:bg-red-900/40 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-200 dark:focus:ring-offset-gray-900"
-                    >
-                        <TrashIcon className="h-4 w-4" />
-                        <span className="hidden sm:inline">
-                            {t('common.delete', 'Delete')}
-                        </span>
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-
-    const handleDelete = () => {
-        setShowConfirmDialog(true);
-    };
-
+    const handleDelete = () => setShowConfirmDialog(true);
     const confirmDelete = () => {
-        if (item.uid !== undefined) {
-            onDelete(item.uid);
-        }
+        if (item.uid !== undefined) onDelete(item.uid);
         setShowConfirmDialog(false);
     };
 
-    const handleStartEdit = () => {
-        if (!isEditing) {
-            setIsEditing(true);
-        }
-    };
+    // ── Edit-mode footer ──────────────────────────────────────────────────────
 
-    const renderMetadata = () =>
-        (hashtags.length > 0 || projectRefs.length > 0) && (
-            <div className="flex items-center text-xs text-gray-500 dark:text-gray-400 mt-1 ml-8">
-                {projectRefs.length > 0 && (
-                    <div className="flex items-center">
-                        <FolderIcon className="h-3 w-3 mr-1" />
-                        <span>
-                            {projectRefs.map((projectRef, index) => {
-                                const matchingProject = projects.find(
-                                    (project) =>
-                                        project.name.toLowerCase() ===
-                                        projectRef.toLowerCase()
-                                );
-
-                                if (matchingProject) {
-                                    return (
-                                        <React.Fragment key={projectRef}>
-                                            <Link
-                                                to={
-                                                    matchingProject.uid
-                                                        ? `/project/${matchingProject.uid}-${matchingProject.name
-                                                              .toLowerCase()
-                                                              .replace(
-                                                                  /[^a-z0-9]+/g,
-                                                                  '-'
-                                                              )
-                                                              .replace(
-                                                                  /^-|-$/g,
-                                                                  ''
-                                                              )}`
-                                                        : `/project/${matchingProject.id}`
-                                                }
-                                                className="text-gray-500 dark:text-gray-400 hover:underline transition-colors"
-                                            >
-                                                {projectRef}
-                                            </Link>
-                                            {index < projectRefs.length - 1 &&
-                                                ', '}
-                                        </React.Fragment>
-                                    );
-                                }
-
-                                return (
-                                    <React.Fragment key={projectRef}>
-                                        <span>{projectRef}</span>
-                                        {index < projectRefs.length - 1 && ', '}
-                                    </React.Fragment>
-                                );
-                            })}
-                        </span>
-                    </div>
-                )}
-
-                {projectRefs.length > 0 && hashtags.length > 0 && (
-                    <span className="mx-2">•</span>
-                )}
-
-                {hashtags.length > 0 && (
-                    <div className="flex items-center">
-                        <TagIcon className="h-3 w-3 mr-1" />
-                        <span>
-                            {hashtags.map((hashtag, index) => (
-                                <React.Fragment key={hashtag}>
-                                    <Link
-                                        to={getTagLink(hashtag)}
-                                        className="text-gray-500 dark:text-gray-400 hover:underline transition-colors"
-                                    >
-                                        {hashtag}
-                                    </Link>
-                                    {index < hashtags.length - 1 && ', '}
-                                </React.Fragment>
-                            ))}
-                        </span>
-                    </div>
-                )}
+    const renderComposerFooter = (context: InboxComposerFooterContext) => (
+        <>
+            {item.uid && item.attachments && (
+                <InboxItemAttachments
+                    itemUid={item.uid}
+                    attachments={item.attachments}
+                />
+            )}
+            <div className="mt-2 flex items-center justify-between gap-2 flex-wrap h-5">
+                <div className="flex items-center gap-3.5">
+                    {loading && (
+                        <div className="h-3.5 w-3.5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />
+                    )}
+                    <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                        {t('inbox.saveAs', 'Save as')}
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => void handleConvertToTask(context)}
+                        className="text-[12px] text-blue-600 dark:text-blue-400 hover:underline transition-colors focus:outline-none"
+                    >
+                        {t('inbox.createTask', 'Task')}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => void handleConvertToNote(context)}
+                        className="text-[12px] text-purple-600 dark:text-purple-400 hover:underline transition-colors focus:outline-none"
+                    >
+                        {t('inbox.createNote', 'Note')}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => handleConvertToProject(context)}
+                        className="text-[12px] text-green-600 dark:text-green-400 hover:underline transition-colors focus:outline-none"
+                    >
+                        {t('inbox.createProject', 'Project')}
+                    </button>
+                </div>
+                <button
+                    type="button"
+                    onClick={handleDelete}
+                    className="text-[12px] text-red-500 dark:text-red-400 hover:underline transition-colors focus:outline-none"
+                >
+                    {t('common.delete', 'Delete')}
+                </button>
             </div>
-        );
+        </>
+    );
+
+    // ── Render ────────────────────────────────────────────────────────────────
 
     return (
         <div ref={containerRef}>
@@ -666,7 +649,8 @@ const InboxItemDetail: React.FC<InboxItemDetailProps> = ({
                 <QuickCaptureInput
                     ref={composerRef}
                     mode="edit"
-                    initialValue={fullContent}
+                    initialValue={cleanedEditText ?? fullContent}
+                    carriedText={cleanedEditText === null ? '' : carriedEditText}
                     hidePrimaryButton
                     projects={projects}
                     onSubmitOverride={handleSubmitEdit}
@@ -675,43 +659,65 @@ const InboxItemDetail: React.FC<InboxItemDetailProps> = ({
                     openTaskModal={openTaskModal}
                     openProjectModal={openProjectModal}
                     openNoteModal={openNoteModal}
-                    cardClassName="mb-0"
-                    multiline={hasLongContent}
+                    cardClassName="mb-0 !rounded-none !shadow-none"
+                    multiline={true}
                 />
             ) : (
-                <InboxCard className="w-full">
-                    <div className="px-4 py-3">
-                        <div className="flex items-center gap-3">
-                            <div
-                                className="flex-shrink-0"
-                                title={iconTooltip}
-                                aria-label={iconTooltip}
-                            >
-                                {isBookmarkItem ? (
-                                    <GlobeAltIcon className="h-5 w-5 text-blue-500 dark:text-blue-300" />
-                                ) : (
-                                    <DocumentTextIcon
-                                        className={`h-5 w-5 ${
-                                            hasLongContent
-                                                ? 'text-purple-500 dark:text-purple-300'
-                                                : 'text-gray-400 dark:text-gray-500'
-                                        }`}
-                                    />
-                                )}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                                <button
-                                    onClick={handleStartEdit}
-                                    className="text-base font-medium text-gray-900 dark:text-gray-300 break-all text-left cursor-pointer w-full hover:text-blue-600 dark:hover:text-blue-400"
-                                >
-                                    {linkifyContent(previewText)}
-                                </button>
-                            </div>
-                        </div>
-                        {renderMetadata()}
+                /* ── Flat row (no card, no shadow) ─────────────────────────── */
+                <div
+                    className={`group flex items-start gap-2.5 px-4 py-3 cursor-pointer${isNew ? ' animate-inbox-row-in' : ''}`}
+                    onClick={startEditing}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            startEditing();
+                        }
+                    }}
+                >
+                    {/* Text content */}
+                    <div className="flex-1 min-w-0">
+                        <p className="text-[15px] font-normal tracking-tight text-gray-900 dark:text-gray-100 leading-snug break-words">
+                            {isBlank ? (
+                                <span className="italic text-gray-400 dark:text-gray-500">
+                                    {t('inbox.emptyItem', '(Empty item)')}
+                                </span>
+                            ) : (
+                                renderInlineSegments(displayText)
+                            )}
+                            {extraLineCount > 0 && (
+                                <span className="ml-2 text-xs font-normal text-gray-400 dark:text-gray-500">
+                                    +{extraLineCount}{' '}
+                                    {extraLineCount === 1
+                                        ? t('inbox.line', 'line')
+                                        : t('inbox.lines', 'lines')}
+                                </span>
+                            )}
+                        </p>
+                        {item.uid && item.attachments && (
+                            <InboxItemAttachments
+                                itemUid={item.uid}
+                                attachments={item.attachments}
+                            />
+                        )}
                     </div>
-                </InboxCard>
+
+                    {/* Delete button – visible only on hover */}
+                    <button
+                        type="button"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete();
+                        }}
+                        className="flex-shrink-0 mt-0.5 flex items-center justify-center w-5 h-5 rounded text-gray-300 dark:text-gray-600 hover:text-red-400 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 opacity-0 group-hover:opacity-100 transition-all"
+                        aria-label={t('common.delete', 'Delete')}
+                    >
+                        <XMarkIcon className="h-3.5 w-3.5" />
+                    </button>
+                </div>
             )}
+
             {showConfirmDialog && (
                 <ConfirmDialog
                     title={t('inbox.deleteConfirmTitle', 'Delete Item')}

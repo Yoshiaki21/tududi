@@ -7,12 +7,23 @@ const EVENT_TYPES = {
     OIDC_LINKED: 'oidc_linked',
     OIDC_UNLINKED: 'oidc_unlinked',
     OIDC_PROVISION: 'oidc_provision',
+    PASSWORD_RESET: 'password_reset',
+    SIGN_IN_LINK_CREATED: 'sign_in_link_created',
+    SIGN_IN_LINK_REVOKED: 'sign_in_link_revoked',
+    MFA_ENABLED: 'mfa_enabled',
+    MFA_DISABLED: 'mfa_disabled',
+    MFA_RESET: 'mfa_reset',
+    MFA_FAILED: 'mfa_failed',
+    MFA_RECOVERY_CODE_USED: 'mfa_recovery_code_used',
+    MFA_RECOVERY_CODES_REGENERATED: 'mfa_recovery_codes_regenerated',
 };
 
 const AUTH_METHODS = {
     EMAIL_PASSWORD: 'email_password',
     OIDC: 'oidc',
     API_TOKEN: 'api_token',
+    SIGN_IN_LINK: 'sign_in_link',
+    MFA: 'mfa',
 };
 
 async function logEvent({
@@ -112,6 +123,41 @@ async function logOidcProvision(userId, providerSlug, req, isNewUser) {
     });
 }
 
+// Who made or took back a member's sign-in link. The event belongs to the
+// member; the person who acted is in the metadata.
+async function logSignInLinkCreated(memberId, actorId, req) {
+    return logEvent({
+        userId: memberId,
+        eventType: EVENT_TYPES.SIGN_IN_LINK_CREATED,
+        authMethod: AUTH_METHODS.SIGN_IN_LINK,
+        ipAddress: req.ip || req.connection.remoteAddress,
+        userAgent: req.get('user-agent'),
+        metadata: { issued_by: actorId },
+    });
+}
+
+async function logSignInLinkRevoked(memberId, actorId, req) {
+    return logEvent({
+        userId: memberId,
+        eventType: EVENT_TYPES.SIGN_IN_LINK_REVOKED,
+        authMethod: AUTH_METHODS.SIGN_IN_LINK,
+        ipAddress: req.ip || req.connection.remoteAddress,
+        userAgent: req.get('user-agent'),
+        metadata: { revoked_by: actorId },
+    });
+}
+
+async function logSignInLinkUsed(memberId, issuedByUserId, req) {
+    return logEvent({
+        userId: memberId,
+        eventType: EVENT_TYPES.LOGIN_SUCCESS,
+        authMethod: AUTH_METHODS.SIGN_IN_LINK,
+        ipAddress: req.ip || req.connection.remoteAddress,
+        userAgent: req.get('user-agent'),
+        metadata: { issued_by: issuedByUserId },
+    });
+}
+
 async function getRecentEvents(userId, limit = 50) {
     return AuthAuditLog.findAll({
         where: { user_id: userId },
@@ -145,6 +191,9 @@ module.exports = {
     logOidcLinked,
     logOidcUnlinked,
     logOidcProvision,
+    logSignInLinkCreated,
+    logSignInLinkRevoked,
+    logSignInLinkUsed,
     getRecentEvents,
     cleanupOldLogs,
 };

@@ -26,17 +26,17 @@ async function getSubtasks(parentTaskId, userId, timezone) {
             include: [
                 {
                     model: Tag,
-                    attributes: ['id', 'name', 'uid'],
+                    attributes: ['id', 'name', 'uid', 'color'],
                     through: { attributes: [] },
                 },
                 {
                     model: Project,
-                    attributes: ['id', 'name', 'uid'],
+                    attributes: ['id', 'name', 'uid', 'color'],
                     required: false,
                 },
             ],
             order: [
-                ['order', 'ASC'],
+                ['order', 'ASC NULLS FIRST'],
                 ['created_at', 'ASC'],
             ], // Order by order field, fallback to created_at
         }
@@ -55,17 +55,32 @@ async function createSubtasks(parentTaskId, subtasks, userId) {
     // Get the highest order value for existing subtasks
     const existingSubtasks = await taskRepository.findAll(
         { parent_task_id: parentTaskId },
-        { attributes: ['order'], order: [['order', 'DESC']], limit: 1 }
+        {
+            attributes: ['order'],
+            order: [['order', 'DESC NULLS LAST']],
+            limit: 1,
+        }
     );
     const maxOrder = existingSubtasks[0]?.order ?? 0;
+
+    // Inherit the parent's project so a subtask stays reachable through the
+    // same project-sharing checks as its parent task, instead of only being
+    // accessible to whoever happened to create it (#1425).
+    const parent = await taskRepository.findById(parentTaskId, {
+        attributes: ['id', 'project_id', 'priority'],
+    });
 
     const subtasksData = subtasks
         .filter((subtask) => subtask.name && subtask.name.trim())
         .map((subtask, index) => ({
             name: subtask.name.trim(),
             parent_task_id: parentTaskId,
+            project_id: parent ? parent.project_id : null,
             user_id: userId,
-            priority: parsePriority(subtask.priority) || Task.PRIORITY.LOW,
+            priority:
+                subtask.priority !== undefined
+                    ? parsePriority(subtask.priority)
+                    : (parent?.priority ?? null),
             status: parseStatus(subtask.status),
             completed_at:
                 subtask.status === 'done' || subtask.status === Task.STATUS.DONE
@@ -154,8 +169,7 @@ async function updateSubtasks(taskId, subtasks, userId) {
                 }
 
                 if (subtask.priority !== undefined) {
-                    updateData.priority =
-                        parsePriority(subtask.priority) || Task.PRIORITY.LOW;
+                    updateData.priority = parsePriority(subtask.priority);
                 }
             }
 

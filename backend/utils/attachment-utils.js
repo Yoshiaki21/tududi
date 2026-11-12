@@ -5,7 +5,11 @@ const { getConfig } = require('../config/config');
 
 const config = getConfig();
 
-// Allowed MIME types and their extensions
+// MIME types stored under their own extension. Any other type is accepted
+// too but stored as UNKNOWN_TYPE_EXTENSION.
+// SVG is intentionally excluded: it's an XML format that can embed <script>,
+// and uploaded attachments are served back to the browser, so allowing it
+// would enable stored XSS (GHSA-x24w-9w59-wqhq).
 const ALLOWED_TYPES = {
     // Documents
     'application/pdf': ['.pdf'],
@@ -19,8 +23,10 @@ const ALLOWED_TYPES = {
     'image/png': ['.png'],
     'image/jpeg': ['.jpg', '.jpeg'],
     'image/gif': ['.gif'],
-    'image/svg+xml': ['.svg'],
     'image/webp': ['.webp'],
+    // Video, played inline in notes and on public note pages
+    'video/mp4': ['.mp4'],
+    'video/webm': ['.webm'],
     // Spreadsheets
     'application/vnd.ms-excel': ['.xls'],
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': [
@@ -32,19 +38,32 @@ const ALLOWED_TYPES = {
     'application/x-zip-compressed': ['.zip'],
 };
 
-/**
- * Validate if file type is allowed
- */
-function validateFileType(mimetype) {
-    return !!ALLOWED_TYPES[mimetype];
-}
+// Extensions safe to render inline in the browser (used by <img>/<iframe>
+// previews in the app). Everything else served through /api/uploads gets
+// Content-Disposition: attachment so a browser can't execute it via direct
+// navigation. This is extension-based rather than DB-mimetype-based so it
+// also neutralizes any file whose extension predates the image/svg+xml
+// removal above (GHSA-43p8-ch4p-gqg4).
+const INLINE_SAFE_EXTENSIONS = new Set([
+    '.pdf',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.webp',
+    '.mp4',
+    '.webm',
+]);
 
-/**
- * Get file extension from MIME type
- */
+// Stored extension for any type outside ALLOWED_TYPES. It is not
+// inline-safe, so these files are always served as downloads with a generic
+// Content-Type, whatever MIME type the client claimed. The original filename
+// is kept in the DB row and used when downloading.
+const UNKNOWN_TYPE_EXTENSION = '.bin';
+
 function getExtensionFromMimeType(mimetype) {
     const extensions = ALLOWED_TYPES[mimetype];
-    return extensions ? extensions[0] : '';
+    return extensions ? extensions[0] : UNKNOWN_TYPE_EXTENSION;
 }
 
 /**
@@ -110,6 +129,17 @@ async function deleteFileFromDisk(filepath) {
     }
 }
 
+// Delete the on-disk files for a set of TaskAttachment rows. Best-effort -
+// deleteFileFromDisk already logs and swallows per-file errors, so one bad
+// path doesn't abort the caller's larger deletion. Does not destroy the DB
+// rows; callers own that since transaction semantics differ per call site.
+async function deleteAttachmentFiles(attachments = []) {
+    for (const attachment of attachments) {
+        const filePath = path.join(config.uploadPath, attachment.file_path);
+        await deleteFileFromDisk(filePath);
+    }
+}
+
 /**
  * Ensure upload directory exists
  */
@@ -130,15 +160,27 @@ function getFileUrl(storedFilename) {
     return `/api/uploads/tasks/${storedFilename}`;
 }
 
+// Multer hands back the filename from the multipart header decoded as latin1,
+// so UTF-8 names (browsers send them raw) come out as mojibake. Re-read the
+// bytes as UTF-8 when that yields valid text, and keep the name otherwise.
+function decodeUploadFilename(name) {
+    if (typeof name !== 'string' || !/^[\x00-\xff]*$/.test(name)) return name;
+    const decoded = Buffer.from(name, 'latin1').toString('utf8');
+    return decoded.includes('�') ? name : decoded;
+}
+
 module.exports = {
     ALLOWED_TYPES,
-    validateFileType,
+    decodeUploadFilename,
+    INLINE_SAFE_EXTENSIONS,
+    UNKNOWN_TYPE_EXTENSION,
     getExtensionFromMimeType,
     formatFileSize,
     isImageFile,
     isPdfFile,
     isTextFile,
     deleteFileFromDisk,
+    deleteAttachmentFiles,
     ensureUploadDir,
     getFileUrl,
 };

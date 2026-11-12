@@ -1,6 +1,9 @@
 const { User, OIDCIdentity } = require('../models');
 const { findValidTokenByValue } = require('../modules/users/apiTokenService');
 const { validateAccessToken } = require('../modules/oidc/service');
+const providerConfig = require('../modules/oidc/providerConfig');
+
+const normalizeIssuer = (issuer) => String(issuer || '').replace(/\/+$/, '');
 
 const getBearerToken = (req) => {
     const authHeader = req.headers?.authorization || '';
@@ -14,7 +17,7 @@ const getBearerToken = (req) => {
 // Sends a 401 and, when OIDC is enabled, sets WWW-Authenticate so OAuth2 clients
 // can discover the authorization server (RFC 9728).
 const unauthorized = (res, message) => {
-    if (process.env.OIDC_ENABLED === 'true') {
+    if ((process.env.OIDC_ENABLED || '').toLowerCase() === 'true') {
         const baseUrl = process.env.BASE_URL?.replace(/\/$/, ''); // trim trailing slash
         if (baseUrl) {
             res.set(
@@ -50,7 +53,7 @@ const requireAuth = async (req, res, next) => {
         }
 
         if (bearerToken.startsWith('tt_')) {
-            // Tududi API key — validate via bcrypt
+            // Tududi API key - validate via bcrypt
             const apiToken = await findValidTokenByValue(bearerToken);
             if (!apiToken) {
                 return unauthorized(res, 'Invalid or expired API token');
@@ -80,8 +83,8 @@ const requireAuth = async (req, res, next) => {
             return next();
         }
 
-        // OAuth2 JWT — validate via OIDC provider JWKS
-        if (process.env.OIDC_ENABLED === 'true') {
+        // OAuth2 JWT - validate via OIDC provider JWKS
+        if ((process.env.OIDC_ENABLED || '').toLowerCase() === 'true') {
             let payload;
             try {
                 payload = await validateAccessToken(bearerToken);
@@ -90,8 +93,30 @@ const requireAuth = async (req, res, next) => {
                 return unauthorized(res, 'Invalid or expired access token');
             }
 
+            // A subject is only unique within one provider, so the identity is
+            // looked up for the provider that issued the token.
+            const identityWhere = { subject: payload.sub };
+            if (payload.iss) {
+                const providers = await providerConfig.getAllProviders();
+                const provider = providers.find(
+                    (p) =>
+                        normalizeIssuer(p.issuer) ===
+                        normalizeIssuer(payload.iss)
+                );
+                if (!provider) {
+                    console.warn(
+                        `[OIDC] Bearer token issuer ${payload.iss} does not match any configured provider`
+                    );
+                    return unauthorized(
+                        res,
+                        'No account found for this identity. Please log in via OIDC first.'
+                    );
+                }
+                identityWhere.provider_slug = provider.slug;
+            }
+
             const identity = await OIDCIdentity.findOne({
-                where: { subject: payload.sub },
+                where: identityWhere,
                 include: [{ model: User, as: 'User' }],
             });
 

@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Location } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { QueueListIcon } from '@heroicons/react/24/outline';
+import {
+    QueueListIcon,
+    ChevronRightIcon,
+} from '@heroicons/react/24/outline';
 import { StarIcon as StarIconSolid } from '@heroicons/react/24/solid';
 import {
     DndContext,
@@ -22,6 +25,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { getApiPath } from '../../config/paths';
 import { getCsrfToken } from '../../utils/csrfService';
+import { useSidebarSectionExpanded } from '../../hooks/useSidebarSectionExpanded';
 
 interface View {
     id: number;
@@ -76,22 +80,17 @@ const SortableViewItem: React.FC<SortableViewItemProps> = ({
         <li
             ref={setNodeRef}
             style={style}
-            className={`flex justify-between items-center rounded-md px-4 py-1.5 text-sm cursor-pointer hover:text-black dark:hover:text-white ${
-                isActive
-                    ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white'
-                    : 'text-gray-700 dark:text-gray-300'
+            className={`group flex justify-between items-center rounded-[8px] pl-[30px] pr-[10px] py-[4px] text-[13.5px] cursor-pointer text-gray-500 dark:text-[oklch(82%_0.006_95)] hover:bg-gray-100 dark:hover:bg-[oklch(24%_0.015_250)] ${
+                isActive ? 'bg-gray-100 dark:bg-[oklch(24%_0.015_250)]' : ''
             } ${isDragging ? 'opacity-50' : ''}`}
             onClick={handleClick}
             {...listeners}
             {...attributes}
         >
-            <span className="flex items-center truncate">
-                <QueueListIcon className="h-4 w-4 mr-2 flex-shrink-0" />
-                <span className="truncate">{view.name}</span>
-            </span>
+            <span className="truncate min-w-0">{view.name}</span>
             <button
                 onClick={onTogglePin}
-                className="text-yellow-500 hover:text-yellow-600 dark:hover:text-yellow-400 focus:outline-none flex-shrink-0"
+                className="opacity-0 group-hover:opacity-100 transition-opacity text-yellow-500 hover:text-yellow-600 dark:hover:text-yellow-400 focus:outline-none flex-shrink-0"
                 aria-label={t('sidebar.unpinView')}
                 title={t('sidebar.unpinView')}
             >
@@ -106,6 +105,7 @@ const SidebarViews: React.FC<SidebarViewsProps> = ({
     location,
 }) => {
     const { t } = useTranslation();
+    const [isExpanded, setIsExpanded] = useSidebarSectionExpanded('views');
     const [pinnedViews, setPinnedViews] = useState<View[]>([]);
     const [sidebarSettings, setSidebarSettings] = useState<{
         pinnedViewsOrder: string[];
@@ -151,7 +151,13 @@ const SidebarViews: React.FC<SidebarViewsProps> = ({
                         typeof profile.sidebar_settings === 'string'
                             ? JSON.parse(profile.sidebar_settings)
                             : profile.sidebar_settings;
-                    setSidebarSettings(settings);
+                    setSidebarSettings({
+                        pinnedViewsOrder: Array.isArray(
+                            settings?.pinnedViewsOrder
+                        )
+                            ? settings.pinnedViewsOrder
+                            : [],
+                    });
                 }
             }
         } catch (error) {
@@ -261,59 +267,89 @@ const SidebarViews: React.FC<SidebarViewsProps> = ({
     };
 
     return (
-        <>
-            <ul className="flex flex-col space-y-1">
-                {/* "VIEWS" Title */}
-                <li
-                    className={`flex justify-between items-center rounded-md px-4 py-2 uppercase text-xs tracking-wider cursor-pointer hover:text-black dark:hover:text-white mb-4 ${
+        <ul className="flex flex-col">
+            <li
+                className="flex justify-between items-center px-[10px] py-[4px] rounded-md cursor-pointer"
+                onClick={() => {
+                    if (orderedViews.length > 0) setIsExpanded((v) => !v);
+                }}
+            >
+                <span
+                    className={`flex items-center gap-[6px] text-[10.5px] tracking-[0.01em] font-semibold uppercase cursor-pointer hover:text-black dark:hover:text-white ${
                         isActiveView('/views')
-                            ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white'
-                            : 'text-gray-700 dark:text-gray-300'
+                            ? 'text-black dark:text-white'
+                            : 'text-gray-400 dark:text-[oklch(58%_0.006_95)]'
                     }`}
-                    onClick={() =>
+                    onClick={(e) => {
+                        e.stopPropagation();
                         handleNavClick(
                             '/views',
                             t('sidebar.views'),
                             <QueueListIcon className="h-5 w-5 mr-2" />
-                        )
-                    }
+                        );
+                    }}
                 >
-                    <span className="flex items-center">
-                        <QueueListIcon className="h-5 w-5 mr-2" />
-                        {t('sidebar.views')}
-                    </span>
-                </li>
-
-                {/* Pinned Views with Drag and Drop */}
-                {orderedViews.length > 0 && <div className="mt-6"></div>}
-                <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                >
-                    <SortableContext
-                        items={orderedViews.map((v) => v.uid)}
-                        strategy={verticalListSortingStrategy}
-                    >
-                        {orderedViews.map((view) => (
-                            <SortableViewItem
-                                key={view.uid}
-                                view={view}
-                                isActive={isActiveView(`/views/${view.uid}`)}
-                                onNavigate={() =>
-                                    handleNavClick(
-                                        `/views/${view.uid}`,
-                                        view.name,
-                                        <QueueListIcon className="h-5 w-5 mr-2" />
-                                    )
-                                }
-                                onTogglePin={(e) => togglePin(view, e)}
+                    <QueueListIcon className="h-[14px] w-[14px]" />
+                    {t('sidebar.views')}
+                </span>
+                {orderedViews.length > 0 && (
+                    <div className="flex items-center gap-1">
+                        <span className="h-3.5 w-3.5" aria-hidden="true" />
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setIsExpanded((v) => !v);
+                            }}
+                            aria-expanded={isExpanded}
+                                className="p-2 -m-2 text-gray-400 dark:text-gray-500 hover:text-black dark:hover:text-white focus:outline-none"
+                            aria-label={isExpanded ? t('sidebar.collapseViews', 'Collapse views list') : t('sidebar.expandViews', 'Expand views list')}
+                        >
+                            <ChevronRightIcon
+                                className="h-3 w-3 transition-transform duration-150"
+                                style={{ transform: isExpanded ? 'rotate(90deg)' : 'none' }}
                             />
-                        ))}
-                    </SortableContext>
-                </DndContext>
-            </ul>
-        </>
+                        </button>
+                    </div>
+                )}
+            </li>
+
+            {isExpanded && (
+                <li className="p-0 list-none">
+                    <div className="max-h-[168px] overflow-y-auto overscroll-y-contain flex flex-col gap-0.5 mb-1.5">
+                        <DndContext
+                            sensors={sensors}
+                            collisionDetection={closestCenter}
+                            onDragEnd={handleDragEnd}
+                        >
+                            <SortableContext
+                                items={orderedViews.map((v) => v.uid)}
+                                strategy={verticalListSortingStrategy}
+                            >
+                                {orderedViews.map((view) => (
+                                    <SortableViewItem
+                                        key={view.uid}
+                                        view={view}
+                                        isActive={isActiveView(
+                                            `/views/${view.uid}`
+                                        )}
+                                        onNavigate={() =>
+                                            handleNavClick(
+                                                `/views/${view.uid}`,
+                                                view.name,
+                                                <QueueListIcon className="h-5 w-5 mr-2" />
+                                            )
+                                        }
+                                        onTogglePin={(e) =>
+                                            togglePin(view, e)
+                                        }
+                                    />
+                                ))}
+                            </SortableContext>
+                        </DndContext>
+                    </div>
+                </li>
+            )}
+        </ul>
     );
 };
 

@@ -1,14 +1,105 @@
+const moment = require('moment-timezone');
 const { Task } = require('../../../models');
-const { parsePriority, parseStatus } = require('./parsers');
+const {
+    parsePriority,
+    parseStatus,
+    parseEstimatedMinutes,
+} = require('./parsers');
 const {
     processDueDateForStorage,
     processDeferUntilForStorage,
+    dueDateTimeToUTC,
+    utcToUserDateString,
+    startDateTimeToUTC,
 } = require('../../../utils/timezone-utils');
 
-function calculateInitialDueDate(body) {
+// Sets an absolute reminder instant. Setting a new time re-arms the reminder.
+function applyReminderAt(attrs, body) {
+    if (body.reminder_at === undefined) return;
+
+    if (!body.reminder_at) {
+        attrs.reminder_at = null;
+        attrs.reminder_sent_at = null;
+        return;
+    }
+
+    const reminderAt = new Date(body.reminder_at);
+    if (Number.isNaN(reminderAt.getTime())) {
+        throw new Error('reminder_at must be a valid date-time');
+    }
+    attrs.reminder_at = reminderAt;
+    attrs.reminder_sent_at = null;
+}
+
+const DUE_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// Applies an optional due_time (HH:mm, user timezone) on top of the due date.
+// Without a time the due date stays end-of-day and due_has_time is false.
+// Changing due_date alone drops the time.
+function applyDueTime(attrs, body, timezone, storedDueDate = null) {
+    if (body.due_time === undefined) {
+        if (body.due_date !== undefined) attrs.due_has_time = false;
+        return;
+    }
+
+    const timeString = body.due_time ? String(body.due_time).trim() : '';
+    if (timeString && !DUE_TIME_PATTERN.test(timeString)) {
+        throw new Error('due_time must be in HH:mm format');
+    }
+
+    const source = 'due_date' in attrs ? attrs.due_date : storedDueDate;
+    const dateString =
+        body.due_date !== undefined
+            ? body.due_date || null
+            : source && utcToUserDateString(source, timezone);
+    if (!dateString) {
+        attrs.due_has_time = false;
+        return;
+    }
+
+    if (!timeString) {
+        attrs.due_has_time = false;
+        attrs.due_date = processDueDateForStorage(dateString, timezone);
+        return;
+    }
+
+    attrs.due_date = dueDateTimeToUTC(dateString, timeString, timezone);
+    attrs.due_has_time = true;
+}
+
+// Applies start_date (YYYY-MM-DD) and an optional start_time (HH:mm) in the
+// user's timezone. Like the due date, changing start_date alone drops the
+// time; sending start_time alone keeps the stored day.
+function applyStart(attrs, body, timezone, storedStart = null) {
+    if (body.start_date === undefined && body.start_time === undefined) return;
+
+    const dateString =
+        body.start_date !== undefined
+            ? body.start_date || null
+            : storedStart && utcToUserDateString(storedStart, timezone);
+    const { value, hasTime } = startDateTimeToUTC(
+        dateString,
+        body.start_time,
+        timezone
+    );
+    attrs.start_date = value;
+    attrs.start_has_time = hasTime;
+}
+
+function resolveNote(body) {
+    return body.note !== undefined ? body.note : body.description;
+}
+
+function calculateInitialDueDate(body, timezone = 'UTC') {
     const recurrenceType = body.recurrence_type;
-    const now = new Date();
-    now.setUTCHours(0, 0, 0, 0);
+    // Build "today" as a calendar-only UTC Date from the user's LOCAL date
+    // components, so the getUTC*() reads below reflect the user's calendar
+    // day rather than the server's UTC day.
+    const todayLocalStr = moment.tz(timezone).format('YYYY-MM-DD');
+    const [todayYear, todayMonth, todayDay] = todayLocalStr
+        .split('-')
+        .map(Number);
+    const now = new Date(Date.UTC(todayYear, todayMonth - 1, todayDay));
 
     // For monthly recurrence with specific day of month
     if (
@@ -134,7 +225,7 @@ function buildTaskAttributes(body, userId, timezone, isUpdate = false) {
         (dueDate === undefined || dueDate === null || dueDate === '')
     ) {
         // Calculate proper first occurrence based on recurrence pattern
-        dueDate = calculateInitialDueDate(body);
+        dueDate = calculateInitialDueDate(body, timezone);
     }
 
     const attrs = {
@@ -143,7 +234,7 @@ function buildTaskAttributes(body, userId, timezone, isUpdate = false) {
         due_date: processDueDateForStorage(dueDate, timezone),
         defer_until: processDeferUntilForStorage(body.defer_until, timezone),
         status: parseStatus(body.status),
-        note: body.note,
+        note: resolveNote(body),
         recurrence_type: recurrenceType,
         recurrence_interval: body.recurrence_interval || null,
         recurrence_end_date: body.recurrence_end_date || null,
@@ -167,8 +258,24 @@ function buildTaskAttributes(body, userId, timezone, isUpdate = false) {
         work_hours: body.work_hours !== undefined ? body.work_hours : null,
     };
 
+    applyDueTime(attrs, body, timezone);
+    applyStart(attrs, body, timezone);
+    applyReminderAt(attrs, body);
+
     if (!isUpdate) {
         attrs.user_id = userId;
+    }
+
+    if (body.estimated_minutes !== undefined) {
+        attrs.estimated_minutes = parseEstimatedMinutes(body.estimated_minutes);
+    }
+
+    if (body.assigned_to !== undefined) {
+        attrs.assigned_to = body.assigned_to || null;
+    }
+
+    if (body.involves !== undefined) {
+        attrs.involves = Array.isArray(body.involves) ? body.involves : [];
     }
 
     return attrs;
@@ -186,6 +293,8 @@ function buildUpdateAttributes(body, task, timezone) {
         body.recurrence_type !== 'none' &&
         (task.recurrence_type === 'none' || !task.recurrence_type);
 
+    const incomingNote = resolveNote(body);
+
     const attrs = {
         name: body.name !== undefined ? body.name : task.name,
         priority:
@@ -194,7 +303,7 @@ function buildUpdateAttributes(body, task, timezone) {
                 : task.priority,
         status:
             body.status !== undefined ? parseStatus(body.status) : task.status,
-        note: body.note !== undefined ? body.note : task.note,
+        note: incomingNote !== undefined ? incomingNote : task.note,
         recurrence_type: recurrenceType,
         recurrence_interval:
             body.recurrence_interval !== undefined
@@ -231,24 +340,30 @@ function buildUpdateAttributes(body, task, timezone) {
     if (body.due_date !== undefined) {
         if (isRecurring && (body.due_date === null || body.due_date === '')) {
             // Calculate proper first occurrence based on recurrence pattern
-            const dueDateString = calculateInitialDueDate({
-                recurrence_type: recurrenceType,
-                recurrence_month_day: attrs.recurrence_month_day,
-                recurrence_weekday: attrs.recurrence_weekday,
-                recurrence_weekdays: attrs.recurrence_weekdays,
-            });
+            const dueDateString = calculateInitialDueDate(
+                {
+                    recurrence_type: recurrenceType,
+                    recurrence_month_day: attrs.recurrence_month_day,
+                    recurrence_weekday: attrs.recurrence_weekday,
+                    recurrence_weekdays: attrs.recurrence_weekdays,
+                },
+                timezone
+            );
             attrs.due_date = processDueDateForStorage(dueDateString, timezone);
         } else {
             attrs.due_date = processDueDateForStorage(body.due_date, timezone);
         }
     } else if (isAddingRecurrence && (!task.due_date || task.due_date === '')) {
         // Calculate proper first occurrence based on recurrence pattern
-        const dueDateString = calculateInitialDueDate({
-            recurrence_type: recurrenceType,
-            recurrence_month_day: attrs.recurrence_month_day,
-            recurrence_weekday: attrs.recurrence_weekday,
-            recurrence_weekdays: attrs.recurrence_weekdays,
-        });
+        const dueDateString = calculateInitialDueDate(
+            {
+                recurrence_type: recurrenceType,
+                recurrence_month_day: attrs.recurrence_month_day,
+                recurrence_weekday: attrs.recurrence_weekday,
+                recurrence_weekdays: attrs.recurrence_weekdays,
+            },
+            timezone
+        );
         attrs.due_date = processDueDateForStorage(dueDateString, timezone);
     }
 
@@ -259,6 +374,22 @@ function buildUpdateAttributes(body, task, timezone) {
         );
     }
 
+    if (body.estimated_minutes !== undefined) {
+        attrs.estimated_minutes = parseEstimatedMinutes(body.estimated_minutes);
+    }
+
+    if (body.assigned_to !== undefined) {
+        attrs.assigned_to = body.assigned_to || null;
+    }
+
+    if (body.involves !== undefined) {
+        attrs.involves = Array.isArray(body.involves) ? body.involves : [];
+    }
+
+    applyDueTime(attrs, body, timezone, task.due_date);
+    applyStart(attrs, body, timezone, task.start_date);
+    applyReminderAt(attrs, body);
+
     return attrs;
 }
 
@@ -266,4 +397,7 @@ module.exports = {
     buildTaskAttributes,
     buildUpdateAttributes,
     calculateInitialDueDate,
+    applyDueTime,
+    applyStart,
+    applyReminderAt,
 };

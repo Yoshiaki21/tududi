@@ -1,10 +1,13 @@
-const axios = require('axios');
+const { safeRequest } = require('../services/safe-request');
 const { parseStringPromise } = require('xml2js');
-const { AppError } = require('../../../shared/errors/AppError');
+const { AppError } = require('../../../shared/errors');
 const logger = require('../../../services/logService');
 const RemoteCalendarRepository = require('../repositories/remote-calendar-repository');
+const SyncStateRepository = require('../repositories/sync-state-repository');
 const { parseVTODOToTask } = require('../icalendar/vtodo-parser');
 const encryptionService = require('../services/encryption-service');
+const { resolveRemoteHref, normalizeHref } = require('../utils/href-utils');
+const { getUserTimezone } = require('../utils/user-timezone');
 
 class PullPhase {
     async execute(calendar, userId, options = {}) {
@@ -91,7 +94,7 @@ class PullPhase {
         }
 
         try {
-            const response = await axios({
+            const response = await safeRequest({
                 method: 'REPORT',
                 url: calendarUrl,
                 headers: {
@@ -109,10 +112,18 @@ class PullPhase {
                 ),
             });
 
+            // Date-only DUE/DTSTART values are stored as the end of that day in
+            // the user's timezone, the same as the web app and the CalDAV
+            // server do. Parsing them as UTC moved due dates a day for users
+            // east of UTC.
+            const userTimezone = await getUserTimezone(calendar.user_id);
+
             return await this._parseReportResponse(
                 response.data,
                 remoteCalendar,
-                calendar
+                calendar,
+                userTimezone,
+                { fullListing: !syncToken }
             );
         } catch (error) {
             if (error.response?.status === 401) {
@@ -157,13 +168,20 @@ class PullPhase {
 </C:calendar-query>`;
     }
 
-    async _parseReportResponse(xmlData, remoteCalendar, calendar) {
+    async _parseReportResponse(
+        xmlData,
+        remoteCalendar,
+        calendar,
+        userTimezone,
+        { fullListing = false } = {}
+    ) {
         const parsed = await parseStringPromise(xmlData, {
             explicitArray: false,
             tagNameProcessors: [this._stripNamespace],
         });
 
         const changedTasks = [];
+        const listedHrefs = [];
 
         const responses =
             parsed?.multistatus?.response ||
@@ -180,15 +198,46 @@ class PullPhase {
                 if (!href || href.endsWith('/')) {
                     continue;
                 }
+                listedHrefs.push(href);
 
-                const etag = response.propstat?.prop?.getetag?.replace(
-                    /^"|"$/g,
-                    ''
+                // propstat may be a single object or an array when multiple
+                // status codes are returned for different props
+                const propstatArray = Array.isArray(response.propstat)
+                    ? response.propstat
+                    : response.propstat
+                      ? [response.propstat]
+                      : [];
+
+                const okPropstat = propstatArray.find(
+                    (ps) => !ps.status || ps.status.includes('200')
                 );
-                const calendarData =
+
+                const etag = (
+                    okPropstat?.prop?.getetag ||
+                    response.propstat?.prop?.getetag
+                )?.replace(/^"|"$/g, '');
+
+                // calendar-data may be a string or an object when the element
+                // has attributes (e.g. content-type). Extract the text content.
+                let rawCalendarData =
+                    okPropstat?.prop?.['calendar-data'] ||
+                    okPropstat?.prop?.calendardata ||
                     response.propstat?.prop?.['calendar-data'] ||
                     response.propstat?.prop?.calendardata;
-                const status = response.status || response.propstat?.status;
+
+                if (rawCalendarData && typeof rawCalendarData === 'object') {
+                    rawCalendarData = rawCalendarData._ || null;
+                }
+                const calendarData = rawCalendarData || null;
+
+                const allStatuses = propstatArray
+                    .map((ps) => ps.status || '')
+                    .join(' ');
+                const status =
+                    response.status ||
+                    allStatuses ||
+                    response.propstat?.status ||
+                    '';
 
                 if (status && status.includes('404')) {
                     changedTasks.push({
@@ -200,10 +249,11 @@ class PullPhase {
                 }
 
                 if (!calendarData) {
-                    const taskUrl = `${remoteCalendar.server_url}${href}`;
+                    const taskUrl = resolveRemoteHref(remoteCalendar, href);
                     const taskData = await this._fetchTaskData(
                         taskUrl,
-                        remoteCalendar
+                        remoteCalendar,
+                        userTimezone
                     );
                     if (taskData) {
                         changedTasks.push(taskData);
@@ -211,7 +261,10 @@ class PullPhase {
                     continue;
                 }
 
-                const taskData = await parseVTODOToTask(calendarData);
+                const taskData = await parseVTODOToTask(
+                    calendarData,
+                    userTimezone
+                );
                 if (taskData) {
                     changedTasks.push({
                         action: 'create_or_update',
@@ -228,6 +281,12 @@ class PullPhase {
             }
         }
 
+        if (fullListing && parsed?.multistatus) {
+            changedTasks.push(
+                ...(await this._findRemoteDeletions(calendar, listedHrefs))
+            );
+        }
+
         const newSyncToken =
             parsed?.multistatus?.['sync-token'] ||
             parsed?.['sync-collection']?.['sync-token'];
@@ -242,13 +301,13 @@ class PullPhase {
         return changedTasks;
     }
 
-    async _fetchTaskData(taskUrl, remoteCalendar) {
+    async _fetchTaskData(taskUrl, remoteCalendar, userTimezone) {
         try {
             const password = encryptionService.decrypt(
                 remoteCalendar.password_encrypted
             );
 
-            const response = await axios({
+            const response = await safeRequest({
                 method: 'GET',
                 url: taskUrl,
                 auth: {
@@ -262,7 +321,10 @@ class PullPhase {
             });
 
             const etag = response.headers.etag?.replace(/^"|"$/g, '');
-            const taskData = await parseVTODOToTask(response.data);
+            const taskData = await parseVTODOToTask(
+                response.data,
+                userTimezone
+            );
 
             return {
                 action: 'create_or_update',
@@ -276,6 +338,50 @@ class PullPhase {
                 error
             );
             return null;
+        }
+    }
+
+    // A calendar-query lists what exists and says nothing about what is gone,
+    // and Radicale never hands out a sync-token in its reply, so the
+    // sync-collection path (which does report deletions) was never taken. A
+    // task deleted in another client therefore stayed in Tududi for good
+    // (#1822). Anything we have a remote href for that the server no longer
+    // lists has been deleted there.
+    async _findRemoteDeletions(calendar, listedHrefs) {
+        const listed = new Set(listedHrefs.map(this._hrefKey));
+
+        const syncStates = await SyncStateRepository.findByCalendarId(
+            calendar.id
+        );
+
+        const deletions = [];
+        for (const state of syncStates) {
+            if (!state.remote_href) {
+                continue;
+            }
+            if (listed.has(this._hrefKey(state.remote_href))) {
+                continue;
+            }
+            deletions.push({ action: 'delete', href: state.remote_href });
+        }
+
+        if (deletions.length > 0) {
+            logger.logInfo(
+                `${deletions.length} task(s) no longer on the remote calendar ${calendar.id}`
+            );
+        }
+
+        return deletions;
+    }
+
+    // Servers and clients do not agree on percent-encoding in hrefs, and a
+    // mismatch here must never read as a deletion.
+    _hrefKey(href) {
+        const normalized = normalizeHref(href) || '';
+        try {
+            return decodeURIComponent(normalized);
+        } catch {
+            return normalized;
         }
     }
 

@@ -10,12 +10,18 @@ import {
     FireIcon,
     ArrowUpIcon,
     ArrowDownIcon,
+    SparklesIcon,
 } from '@heroicons/react/24/outline';
 import { Link } from 'react-router-dom';
+import Tooltip from '../../Shared/Tooltip';
 import { Task, PriorityType } from '../../../entities/Task';
+import BackButton from '../../Shared/BackButton';
 import { formatDateTime } from '../../../utils/dateUtils';
 import TaskStatusControl from '../TaskStatusControl';
 import { getStatusValue } from '../../../constants/taskStatus';
+import QuickCaptureInput from '../../Inbox/QuickCaptureInput';
+import CopyTaskLinkButton from '../CopyTaskLinkButton';
+import { openTaskPanel } from '../../../store/taskPanelStore';
 
 interface TaskDetailsHeaderProps {
     task: Task;
@@ -23,6 +29,7 @@ interface TaskDetailsHeaderProps {
     onStatusUpdate: (newStatus: number) => Promise<void>;
     onPriorityUpdate: (newPriority: PriorityType) => Promise<void>;
     onDelete: () => void;
+    onSkipOccurrence?: () => void;
     getProjectLink?: (project: any) => string;
     getTagLink?: (tag: any) => string;
     activePill: string;
@@ -33,9 +40,13 @@ interface TaskDetailsHeaderProps {
     isOverdueAlertVisible?: boolean;
     onDismissOverdueAlert?: () => void;
     onQuickStatusToggle?: () => void;
+    onAiInsightsClick?: () => void;
+    aiInsightsActive?: boolean;
     attachmentCount?: number;
-    subtasksCount?: number;
+    commentCount?: number;
     autoEditTitle?: boolean;
+    ancestorChain?: Array<{ uid: string; name: string }>;
+    onEdit?: () => void;
 }
 
 const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
@@ -44,6 +55,8 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
     onStatusUpdate,
     onPriorityUpdate,
     onDelete,
+    onSkipOccurrence,
+    onEdit,
     getProjectLink,
     getTagLink,
     activePill,
@@ -54,9 +67,12 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
     isOverdueAlertVisible = false,
     onDismissOverdueAlert,
     onQuickStatusToggle,
+    onAiInsightsClick,
+    aiInsightsActive = false,
     attachmentCount = 0,
-    subtasksCount = 0,
+    commentCount = 0,
     autoEditTitle = false,
+    ancestorChain = [],
 }) => {
     const { t } = useTranslation();
     const [isEditingTitle, setIsEditingTitle] = useState(autoEditTitle);
@@ -66,7 +82,7 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
         useState<React.CSSProperties>({});
     const [actionsMenuReady, setActionsMenuReady] = useState(false);
     const [priorityDropdownOpen, setPriorityDropdownOpen] = useState(false);
-    const titleInputRef = useRef<HTMLInputElement>(null);
+    const pressingInsideTitleRef = useRef(false);
     const actionsMenuRef = useRef<HTMLDivElement>(null);
     const actionsMenuDropdownRef = useRef<HTMLDivElement>(null);
     const priorityDropdownRef = useRef<HTMLDivElement>(null);
@@ -74,13 +90,6 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
     useEffect(() => {
         setEditedTitle(task.name);
     }, [task.name]);
-
-    useEffect(() => {
-        if (isEditingTitle && titleInputRef.current) {
-            titleInputRef.current.focus();
-            titleInputRef.current.select();
-        }
-    }, [isEditingTitle]);
 
     useLayoutEffect(() => {
         if (!actionsMenuOpen) {
@@ -159,24 +168,17 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
         setIsEditingTitle(true);
     };
 
-    const handleSaveTitle = async () => {
-        if (editedTitle.trim() && editedTitle !== task.name) {
-            await onTitleUpdate(editedTitle.trim());
+    const handleSaveTitle = async (text: string = editedTitle) => {
+        if (text.trim() && text !== task.name) {
+            await onTitleUpdate(text.trim());
         }
         setIsEditingTitle(false);
     };
 
-    const handleCancelTitleEdit = () => {
-        setEditedTitle(task.name);
-        setIsEditingTitle(false);
-    };
-
-    const handleTitleKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === 'Enter') {
-            handleSaveTitle();
-        } else if (e.key === 'Escape') {
-            handleCancelTitleEdit();
-        }
+    // Clicking a suggestion in the box must not count as leaving it
+    const handleTitleBlur = () => {
+        if (pressingInsideTitleRef.current) return;
+        void handleSaveTitle();
     };
 
     const handleStatusControlUpdate = async (updatedTask: Task) => {
@@ -273,21 +275,38 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
                 <div className="flex items-center justify-between gap-4">
                     <div className="flex-1 min-w-0">
                         {isEditingTitle ? (
-                            <input
-                                ref={titleInputRef}
-                                type="text"
-                                value={editedTitle}
-                                onChange={(e) =>
-                                    setEditedTitle(e.target.value)
-                                }
-                                onKeyDown={handleTitleKeyDown}
-                                onBlur={handleSaveTitle}
-                                className="text-2xl font-normal text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-800 border-2 border-blue-500 dark:border-blue-400 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 w-full"
-                                placeholder={t(
-                                    'task.titlePlaceholder',
-                                    'Enter task title'
-                                )}
-                            />
+                            <div
+                                onMouseDownCapture={() => {
+                                    pressingInsideTitleRef.current = true;
+                                    document.addEventListener(
+                                        'mouseup',
+                                        () => {
+                                            pressingInsideTitleRef.current = false;
+                                        },
+                                        { once: true }
+                                    );
+                                }}
+                                onBlur={handleTitleBlur}
+                            >
+                                <div className="text-2xl font-normal text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-800 border-2 border-blue-500 dark:border-blue-400 rounded px-2 py-1 w-full">
+                                    <QuickCaptureInput
+                                        mode="edit"
+                                        bare
+                                        autoFocus
+                                        multiline={false}
+                                        hidePrimaryButton
+                                        initialValue={task.name}
+                                        onTextChange={setEditedTitle}
+                                        onSubmitOverride={(text) =>
+                                            handleSaveTitle(text)
+                                        }
+                                        onEscape={() => {
+                                            setEditedTitle(task.name);
+                                            setIsEditingTitle(false);
+                                        }}
+                                    />
+                                </div>
+                            </div>
                         ) : (
                             <>
                                 <div className="flex items-center gap-3 flex-wrap min-w-0">
@@ -301,6 +320,12 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
                                     >
                                         {task.name}
                                     </h2>
+                                    {task.uid && (
+                                        <CopyTaskLinkButton
+                                            path={`/task/${encodeURIComponent(task.uid)}`}
+                                            className="-ml-1"
+                                        />
+                                    )}
 
                                     <div className="flex items-center gap-2 flex-wrap min-w-0">
                                         <TaskStatusControl
@@ -580,6 +605,7 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
                             </>
                         )}
                     </div>
+                    <BackButton className="flex-shrink-0 self-center" />
                 </div>
 
                 {/* Divider - Edge to edge */}
@@ -590,7 +616,7 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
                     <div className="flex gap-2 flex-wrap">
                         <button
                             onClick={() => onPillChange('overview')}
-                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                            className={`h-7 px-3 flex items-center rounded-lg text-xs font-medium transition-colors ${
                                 activePill === 'overview'
                                     ? 'bg-blue-500 dark:bg-blue-600 text-white'
                                     : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
@@ -599,35 +625,8 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
                             {t('task.overview', 'Overview')}
                         </button>
                         <button
-                            onClick={() => onPillChange('subtasks')}
-                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors relative ${
-                                activePill === 'subtasks'
-                                    ? 'bg-blue-500 dark:bg-blue-600 text-white'
-                                    : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-                            }`}
-                        >
-                            {t('task.subtasks', 'Subtasks')}
-                            {subtasksCount > 0 && (
-                                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-blue-500 dark:bg-blue-400 rounded-full border border-white dark:border-gray-900"></span>
-                            )}
-                        </button>
-                        <button
-                            onClick={() => onPillChange('recurrence')}
-                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors relative ${
-                                activePill === 'recurrence'
-                                    ? 'bg-blue-500 dark:bg-blue-600 text-white'
-                                    : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-                            }`}
-                        >
-                            {t('task.recurrence', 'Recurrence')}
-                            {task.recurrence_type &&
-                                task.recurrence_type !== 'none' && (
-                                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-blue-500 dark:bg-blue-400 rounded-full border border-white dark:border-gray-900"></span>
-                                )}
-                        </button>
-                        <button
                             onClick={() => onPillChange('attachments')}
-                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors relative ${
+                            className={`h-7 px-3 flex items-center rounded-lg text-xs font-medium transition-colors relative ${
                                 activePill === 'attachments'
                                     ? 'bg-blue-500 dark:bg-blue-600 text-white'
                                     : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
@@ -639,8 +638,21 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
                             )}
                         </button>
                         <button
+                            onClick={() => onPillChange('comments')}
+                            className={`h-7 px-3 flex items-center rounded-lg text-xs font-medium transition-colors relative ${
+                                activePill === 'comments'
+                                    ? 'bg-blue-500 dark:bg-blue-600 text-white'
+                                    : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                            }`}
+                        >
+                            {t('task.comments', 'Comments')}
+                            {commentCount > 0 && (
+                                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-blue-500 dark:bg-blue-400 rounded-full border border-white dark:border-gray-900"></span>
+                            )}
+                        </button>
+                        <button
                             onClick={() => onPillChange('activity')}
-                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                            className={`h-7 px-3 flex items-center rounded-lg text-xs font-medium transition-colors ${
                                 activePill === 'activity'
                                     ? 'bg-blue-500 dark:bg-blue-600 text-white'
                                     : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
@@ -649,127 +661,247 @@ const TaskDetailsHeader: React.FC<TaskDetailsHeaderProps> = ({
                             {t('task.activity', 'Activity')}
                         </button>
                     </div>
-                    {(showOverdueIcon || onQuickStatusToggle) && (
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                            {showOverdueIcon && (
-                                <div
-                                    className="relative flex items-center z-20"
-                                    data-overdue-toggle
-                                >
-                                    <button
-                                        data-overdue-toggle
-                                        onClick={(e) => {
-                                            e.preventDefault();
-                                            e.stopPropagation();
-                                            onOverdueIconClick?.();
-                                        }}
-                                        className={`flex items-center justify-center w-8 h-8 rounded-full border text-xs transition-colors ${
-                                            isOverdueAlertVisible
-                                                ? 'border-amber-500 bg-amber-50 text-amber-700 dark:border-amber-400 dark:bg-amber-900/30 dark:text-amber-300'
-                                                : 'border-amber-200 text-amber-600 hover:bg-amber-50 dark:border-amber-500/40 dark:text-amber-300 dark:hover:bg-amber-900/40'
-                                        }`}
-                                        title={t(
-                                            'task.showOverdueWarning',
-                                            'Show overdue warning'
-                                        )}
-                                        aria-label={t(
-                                            'task.showOverdueWarning',
-                                            'Show overdue warning'
-                                        )}
+                    <div className="flex items-center gap-2 min-w-0">
+                        {task.parent_task &&
+                            (() => {
+                                const chain =
+                                    ancestorChain.length > 0
+                                        ? ancestorChain
+                                        : [
+                                              {
+                                                  uid: task.parent_task.uid,
+                                                  name: task.parent_task.name,
+                                              },
+                                          ];
+                                const tooltipText = chain
+                                    .map((a) => a.name)
+                                    .join(' < ');
+                                return (
+                                    <Tooltip
+                                        content={tooltipText}
+                                        position="bottom"
                                     >
-                                        <ExclamationTriangleIcon className="h-4 w-4" />
-                                    </button>
-                                    {isOverdueAlertVisible && (
-                                        <div
-                                            data-overdue-toggle
-                                            className="absolute right-0 top-full translate-y-2 w-[30rem] max-w-lg z-30"
-                                        >
-                                            <div className="relative rounded-lg shadow-2xl bg-amber-50 dark:bg-amber-900 border border-amber-200 dark:border-amber-600 px-4 py-3 text-xs text-amber-800 dark:text-amber-100">
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.preventDefault();
-                                                        e.stopPropagation();
-                                                        onDismissOverdueAlert?.();
-                                                    }}
-                                                    className="absolute top-2 right-2 text-amber-600 dark:text-amber-300 hover:text-amber-800 dark:hover:text-amber-100 transition-colors"
-                                                    aria-label={t(
-                                                        'common.close',
-                                                        'Close'
-                                                    )}
-                                                >
-                                                    <XMarkIcon className="h-3.5 w-3.5" />
-                                                </button>
-                                                <div className="flex items-start space-x-2 pr-4">
-                                                    <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-300 mt-0.5 flex-shrink-0" />
-                                                    <div>
-                                                        <p className="font-medium">
-                                                            {t(
-                                                                'task.overdueAlert',
-                                                                "This task was in your plan yesterday and wasn't completed."
-                                                            )}
-                                                        </p>
-                                                        <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-200">
-                                                            {t(
-                                                                'task.overdueYesterday',
-                                                                'Consider prioritizing this task or breaking it into smaller steps.'
-                                                            )}
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                            <div
-                                className="relative flex items-center"
-                                ref={actionsMenuRef}
+                                        <span className="inline-flex items-stretch h-7 rounded-lg overflow-hidden border border-blue-200 dark:border-blue-700/70 transition-opacity hover:opacity-80 min-w-0 shrink">
+                                            <span className="flex sm:hidden items-center px-1.5 text-blue-800 dark:text-blue-200 bg-blue-200/70 dark:bg-blue-700/60 select-none flex-shrink-0">
+                                                <ArrowUpIcon className="h-3 w-3" />
+                                            </span>
+                                            <span className="hidden sm:flex items-center px-1.5 text-[0.72em] font-bold uppercase tracking-wide text-blue-800 dark:text-blue-200 bg-blue-200/70 dark:bg-blue-700/60 select-none whitespace-nowrap flex-shrink-0">
+                                                PARENT TASK:
+                                            </span>
+                                            <span className="flex items-center gap-1 px-1.5 bg-blue-50/80 dark:bg-blue-900/30 overflow-hidden min-w-0">
+                                                {chain.map((ancestor, i) => (
+                                                    <React.Fragment
+                                                        key={ancestor.uid}
+                                                    >
+                                                        {i > 0 && (
+                                                            <span className="text-blue-300 dark:text-blue-600 text-[0.8em] select-none flex-shrink-0">
+                                                                &lt;
+                                                            </span>
+                                                        )}
+                                                        <button
+                                                            onClick={() =>
+                                                                openTaskPanel(
+                                                                    ancestor.uid
+                                                                )
+                                                            }
+                                                            className="text-[0.9em] text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100 transition-colors truncate min-w-0"
+                                                        >
+                                                            {ancestor.name}
+                                                        </button>
+                                                    </React.Fragment>
+                                                ))}
+                                            </span>
+                                        </span>
+                                    </Tooltip>
+                                );
+                            })()}
+                        {onAiInsightsClick && (
+                            <button
+                                onClick={onAiInsightsClick}
+                                className={`flex items-center h-7 flex-shrink-0 transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-lg px-1.5 ${
+                                    aiInsightsActive
+                                        ? 'bg-indigo-100 dark:bg-indigo-900/40'
+                                        : 'bg-gray-100 dark:bg-gray-800 hover:bg-indigo-50 dark:hover:bg-indigo-900/30'
+                                }`}
+                                aria-pressed={aiInsightsActive}
+                                aria-label={t(
+                                    'aiAssistant.taskInsightsTitle',
+                                    'AI Insights'
+                                )}
+                                title={t(
+                                    'aiAssistant.taskInsightsTitle',
+                                    'AI Insights'
+                                )}
                             >
-                                <button
-                                    className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center justify-center"
-                                    onClick={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        setActionsMenuOpen(!actionsMenuOpen);
-                                    }}
-                                    aria-haspopup="true"
-                                    aria-expanded={actionsMenuOpen}
-                                    aria-label={t(
-                                        'common.moreActions',
-                                        'More actions'
-                                    )}
-                                >
-                                    <span className="text-lg leading-none">
-                                        ...
-                                    </span>
-                                </button>
-                                {actionsMenuOpen && (
+                                <SparklesIcon
+                                    className={`h-4 w-4 ${
+                                        aiInsightsActive
+                                            ? 'text-indigo-600 dark:text-indigo-300'
+                                            : 'text-gray-600 dark:text-gray-200'
+                                    }`}
+                                />
+                            </button>
+                        )}
+                        {(showOverdueIcon || onQuickStatusToggle) && (
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                                {showOverdueIcon && (
                                     <div
-                                        ref={actionsMenuDropdownRef}
-                                        style={{
-                                            ...actionsMenuStyle,
-                                            visibility: actionsMenuReady
-                                                ? 'visible'
-                                                : 'hidden',
-                                        }}
-                                        className="z-30 w-40 rounded-lg shadow-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700"
+                                        className="relative flex items-center z-20"
+                                        data-overdue-toggle
                                     >
                                         <button
-                                            className="w-full text-left px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
+                                            data-overdue-toggle
                                             onClick={(e) => {
                                                 e.preventDefault();
                                                 e.stopPropagation();
-                                                setActionsMenuOpen(false);
-                                                onDelete();
+                                                onOverdueIconClick?.();
                                             }}
+                                            className={`flex items-center justify-center w-8 h-8 rounded-full border text-xs transition-colors ${
+                                                isOverdueAlertVisible
+                                                    ? 'border-amber-500 bg-amber-50 text-amber-700 dark:border-amber-400 dark:bg-amber-900/30 dark:text-amber-300'
+                                                    : 'border-amber-200 text-amber-600 hover:bg-amber-50 dark:border-amber-500/40 dark:text-amber-300 dark:hover:bg-amber-900/40'
+                                            }`}
+                                            title={t(
+                                                'task.showOverdueWarning',
+                                                'Show overdue warning'
+                                            )}
+                                            aria-label={t(
+                                                'task.showOverdueWarning',
+                                                'Show overdue warning'
+                                            )}
                                         >
-                                            {t('common.delete', 'Delete')}
+                                            <ExclamationTriangleIcon className="h-4 w-4" />
                                         </button>
+                                        {isOverdueAlertVisible && (
+                                            <div
+                                                data-overdue-toggle
+                                                className="absolute right-0 top-full translate-y-2 w-[30rem] max-w-lg z-30"
+                                            >
+                                                <div className="relative rounded-lg shadow-2xl bg-amber-50 dark:bg-amber-900 border border-amber-200 dark:border-amber-600 px-4 py-3 text-xs text-amber-800 dark:text-amber-100">
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                            onDismissOverdueAlert?.();
+                                                        }}
+                                                        className="absolute top-2 right-2 text-amber-600 dark:text-amber-300 hover:text-amber-800 dark:hover:text-amber-100 transition-colors"
+                                                        aria-label={t(
+                                                            'common.close',
+                                                            'Close'
+                                                        )}
+                                                    >
+                                                        <XMarkIcon className="h-3.5 w-3.5" />
+                                                    </button>
+                                                    <div className="flex items-start space-x-2 pr-4">
+                                                        <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-300 mt-0.5 flex-shrink-0" />
+                                                        <div>
+                                                            <p className="font-medium">
+                                                                {t(
+                                                                    'task.overdueAlert',
+                                                                    "This task was in your plan yesterday and wasn't completed."
+                                                                )}
+                                                            </p>
+                                                            <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-200">
+                                                                {t(
+                                                                    'task.overdueYesterday',
+                                                                    'Consider prioritizing this task or breaking it into smaller steps.'
+                                                                )}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
+                                <div
+                                    className="relative flex items-center"
+                                    ref={actionsMenuRef}
+                                >
+                                    <button
+                                        className="h-7 w-7 flex-shrink-0 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors flex items-center justify-center"
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setActionsMenuOpen(
+                                                !actionsMenuOpen
+                                            );
+                                        }}
+                                        aria-haspopup="true"
+                                        aria-expanded={actionsMenuOpen}
+                                        aria-label={t(
+                                            'common.moreActions',
+                                            'More actions'
+                                        )}
+                                    >
+                                        <span className="text-lg leading-none">
+                                            ...
+                                        </span>
+                                    </button>
+                                    {actionsMenuOpen && (
+                                        <div
+                                            ref={actionsMenuDropdownRef}
+                                            style={{
+                                                ...actionsMenuStyle,
+                                                visibility: actionsMenuReady
+                                                    ? 'visible'
+                                                    : 'hidden',
+                                            }}
+                                            className="z-30 w-48 rounded-lg shadow-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700"
+                                        >
+                                            {onEdit && (
+                                                <button
+                                                    className="w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        setActionsMenuOpen(
+                                                            false
+                                                        );
+                                                        onEdit();
+                                                    }}
+                                                >
+                                                    {t(
+                                                        'task.editDetails',
+                                                        'Edit details'
+                                                    )}
+                                                </button>
+                                            )}
+                                            {onSkipOccurrence && (
+                                                <button
+                                                    className="w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        setActionsMenuOpen(
+                                                            false
+                                                        );
+                                                        onSkipOccurrence();
+                                                    }}
+                                                >
+                                                    {t(
+                                                        'task.skipOccurrence',
+                                                        'Skip this occurrence'
+                                                    )}
+                                                </button>
+                                            )}
+                                            <button
+                                                className="w-full text-left px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
+                                                onClick={(e) => {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    setActionsMenuOpen(false);
+                                                    onDelete();
+                                                }}
+                                            >
+                                                {t('common.delete', 'Delete')}
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
-                        </div>
-                    )}
+                        )}
+                    </div>
                 </div>
             </div>
         </div>

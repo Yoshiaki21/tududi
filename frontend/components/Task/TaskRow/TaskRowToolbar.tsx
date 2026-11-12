@@ -1,0 +1,324 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import {
+    FlagIcon,
+    PlayIcon,
+    CalendarIcon,
+    ClockIcon,
+    FolderIcon,
+    TagIcon,
+    ArrowPathIcon,
+    UserIcon,
+    ListBulletIcon,
+    DocumentTextIcon,
+    PaperClipIcon,
+    LinkIcon,
+    ChatBubbleLeftIcon,
+    ArrowTopRightOnSquareIcon,
+    TrashIcon,
+} from '@heroicons/react/24/outline';
+import { Task } from '../../../entities/Task';
+import { Project } from '../../../entities/Project';
+import { Person } from '../../../entities/Person';
+import PriorityDropdown from '../../Shared/PriorityDropdown';
+import PriorityBadge, { toPriorityLevel } from '../../Shared/PriorityBadge';
+import DateTimePicker from '../../Shared/DateTimePicker';
+import { fromDueParts, toDueParts } from '../../../utils/dueDateTime';
+import PersonDropdown from '../../Shared/PersonDropdown';
+import {
+    fetchPeople,
+    fetchAssignablePeopleForProject,
+} from '../../../utils/peopleService';
+import ToolbarButton from './toolbar/ToolbarButton';
+import { TaskRowSetters } from './useTaskRowSave';
+
+export type TaskRowSection =
+    | 'note'
+    | 'project'
+    | 'tags'
+    | 'recurrence'
+    | 'subtasks'
+    | 'attachments'
+    | 'relations'
+    | 'comments';
+
+interface TaskRowToolbarProps {
+    task: Task;
+    setters: TaskRowSetters;
+    openSection: TaskRowSection | null;
+    onToggleSection: (section: TaskRowSection) => void;
+    onDelete: (e: React.MouseEvent) => void;
+    onOpenPanel: () => void;
+    commentCount?: number;
+    relationCount?: number;
+}
+
+const TaskRowToolbar: React.FC<TaskRowToolbarProps> = ({
+    task,
+    setters,
+    openSection,
+    onToggleSection,
+    onDelete,
+    onOpenPanel,
+    commentCount = 0,
+    relationCount = 0,
+}) => {
+    const { t } = useTranslation();
+
+    // ----- Assignee people -----
+    const [people, setPeople] = useState<Person[]>([]);
+    useEffect(() => {
+        const loader = task.project_uid
+            ? fetchAssignablePeopleForProject(task.project_uid)
+            : fetchPeople();
+        loader.then((p) => setPeople(p || [])).catch(() => setPeople([]));
+    }, [task.project_uid]);
+    const mergedPeople = useMemo(() => {
+        if (!task.AssignedTo) return people;
+        return people.some((p) => p.uid === task.AssignedTo!.uid)
+            ? people
+            : [...people, task.AssignedTo];
+    }, [people, task.AssignedTo]);
+
+    const isRecurring =
+        !!task.recurrence_type && task.recurrence_type !== 'none';
+    const tagCount = task.tags?.length ?? 0;
+    const project = (task.Project as Project | undefined) || null;
+    const assignedPerson =
+        task.AssignedTo ||
+        mergedPeople.find((p) => p.uid === task.assigned_to) ||
+        null;
+
+    return (
+        <div className="flex flex-wrap items-center gap-1 border-t border-gray-100 dark:border-gray-800 pt-2 mt-2">
+            {/* Priority */}
+            <PriorityDropdown
+                value={
+                    (typeof task.priority === 'number'
+                        ? ['low', 'medium', 'high'][task.priority]
+                        : task.priority) as any
+                }
+                onChange={(p) => void setters.setPriority(p)}
+                renderTrigger={({ onClick, isOpen }) =>
+                    toPriorityLevel(task.priority) ? (
+                        <button
+                            type="button"
+                            onClick={onClick}
+                            title={t('forms.task.labels.priority', 'Priority')}
+                            aria-haspopup="dialog"
+                            aria-expanded={isOpen}
+                            className="rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                        >
+                            <PriorityBadge priority={task.priority} size="md" />
+                        </button>
+                    ) : (
+                        <ToolbarButton
+                            onClick={onClick}
+                            open={isOpen}
+                            label={t('forms.task.labels.priority', 'Priority')}
+                            icon={<FlagIcon className="h-4 w-4" />}
+                        />
+                    )
+                }
+            />
+
+            {/* Start */}
+            <DateTimePicker
+                value={fromDueParts(task.start_date, task.start_time)}
+                onChange={(iso) => {
+                    const parts = toDueParts(iso);
+                    void setters.setStart(parts.date, parts.time);
+                }}
+                renderTrigger={({ onClick, isOpen, displayValue }) => (
+                    <ToolbarButton
+                        onClick={onClick}
+                        open={isOpen}
+                        active={!!task.start_date}
+                        label={t('forms.startDate', 'Start')}
+                        badge={displayValue}
+                        icon={<PlayIcon className="h-4 w-4" />}
+                    />
+                )}
+            />
+
+            {/* Due date */}
+            <DateTimePicker
+                value={fromDueParts(
+                    task.due_date,
+                    task.due_has_time ? task.due_time : null
+                )}
+                onChange={(iso) => {
+                    const parts = toDueParts(iso);
+                    void setters.setDue(parts.date, parts.time);
+                }}
+                renderTrigger={({ onClick, isOpen, displayValue }) => (
+                    <ToolbarButton
+                        onClick={onClick}
+                        open={isOpen}
+                        active={!!task.due_date}
+                        label={t('forms.task.labels.dueDate', 'Due date')}
+                        badge={displayValue}
+                        icon={<CalendarIcon className="h-4 w-4" />}
+                    />
+                )}
+            />
+
+            {/* Defer until */}
+            <DateTimePicker
+                value={task.defer_until || ''}
+                onChange={(v) => void setters.setDeferUntil(v || null)}
+                renderTrigger={({ onClick, isOpen, displayValue }) => (
+                    <ToolbarButton
+                        onClick={onClick}
+                        open={isOpen}
+                        active={!!task.defer_until}
+                        label={t('forms.task.labels.deferUntil', 'Defer until')}
+                        badge={displayValue}
+                        icon={<ClockIcon className="h-4 w-4" />}
+                    />
+                )}
+            />
+
+            {/* Project (inline section) */}
+            <ToolbarButton
+                onClick={() => onToggleSection('project')}
+                open={openSection === 'project'}
+                active={!!project}
+                label={t('forms.task.labels.project', 'Project')}
+                badge={project?.name}
+                icon={<FolderIcon className="h-4 w-4" />}
+            />
+
+            {/* Tags (inline section) */}
+            <ToolbarButton
+                onClick={() => onToggleSection('tags')}
+                open={openSection === 'tags'}
+                active={tagCount > 0}
+                label={t('forms.task.labels.tags', 'Tags')}
+                badge={tagCount > 0 ? String(tagCount) : undefined}
+                icon={<TagIcon className="h-4 w-4" />}
+            />
+
+            {/* Recurrence (inline section) */}
+            <ToolbarButton
+                onClick={() => onToggleSection('recurrence')}
+                open={openSection === 'recurrence'}
+                active={isRecurring}
+                label={t('forms.task.labels.recurrence', 'Repeat')}
+                icon={<ArrowPathIcon className="h-4 w-4" />}
+            />
+
+            {/* Assignee */}
+            <PersonDropdown
+                personUid={task.assigned_to ?? null}
+                people={mergedPeople}
+                onChange={(uid) => void setters.setAssignee(uid)}
+                renderTrigger={({ onClick, isOpen, person }) => (
+                    <ToolbarButton
+                        onClick={onClick}
+                        open={isOpen}
+                        active={!!assignedPerson}
+                        label={t('tasks.assignedTo', 'Assigned to')}
+                        badge={(person || assignedPerson)?.name}
+                        icon={
+                            assignedPerson?.color ? (
+                                <span
+                                    className="h-3.5 w-3.5 rounded-full inline-block border border-gray-300 dark:border-gray-600"
+                                    style={{
+                                        backgroundColor: assignedPerson.color,
+                                    }}
+                                />
+                            ) : (
+                                <UserIcon className="h-4 w-4" />
+                            )
+                        }
+                    />
+                )}
+            />
+
+            {/* Note toggle */}
+            <ToolbarButton
+                onClick={() => onToggleSection('note')}
+                open={openSection === 'note'}
+                active={!!task.note}
+                label={t('forms.task.labels.note', 'Note')}
+                icon={<DocumentTextIcon className="h-4 w-4" />}
+            />
+
+            {/* Subtasks toggle */}
+            <ToolbarButton
+                onClick={() => onToggleSection('subtasks')}
+                open={openSection === 'subtasks'}
+                active={(task.subtasks?.length ?? 0) > 0}
+                label={t('tasks.subtasks', 'Subtasks')}
+                badge={
+                    task.subtasks && task.subtasks.length > 0
+                        ? String(task.subtasks.length)
+                        : undefined
+                }
+                icon={<ListBulletIcon className="h-4 w-4" />}
+            />
+
+            {/* Attachments */}
+            <ToolbarButton
+                onClick={() => onToggleSection('attachments')}
+                open={openSection === 'attachments'}
+                active={(task.attachments?.length ?? 0) > 0}
+                label={t('forms.task.labels.attachments', 'Attachments')}
+                badge={
+                    task.attachments && task.attachments.length > 0
+                        ? String(task.attachments.length)
+                        : undefined
+                }
+                icon={<PaperClipIcon className="h-4 w-4" />}
+            />
+
+            {/* Relations */}
+            <ToolbarButton
+                onClick={() => onToggleSection('relations')}
+                open={openSection === 'relations'}
+                active={relationCount > 0 || !!task.is_blocked}
+                label={t('relations.title', 'Relations')}
+                badge={relationCount > 0 ? String(relationCount) : undefined}
+                icon={<LinkIcon className="h-4 w-4" />}
+            />
+
+            {/* Comments */}
+            <ToolbarButton
+                onClick={() => onToggleSection('comments')}
+                open={openSection === 'comments'}
+                active={commentCount > 0}
+                label={t('task.comments', 'Comments')}
+                badge={commentCount > 0 ? String(commentCount) : undefined}
+                icon={<ChatBubbleLeftIcon className="h-4 w-4" />}
+            />
+
+            <div className="flex-1" />
+
+            {/* Open in the side panel */}
+            <button
+                type="button"
+                onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenPanel();
+                }}
+                title={t('tasks.openPanel', 'Open in side panel')}
+                aria-label={t('tasks.openPanel', 'Open in side panel')}
+                data-testid="task-row-open-panel"
+                className="inline-flex items-center h-8 px-1.5 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+            >
+                <ArrowTopRightOnSquareIcon className="h-4 w-4" />
+            </button>
+
+            {/* Delete */}
+            <ToolbarButton
+                onClick={onDelete}
+                tone="danger"
+                label={t('common.delete', 'Delete')}
+                icon={<TrashIcon className="h-4 w-4" />}
+            />
+        </div>
+    );
+};
+
+export default TaskRowToolbar;

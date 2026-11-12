@@ -12,8 +12,17 @@ const {
 } = require('../../models');
 const syncEngine = require('../../modules/caldav/sync/sync-engine');
 const encryptionService = require('../../modules/caldav/services/encryption-service');
+const {
+    serializeTaskToVTODO,
+} = require('../../modules/caldav/icalendar/vtodo-serializer');
 
 jest.mock('axios');
+// The fake calendar host does not resolve, and these tests are about sync
+// behavior, not the address guard (see caldav-safe-request.test.js).
+jest.mock('../../modules/url/ssrfGuard', () => ({
+    ...jest.requireActual('../../modules/url/ssrfGuard'),
+    assertPublicHostname: jest.fn().mockResolvedValue(undefined),
+}));
 
 describe('CalDAV Sync Engine', () => {
     let testUser;
@@ -114,6 +123,74 @@ END:VCALENDAR</cal:calendar-data>
             });
             expect(createdTask).toBeTruthy();
             expect(createdTask.name).toBe('Remote Task');
+        });
+
+        // RFC 5545 3.8.1.9: no PRIORITY (or PRIORITY:0) is "undefined
+        // priority". Storing that as Low is what made a task created in 2Do
+        // come back to every client as PRIORITY:7 (#1907).
+        test('should keep a remote task without PRIORITY as having no priority', async () => {
+            const icalFor = (uid, priorityLine) =>
+                [
+                    'BEGIN:VCALENDAR',
+                    'VERSION:2.0',
+                    'PRODID:-//Tududi//EN',
+                    'BEGIN:VTODO',
+                    `UID:${uid}`,
+                    `SUMMARY:${uid}`,
+                    'STATUS:NEEDS-ACTION',
+                    ...(priorityLine ? [priorityLine] : []),
+                    'END:VTODO',
+                    'END:VCALENDAR',
+                ].join('\r\n');
+
+            const responseFor = (uid, priorityLine) => `<d:response>
+  <d:href>/calendars/test/tasks/${uid}.ics</d:href>
+  <d:propstat>
+    <d:prop>
+      <d:getetag>"etag-${uid}"</d:getetag>
+      <cal:calendar-data>${icalFor(uid, priorityLine)}</cal:calendar-data>
+    </d:prop>
+    <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+</d:response>`;
+
+            axios.mockResolvedValue({
+                status: 207,
+                data: `<?xml version="1.0" encoding="utf-8" ?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+${responseFor('no-priority-task')}
+${responseFor('priority-zero-task', 'PRIORITY:0')}
+${responseFor('priority-five-task', 'PRIORITY:5')}
+</d:multistatus>`,
+                headers: {},
+            });
+
+            const result = await syncEngine.syncCalendar(
+                calendar.id,
+                testUser.id,
+                { direction: 'pull' }
+            );
+            expect(result.success).toBe(true);
+
+            const noPriority = await Task.findOne({
+                where: { uid: 'no-priority-task' },
+            });
+            expect(noPriority).not.toBeNull();
+            expect(noPriority.priority).toBeNull();
+
+            const zeroPriority = await Task.findOne({
+                where: { uid: 'priority-zero-task' },
+            });
+            expect(zeroPriority.priority).toBeNull();
+
+            const mediumPriority = await Task.findOne({
+                where: { uid: 'priority-five-task' },
+            });
+            expect(mediumPriority.priority).toBe(1);
+
+            // What the client gets back: no PRIORITY property at all.
+            const served = await serializeTaskToVTODO(noPriority);
+            expect(served).not.toContain('PRIORITY');
         });
 
         test('should detect deleted tasks from remote', async () => {
@@ -373,7 +450,11 @@ END:VCALENDAR</cal:calendar-data>
                 calendar_id: calendar.id,
                 etag: 'etag-1',
                 last_modified: new Date(),
-                last_synced_at: new Date(),
+                // Backdated: the push phase only considers a task changed when
+                // updated_at is strictly greater than last_synced_at, and both
+                // stamps land in the same millisecond often enough to make this
+                // test flaky when it uses "now".
+                last_synced_at: new Date(Date.now() - 60000),
                 sync_status: 'synced',
             });
 

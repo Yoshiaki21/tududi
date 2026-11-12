@@ -1,0 +1,500 @@
+const request = require('supertest');
+const app = require('../../app');
+const {
+    Role,
+    WaitlistSubscriber,
+    BillingAccount,
+    Project,
+    Task,
+    Note,
+    Tag,
+    Person,
+    DailyPlan,
+    DailyPlanItem,
+    OIDCIdentity,
+    User,
+    sequelize,
+} = require('../../models');
+const { getConfig } = require('../../config/config');
+const entitlements = require('../../services/entitlementsService');
+const { createTestUser, enrollMfa } = require('../helpers/testUtils');
+
+const login = async (user) => {
+    const agent = request.agent(app);
+    await agent
+        .post('/api/login')
+        .send({ email: user.email, password: 'password123' });
+    return agent;
+};
+
+describe('Admin dashboard', () => {
+    let admin, adminAgent, plain, plainAgent;
+
+    beforeEach(async () => {
+        admin = await createTestUser({
+            email: `adm_${Date.now()}@example.com`,
+        });
+        await Role.update({ is_admin: true }, { where: { user_id: admin.id } });
+        adminAgent = await login(admin);
+        await enrollMfa(admin);
+
+        plain = await createTestUser({
+            email: `usr_${Date.now()}@example.com`,
+        });
+        plainAgent = await login(plain);
+    });
+
+    it('counts users, content and the waitlist', async () => {
+        await WaitlistSubscriber.create({
+            email: `w1_${Date.now()}@example.com`,
+            source: 'hero',
+        });
+
+        const res = await adminAgent.get('/api/admin/overview');
+        expect(res.status).toBe(200);
+        expect(res.body.users.total).toBeGreaterThanOrEqual(2);
+        expect(res.body.users.admins).toBeGreaterThanOrEqual(1);
+        expect(res.body.waitlist.total).toBeGreaterThanOrEqual(1);
+        expect(res.body.billing).toHaveProperty('paying');
+        expect(res.body.instance).toHaveProperty('registration_enabled');
+        expect(typeof res.body.instance.version).toBe('string');
+    });
+
+    it('counts who planned a first day and who kept planning', async () => {
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        const dayKey = (d) => new Date(d).toISOString().slice(0, 10);
+        const planDay = async (owner, date, size) => {
+            const plan = await DailyPlan.create({
+                user_id: owner.id,
+                plan_date: date,
+            });
+            for (let i = 0; i < size; i++) {
+                const task = await Task.create({
+                    name: `t${i}`,
+                    user_id: owner.id,
+                });
+                await DailyPlanItem.create({
+                    daily_plan_id: plan.id,
+                    task_id: task.id,
+                    position: i,
+                    duration_minutes: 30,
+                });
+            }
+        };
+
+        // This week's signup planned three tasks: counts as a first plan.
+        await planDay(plain, dayKey(Date.now()), 3);
+
+        // Last week's signup planned on three days inside the first week.
+        const older = await createTestUser({
+            email: `old_${Date.now()}@example.com`,
+        });
+        const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
+        // Sequelize guards created_at, so the signup date moves by hand.
+        await sequelize.query(
+            'UPDATE users SET created_at = :at WHERE id = :id',
+            { replacements: { at: tenDaysAgo, id: older.id } }
+        );
+        for (let i = 0; i < 3; i++) {
+            await planDay(older, dayKey(tenDaysAgo.getTime() + i * DAY_MS), 1);
+        }
+
+        const res = await adminAgent.get('/api/admin/overview');
+        expect(res.status).toBe(200);
+        const { onboarding } = res.body.trends;
+        expect(onboarding.new_users).toBeGreaterThanOrEqual(2);
+        expect(onboarding.first_plan).toBe(1);
+        expect(onboarding.cohort).toBeGreaterThanOrEqual(1);
+        expect(onboarding.three_days).toBe(1);
+    });
+
+    it('reports 14 days of signups, activation and active users', async () => {
+        await Task.create({ name: 'First', user_id: plain.id });
+
+        const res = await adminAgent.get('/api/admin/overview');
+        expect(res.status).toBe(200);
+        const { trends } = res.body;
+        expect(trends.days).toHaveLength(14);
+        expect(trends.days[13].date).toBe(
+            new Date().toISOString().slice(0, 10)
+        );
+        expect(trends.days[13].signups).toBeGreaterThanOrEqual(2);
+        expect(trends.signups.last7d).toBe(
+            trends.days.slice(7).reduce((n, d) => n + d.signups, 0)
+        );
+        expect(trends.signups.today).toBe(trends.days[13].signups);
+        expect(trends.tasks.created.today).toBeGreaterThanOrEqual(1);
+        expect(trends.active_users_today).toBeGreaterThanOrEqual(1);
+        expect(trends.activation.new_users).toBeGreaterThanOrEqual(2);
+        expect(trends.activation.activated).toBeGreaterThanOrEqual(1);
+        expect(trends.activation.activated).toBeLessThan(
+            trends.activation.new_users
+        );
+        expect(trends.active_users_7d).toBeGreaterThanOrEqual(1);
+        expect(trends.billing).toBeNull();
+        expect(res.body.insights.length).toBeGreaterThan(0);
+    });
+
+    it('adds trial and churn signals on a hosted instance', async () => {
+        const hosted = getConfig().hosted;
+        const saved = { enabled: hosted.enabled };
+        hosted.enabled = true;
+        entitlements.invalidate();
+        const DAY = 24 * 60 * 60 * 1000;
+        try {
+            await BillingAccount.create({
+                user_id: plain.id,
+                plan: 'free',
+                status: 'none',
+                trial_started_at: new Date(Date.now() - DAY),
+                trial_ends_at: new Date(Date.now() + 3 * DAY),
+            });
+            await BillingAccount.create({
+                user_id: admin.id,
+                plan: 'pro',
+                status: 'canceled',
+                canceled_at: new Date(Date.now() - DAY),
+                last_payment_failed_at: new Date(Date.now() - 2 * DAY),
+            });
+
+            const res = await adminAgent.get('/api/admin/overview');
+            expect(res.body.trends.billing).toEqual({
+                trials_started_today: 0,
+                trials_started_7d: 1,
+                trials_started_prev7d: 0,
+                trials_ending_7d: 1,
+                canceled_7d: 1,
+                payment_failed_7d: 1,
+            });
+        } finally {
+            Object.assign(hosted, saved);
+            entitlements.invalidate();
+        }
+    });
+
+    it('follows signups through activation to paid', async () => {
+        const hosted = getConfig().hosted;
+        const saved = { enabled: hosted.enabled };
+        hosted.enabled = true;
+        entitlements.invalidate();
+        try {
+            const tasker = await createTestUser({
+                email: `tasker_${Date.now()}@example.com`,
+            });
+            for (let i = 0; i < 5; i++) {
+                await Task.create({ name: `t${i}`, user_id: tasker.id });
+            }
+            await BillingAccount.create({
+                user_id: tasker.id,
+                plan: 'pro',
+                status: 'active',
+                provider_subscription_id: 'sub_funnel',
+            });
+
+            const planner = await createTestUser({
+                email: `planner_${Date.now()}@example.com`,
+            });
+            const task = await Task.create({ name: 'p', user_id: planner.id });
+            const plan = await DailyPlan.create({
+                user_id: planner.id,
+                plan_date: new Date().toISOString().slice(0, 10),
+            });
+            await DailyPlanItem.create({
+                daily_plan_id: plan.id,
+                task_id: task.id,
+                position: 0,
+                duration_minutes: 30,
+            });
+
+            // Four tasks is not enough, and paying without activating stays
+            // out of the paid step.
+            const almost = await createTestUser({
+                email: `almost_${Date.now()}@example.com`,
+            });
+            for (let i = 0; i < 4; i++) {
+                await Task.create({ name: `a${i}`, user_id: almost.id });
+            }
+            await BillingAccount.create({
+                user_id: almost.id,
+                plan: 'pro',
+                status: 'active',
+                provider_subscription_id: 'sub_almost',
+            });
+
+            const res = await adminAgent.get('/api/admin/overview');
+            expect(res.status).toBe(200);
+            const { funnel } = res.body;
+            expect(funnel.days).toBe(30);
+            expect(funnel.activation_tasks).toBe(5);
+            // admin, plain, tasker, planner and almost signed up today
+            expect(funnel.current.signups).toBe(5);
+            expect(funnel.current.activated).toBe(2);
+            expect(funnel.current.paid).toBe(1);
+            expect(funnel.current.paid_any).toBe(2);
+            expect(funnel.previous.signups).toBe(0);
+        } finally {
+            Object.assign(hosted, saved);
+            entitlements.invalidate();
+        }
+    });
+
+    it('counts a visitor on the blog and the landing page once a day', async () => {
+        const { SiteVisit } = require('../../models');
+        const visitService = require('../../services/visitService');
+        const day = new Date().toISOString().slice(0, 10);
+        const before = await visitService.siteVisitors(day, '9999-12-31');
+        await SiteVisit.bulkCreate([
+            { surface: 'landing', path: '/', visitor_hash: 'funnel-a', day },
+            { surface: 'blog', path: '/blog', visitor_hash: 'funnel-a', day },
+            { surface: 'landing', path: '/', visitor_hash: 'funnel-b', day },
+            { surface: 'app', path: '/today', visitor_hash: 'funnel-c', day },
+        ]);
+        expect(await visitService.siteVisitors(day, '9999-12-31')).toBe(
+            before + 2
+        );
+    });
+
+    it('leaves the paid step off a self-hosted instance', async () => {
+        const res = await adminAgent.get('/api/admin/overview');
+        expect(res.body.funnel.hosted).toBe(false);
+        expect(res.body.funnel.current.paid).toBeNull();
+        expect(res.body.funnel.current.signups).toBeGreaterThanOrEqual(2);
+    });
+
+    it('lists users with their trial, days left and payment', async () => {
+        const hosted = getConfig().hosted;
+        const saved = { enabled: hosted.enabled };
+        hosted.enabled = true;
+        entitlements.invalidate();
+        const DAY = 24 * 60 * 60 * 1000;
+        try {
+            await BillingAccount.create({
+                user_id: plain.id,
+                plan: 'free',
+                status: 'none',
+                trial_started_at: new Date(Date.now() - DAY),
+                trial_ends_at: new Date(Date.now() + 9.5 * DAY),
+            });
+            const payer = await createTestUser({
+                email: `pay_${Date.now()}@example.com`,
+            });
+            await BillingAccount.create({
+                user_id: payer.id,
+                plan: 'pro',
+                status: 'active',
+                provider_subscription_id: 'sub_1',
+            });
+
+            const res = await adminAgent.get('/api/admin/overview/users');
+            expect(res.status).toBe(200);
+            expect(res.body.hosted).toBe(true);
+            const byId = new Map(res.body.users.map((u) => [u.id, u]));
+
+            const trial = byId.get(plain.id);
+            expect(trial.access).toBe('trial');
+            expect(trial.trial_days_left).toBe(10);
+            expect(trial.paid).toBe(false);
+            expect(trial).not.toHaveProperty('password_digest');
+
+            const paying = byId.get(payer.id);
+            expect(paying.access).toBe('subscription');
+            expect(paying.paid).toBe(true);
+            expect(paying.trial_days_left).toBeNull();
+
+            expect(byId.get(admin.id).access).toBe('admin');
+        } finally {
+            Object.assign(hosted, saved);
+            entitlements.invalidate();
+        }
+    });
+
+    it('tells single sign-on sign-ups apart from email ones', async () => {
+        const sso = await User.create({
+            email: `sso_${Date.now()}@example.com`,
+            password_digest: null,
+            email_verified: true,
+        });
+        await OIDCIdentity.create({
+            user_id: sso.id,
+            provider_slug: 'google',
+            subject: `sub_${Date.now()}`,
+        });
+        // Signed up with email, linked Google a day later.
+        await OIDCIdentity.create({
+            user_id: plain.id,
+            provider_slug: 'google',
+            subject: `sub_plain_${Date.now()}`,
+        });
+        await sequelize.query(
+            'UPDATE oidc_identities SET created_at = :later WHERE user_id = :id',
+            {
+                replacements: {
+                    later: new Date(Date.now() + 24 * 60 * 60 * 1000),
+                    id: plain.id,
+                },
+            }
+        );
+
+        const res = await adminAgent.get('/api/admin/overview/users');
+        expect(res.status).toBe(200);
+        const byId = new Map(res.body.users.map((u) => [u.id, u]));
+
+        expect(byId.get(sso.id).signup_provider).toBe('google');
+        expect(byId.get(plain.id).signup_provider).toBeNull();
+        expect(byId.get(admin.id).signup_provider).toBeNull();
+    });
+
+    it('counts the items each user created', async () => {
+        const project = await Project.create({
+            name: 'P',
+            user_id: plain.id,
+        });
+        const parent = await Task.create({
+            name: 'Weekly',
+            user_id: plain.id,
+            project_id: project.id,
+            recurrence_type: 'weekly',
+        });
+        await Task.create({
+            name: 'Generated',
+            user_id: plain.id,
+            recurring_parent_id: parent.id,
+        });
+        await Task.create({ name: 'Run', user_id: plain.id, habit_mode: true });
+        await Note.create({ title: 'N', content: 'x', user_id: plain.id });
+        await Tag.create({ name: 'home', user_id: plain.id });
+        await Person.create({ name: 'Alex', user_id: plain.id });
+
+        const res = await adminAgent.get('/api/admin/overview/users');
+        expect(res.status).toBe(200);
+        const byId = new Map(res.body.users.map((u) => [u.id, u]));
+
+        const usage = byId.get(plain.id).usage;
+        expect(usage.counts).toEqual({
+            tasks: 1,
+            habits: 1,
+            projects: 1,
+            notes: 1,
+            tags: 1,
+            people: 1,
+        });
+        expect(usage.total).toBe(6);
+        expect(usage.last_created_at).not.toBeNull();
+
+        expect(byId.get(admin.id).usage).toEqual({
+            total: 0,
+            counts: {},
+            last_created_at: null,
+        });
+    });
+
+    it('keeps the user list from regular users', async () => {
+        const res = await plainAgent.get('/api/admin/overview/users');
+        expect(res.status).toBe(403);
+    });
+
+    it('lists the waitlist newest first', async () => {
+        const older = await WaitlistSubscriber.create({
+            email: `old_${Date.now()}@example.com`,
+            source: 'footer',
+            created_at: new Date(Date.now() - 60000),
+        });
+        const newer = await WaitlistSubscriber.create({
+            email: `new_${Date.now()}@example.com`,
+            source: 'hero',
+        });
+
+        const res = await adminAgent.get('/api/admin/waitlist?limit=10');
+        expect(res.status).toBe(200);
+        const emails = res.body.subscribers.map((s) => s.email);
+        expect(emails).toContain(newer.email);
+        expect(emails).toContain(older.email);
+        expect(emails.indexOf(newer.email)).toBeLessThan(
+            emails.indexOf(older.email)
+        );
+    });
+
+    it('narrows the list to a search fragment', async () => {
+        const wanted = `needle_${Date.now()}@example.com`;
+        await WaitlistSubscriber.create({ email: wanted, source: 'hero' });
+        await WaitlistSubscriber.create({
+            email: `other_${Date.now()}@example.com`,
+            source: 'hero',
+        });
+
+        // Uppercase on purpose: addresses are stored lowercased, so the
+        // query has to be lowered before it is matched.
+        const res = await adminAgent.get(
+            `/api/admin/waitlist?q=${encodeURIComponent('NEEDLE_')}`
+        );
+        expect(res.status).toBe(200);
+        expect(res.body.total).toBe(1);
+        expect(res.body.subscribers[0].email).toBe(wanted);
+    });
+
+    it('exports every address as CSV', async () => {
+        const email = `csv_${Date.now()}@example.com`;
+        await WaitlistSubscriber.create({
+            email,
+            source: 'pricing',
+            locale: 'de',
+            ip_address: '203.0.113.5',
+        });
+
+        const res = await adminAgent.get('/api/admin/waitlist/export');
+        expect(res.status).toBe(200);
+        expect(res.headers['content-type']).toMatch(/text\/csv/);
+        expect(res.headers['content-disposition']).toMatch(
+            /attachment; filename="waitlist-\d{4}-\d{2}-\d{2}\.csv"/
+        );
+        expect(res.text.split('\r\n')[0]).toBe(
+            '"email","source","locale","ip_address","submissions","joined_at"'
+        );
+        expect(res.text).toContain(
+            `"${email}","pricing","de","203.0.113.5","1"`
+        );
+    });
+
+    it('removes an entry from the waitlist', async () => {
+        const entry = await WaitlistSubscriber.create({
+            email: `remove_${Date.now()}@example.com`,
+            source: 'hero',
+        });
+
+        const res = await adminAgent.delete(`/api/admin/waitlist/${entry.id}`);
+        expect(res.status).toBe(204);
+        expect(await WaitlistSubscriber.findByPk(entry.id)).toBeNull();
+    });
+
+    it('404s removing an entry that is not there', async () => {
+        const res = await adminAgent.delete('/api/admin/waitlist/999999999');
+        expect(res.status).toBe(404);
+    });
+
+    it('refuses removal to a non-admin', async () => {
+        const entry = await WaitlistSubscriber.create({
+            email: `noperm_${Date.now()}@example.com`,
+            source: 'hero',
+        });
+        const res = await plainAgent.delete(`/api/admin/waitlist/${entry.id}`);
+        expect(res.status).toBe(403);
+        expect(await WaitlistSubscriber.findByPk(entry.id)).not.toBeNull();
+    });
+
+    it('refuses both endpoints to a non-admin', async () => {
+        expect((await plainAgent.get('/api/admin/overview')).status).toBe(403);
+        expect((await plainAgent.get('/api/admin/waitlist')).status).toBe(403);
+        expect(
+            (await plainAgent.get('/api/admin/waitlist/export')).status
+        ).toBe(403);
+    });
+
+    it('refuses both endpoints when signed out', async () => {
+        expect((await request(app).get('/api/admin/overview')).status).toBe(
+            401
+        );
+        expect((await request(app).get('/api/admin/waitlist')).status).toBe(
+            401
+        );
+    });
+});

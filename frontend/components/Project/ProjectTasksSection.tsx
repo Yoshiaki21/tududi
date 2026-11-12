@@ -1,18 +1,11 @@
 import React from 'react';
 import { Project } from '../../entities/Project';
 import { Task } from '../../entities/Task';
-import AutoSuggestNextActionBox from './AutoSuggestNextActionBox';
-import NewTask from '../Task/NewTask';
 import TaskList from '../Task/TaskList';
 import { TFunction } from 'i18next';
 
 interface ProjectTasksSectionProps {
-    project: Project | null;
     displayTasks: Task[];
-    showAutoSuggestForm: boolean;
-    onAddNextAction: (projectId: number, description: string) => void;
-    onDismissNextAction: () => void;
-    onTaskCreate: (taskName: string) => Promise<void>;
     onTaskUpdate: (task: Task) => Promise<void>;
     onTaskCompletionToggle: (task: Task) => void;
     onTaskDelete: (taskUid: string) => void;
@@ -20,16 +13,12 @@ interface ProjectTasksSectionProps {
     allProjects: Project[];
     showCompleted: boolean;
     taskSearchQuery: string;
+    onTaskReorder?: (orderedUids: string[]) => void;
     t: TFunction;
 }
 
 const ProjectTasksSection: React.FC<ProjectTasksSectionProps> = ({
-    project,
     displayTasks,
-    showAutoSuggestForm,
-    onAddNextAction,
-    onDismissNextAction,
-    onTaskCreate,
     onTaskUpdate,
     onTaskCompletionToggle,
     onTaskDelete,
@@ -37,27 +26,11 @@ const ProjectTasksSection: React.FC<ProjectTasksSectionProps> = ({
     allProjects,
     showCompleted,
     taskSearchQuery,
+    onTaskReorder,
     t,
 }) => {
     return (
         <div className="xl:col-span-2 flex flex-col gap-2">
-            {showAutoSuggestForm && (
-                <div className="transition-all duration-300 ease-in-out opacity-100 transform translate-y-0">
-                    <AutoSuggestNextActionBox
-                        onAddAction={(actionDescription) => {
-                            if (project?.id) {
-                                onAddNextAction(project.id, actionDescription);
-                            }
-                        }}
-                        onDismiss={onDismissNextAction}
-                    />
-                </div>
-            )}
-
-            <div className="transition-all duration-300 ease-in-out overflow-visible opacity-100 transform translate-y-0">
-                <NewTask onTaskCreate={onTaskCreate} />
-            </div>
-
             <div className="transition-all duration-300 ease-in-out overflow-visible">
                 {displayTasks.length > 0 ? (
                     <div className="transition-all duration-300 ease-in-out opacity-100 transform translate-y-0 overflow-visible">
@@ -70,6 +43,7 @@ const ProjectTasksSection: React.FC<ProjectTasksSectionProps> = ({
                             hideProjectName={true}
                             onToggleToday={onToggleToday}
                             showCompletedTasks={showCompleted}
+                            onReorder={onTaskReorder}
                         />
                     </div>
                 ) : (

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { Task } from '../../entities/Task';
 import { Project } from '../../entities/Project';
 import { Note } from '../../entities/Note';
@@ -9,6 +9,7 @@ import {
     processInboxItemWithStore,
     deleteInboxItemWithStore,
     updateInboxItemWithStore,
+    ProcessedInto,
 } from '../../utils/inboxService';
 import InboxItemDetail from './InboxItemDetail';
 import { useToast } from '../Shared/ToastContext';
@@ -21,19 +22,29 @@ import QuickCaptureInput from './QuickCaptureInput';
 import { createTask } from '../../utils/tasksService';
 import { createProject } from '../../utils/projectsService';
 import { createNote } from '../../utils/notesService';
+import { OfflineQueuedError } from '../../utils/authUtils';
 import { isUrl } from '../../utils/urlService';
+import { takeSharedText } from '../../utils/shareTargetService';
 import { fetchAreas } from '../../utils/areasService';
 import { fetchProjects } from '../../utils/projectsService';
+import {
+    getInboxRecentlyCapturedExpanded,
+    updateUiSettings,
+} from '../../utils/profileService';
 import { useStore } from '../../store/useStore';
-
+import { TASK_SHEET_CLASS } from '../Task/taskSheet';
+import { openTaskPanel } from '../../store/taskPanelStore';
 const InboxItems: React.FC = () => {
     const { t } = useTranslation();
     const { showSuccessToast, showErrorToast } = useToast();
     const [searchParams, setSearchParams] = useSearchParams();
-    const navigate = useNavigate();
-    const location = useLocation();
 
     const [hasInitialized, setHasInitialized] = useState(false);
+
+    // Content handed over by the OS share sheet (see shareTargetService) is
+    // prefilled into the composer rather than captured straight away, so the
+    // user can still edit it or pick task/note/project
+    const [sharedDraft] = useState<string>(() => takeSharedText() || '');
 
     const { inboxItems, isLoading, pagination } = useStore(
         (state) => state.inboxStore
@@ -54,6 +65,9 @@ const InboxItems: React.FC = () => {
     const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
     const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
     const [isInfoExpanded, setIsInfoExpanded] = useState(false);
+    const [inboxListExpanded, setInboxListExpanded] = useState(false);
+    const [lastAddedUid, setLastAddedUid] = useState<string | null>(null);
+    const [openItemUid, setOpenItemUid] = useState<string | null>(null);
 
     const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
     const [noteToEdit, setNoteToEdit] = useState<Note | null>(null);
@@ -101,6 +115,9 @@ const InboxItems: React.FC = () => {
             }
         };
         loadInitialTags();
+
+        getInboxRecentlyCapturedExpanded().then(setInboxListExpanded);
+
         const handleForceReload = () => {
             setTimeout(() => {
                 const currentInboxStore = useStore.getState().inboxStore;
@@ -175,12 +192,36 @@ const InboxItems: React.FC = () => {
         }
     }, [inboxItems.length, hasInitialized]);
 
+    // Track newly-added items: when the list grows while initialized, mark the
+    // newest item as "new" (entry animation) and auto-expand the list.
+    const prevInboxLengthRef = React.useRef<number>(0);
+    useEffect(() => {
+        if (!hasInitialized) {
+            prevInboxLengthRef.current = inboxItems.length;
+            return;
+        }
+        const prev = prevInboxLengthRef.current;
+        const curr = inboxItems.length;
+        if (curr > prev && inboxItems[0]?.uid) {
+            setLastAddedUid(inboxItems[0].uid);
+            setInboxListExpanded(true);
+            // Clear the "new" flag after the animation completes
+            const timer = setTimeout(() => setLastAddedUid(null), 500);
+            prevInboxLengthRef.current = curr;
+            return () => clearTimeout(timer);
+        }
+        prevInboxLengthRef.current = curr;
+    }, [inboxItems, hasInitialized]);
+
+    // ── Item handlers ─────────────────────────────────────────────────────────
+
     const handleProcessItem = async (
         uid: string,
-        showToast: boolean = true
+        showToast: boolean = true,
+        processedInto?: ProcessedInto
     ) => {
         try {
-            await processInboxItemWithStore(uid);
+            await processInboxItemWithStore(uid, processedInto);
             if (showToast) {
                 showSuccessToast(t('inbox.itemProcessed'));
             }
@@ -222,12 +263,15 @@ const InboxItems: React.FC = () => {
             const taskLink = (
                 <span>
                     {t('task.created', 'Task')}{' '}
-                    <a
-                        href={`/task/${createdTask.uid}`}
+                    <button
+                        type="button"
+                        onClick={() =>
+                            createdTask.uid && openTaskPanel(createdTask.uid)
+                        }
                         className="text-green-200 underline hover:text-green-100"
                     >
                         {createdTask.name}
-                    </a>{' '}
+                    </button>{' '}
                     {t('task.createdSuccessfully', 'created successfully!')}
                 </span>
             );
@@ -237,20 +281,26 @@ const InboxItems: React.FC = () => {
                 options.inboxItemUid ?? currentConversionItemUid ?? undefined;
 
             if (inboxUid) {
-                await handleProcessItem(inboxUid, false);
+                await handleProcessItem(
+                    inboxUid,
+                    false,
+                    createdTask.uid ? { task_uid: createdTask.uid } : undefined
+                );
                 if (!options.inboxItemUid) {
                     setCurrentConversionItemUid(null);
                 }
             }
 
             if (options.navigateAfterCreate && createdTask.uid) {
-                navigate(`/task/${createdTask.uid}`, { state: { from: location.pathname + location.search } });
+                openTaskPanel(createdTask.uid);
             }
 
             return createdTask;
         } catch (error) {
-            console.error('Failed to create task:', error);
-            showErrorToast(t('task.createError'));
+            if (!(error instanceof OfflineQueuedError)) {
+                console.error('Failed to create task:', error);
+                showErrorToast(t('task.createError'));
+            }
             throw error;
         } finally {
             if (options.inboxItemUid) {
@@ -267,10 +317,18 @@ const InboxItems: React.FC = () => {
         try {
             await createTaskAndHandleConversion(task, {
                 inboxItemUid,
-                navigateAfterCreate: true,
+                navigateAfterCreate: false,
             });
-        } catch {
-            // Errors are already reported via toast notifications
+        } catch (error) {
+            if (error instanceof OfflineQueuedError) {
+                showSuccessToast(
+                    t(
+                        'inbox.itemQueuedOffline',
+                        "Saved offline. It'll sync automatically once you're back online."
+                    )
+                );
+            }
+            // Other errors are already reported via toast notifications
         }
     };
 
@@ -321,13 +379,9 @@ const InboxItems: React.FC = () => {
         setIsNoteModalOpen(true);
     };
 
-    const handleSaveTask = async (task: Task) => {
-        await createTaskAndHandleConversion(task);
-    };
-
     const handleSaveProject = async (project: Project) => {
         try {
-            await createProject(project);
+            const createdProject = await createProject(project);
 
             const updatedProjects = await fetchProjects();
             setProjects(updatedProjects);
@@ -336,10 +390,25 @@ const InboxItems: React.FC = () => {
             setGlobalProjects(updatedProjects);
 
             if (currentConversionItemUid !== null) {
-                await handleProcessItem(currentConversionItemUid, false);
+                await handleProcessItem(
+                    currentConversionItemUid,
+                    false,
+                    createdProject?.uid
+                        ? { project_uid: createdProject.uid }
+                        : undefined
+                );
                 setCurrentConversionItemUid(null);
             }
         } catch (error) {
+            if (error instanceof OfflineQueuedError) {
+                showSuccessToast(
+                    t(
+                        'inbox.itemQueuedOffline',
+                        "Saved offline. It'll sync automatically once you're back online."
+                    )
+                );
+                return;
+            }
             console.error('Failed to create project:', error);
             showErrorToast(t('project.createError'));
         }
@@ -361,18 +430,23 @@ const InboxItems: React.FC = () => {
                 note.tags = [...note.tags, { name: 'bookmark' }];
             }
 
-            await createNote(note);
-            showSuccessToast(
-                t('note.createSuccess', 'Note created successfully')
-            );
+            const createdNote = await createNote(note);
+            useStore.getState().notesStore.addNote(createdNote);
 
             if (currentConversionItemUid !== null) {
-                await handleProcessItem(currentConversionItemUid, false);
+                await handleProcessItem(
+                    currentConversionItemUid,
+                    false,
+                    createdNote?.uid ? { note_uid: createdNote.uid } : undefined
+                );
                 setCurrentConversionItemUid(null);
             }
 
             setIsNoteModalOpen(false);
         } catch (error) {
+            if (error instanceof OfflineQueuedError) {
+                throw error;
+            }
             console.error('Failed to create note:', error);
             showErrorToast(t('note.createError', 'Failed to create note'));
         }
@@ -381,6 +455,8 @@ const InboxItems: React.FC = () => {
     const handleCreateProject = async (name: string): Promise<Project> => {
         try {
             const project = await createProject({ name, status: 'planned' });
+            const { projectsStore } = useStore.getState();
+            projectsStore.setProjects([...projectsStore.projects, project]);
             showSuccessToast(t('project.createSuccess'));
             return project;
         } catch (error) {
@@ -405,138 +481,191 @@ const InboxItems: React.FC = () => {
         return <LoadingScreen />;
     }
 
+    const openIndex = openItemUid
+        ? inboxItems.findIndex((item) => item.uid === openItemUid)
+        : -1;
+
     return (
-        <div className="w-full px-2 sm:px-4 lg:px-6 pt-4 pb-8">
-            <div className="w-full max-w-5xl mx-auto">
-                <div className="flex items-center mb-8 justify-between">
-                    <div className="flex items-center">
-                        <h1 className="text-2xl font-light">
-                            {t('inbox.title')}
-                        </h1>
-                    </div>
+        <div className="w-full px-4 sm:px-6 lg:px-8 pt-4 pb-8">
+            <div className="w-full max-w-7xl mx-auto">
+                {/* ── Page header ─────────────────────────────────────────── */}
+                <div className="flex items-center justify-between mb-6">
+                    <h1 className="text-2xl font-light text-gray-900 dark:text-gray-100">
+                        {t('inbox.title')}
+                    </h1>
                     <button
                         onClick={() => setIsInfoExpanded(!isInfoExpanded)}
-                        className={`flex items-center hover:bg-blue-100/50 dark:hover:bg-blue-800/20 transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset rounded-lg${isInfoExpanded ? ' bg-blue-50/70 dark:bg-blue-900/20' : ''} p-2`}
+                        className={`flex items-center justify-center w-8 h-8 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/40 ${
+                            isInfoExpanded
+                                ? 'text-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                                : 'text-gray-400 dark:text-gray-500 hover:text-blue-400 hover:bg-gray-100 dark:hover:bg-white/[0.06]'
+                        }`}
                         aria-expanded={isInfoExpanded}
                         aria-label={
                             isInfoExpanded
-                                ? 'Collapse info panel'
-                                : 'Show inbox information'
+                                ? t('inbox.collapseInfo', 'Collapse info panel')
+                                : t('inbox.showInfo', 'Show inbox information')
                         }
-                        title={isInfoExpanded ? 'Hide info' : 'About Inbox'}
+                        title={
+                            isInfoExpanded
+                                ? t('inbox.hideInfo', 'Hide info')
+                                : t('inbox.aboutInbox', 'About Inbox')
+                        }
                     >
-                        <InformationCircleIcon className="h-5 w-5 text-blue-500" />
-                        <span className="sr-only">
-                            {isInfoExpanded ? 'Hide info' : 'About Inbox'}
-                        </span>
+                        <InformationCircleIcon className="h-5 w-5" />
                     </button>
                 </div>
 
+                {/* ── Info banner ──────────────────────────────────────────── */}
                 <div
-                    className={`transition-all duration-300 ease-in-out ${
-                        isInfoExpanded
-                            ? 'max-h-96 opacity-100 mb-6'
-                            : 'max-h-0 opacity-0 mb-0'
-                    } overflow-hidden`}
+                    className={`transition-all duration-300 ease-in-out overflow-hidden ${
+                        isInfoExpanded ? 'max-h-48 opacity-100 mb-5' : 'max-h-0 opacity-0 mb-0'
+                    }`}
                 >
-                    <div className="bg-blue-50/50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-800/30 rounded-lg px-6 py-5 flex items-start gap-4">
-                        <div className="flex-shrink-0">
-                            <InformationCircleIcon className="h-12 w-12 text-blue-400 opacity-20" />
-                        </div>
-                        <div className="flex-1">
-                            <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
-                                {t(
-                                    'taskViews.inbox',
-                                    "Inbox is where all uncategorized tasks are located. Tasks that have not been assigned to a project or don't have a due date will appear here. This is your 'brain dump' area where you can quickly note down tasks and organize them later."
-                                )}
-                            </p>
+                    <div className="flex gap-3 px-4 py-3.5 bg-blue-50/60 dark:bg-blue-900/10 rounded-xl border border-blue-100 dark:border-blue-800/20">
+                        <InformationCircleIcon className="h-4 w-4 text-blue-400 flex-shrink-0 mt-0.5" />
+                        <div className="text-[13.5px] text-gray-600 dark:text-gray-300 leading-relaxed">
+                            {t(
+                                'inbox.infoShort',
+                                'Inbox is where uncategorized thoughts land — jot things down, sort them later.'
+                            )}{' '}
+                            <span className="text-blue-600 dark:text-blue-400 font-semibold">#tag</span>
+                            {' '}{t('inbox.shortcutTag', 'to label with a tag')},{' '}
+                            <span className="text-green-700 dark:text-green-400 font-semibold">+Project</span>
+                            {' '}{t('inbox.shortcutProject', 'to assign to a project')}.
                         </div>
                     </div>
                 </div>
 
+                {/* ── Quick capture ────────────────────────────────────────── */}
                 <QuickCaptureInput
-                    onTaskCreate={handleSaveTask}
-                    onNoteCreate={handleSaveNote}
+                    unified
                     projects={projects}
+                    initialValue={sharedDraft}
                     autoFocus={true}
-                    openTaskModal={handleOpenTaskModal}
-                    openProjectModal={handleOpenProjectModal}
-                    openNoteModal={handleOpenNoteModal}
-                    cardClassName="mb-4"
+                    cardClassName="mb-5"
+                    onCaptured={(items) => {
+                        if (items.some((item) => item.target === 'project')) {
+                            fetchProjects()
+                                .then(setProjects)
+                                .catch(() => {});
+                        }
+                    }}
                 />
 
+                {/* ── Item list ────────────────────────────────────────────── */}
                 {inboxItems.length > 0 && (
-                    <div className="space-y-4">
-                        <div className="space-y-2">
-                            {inboxItems.map((item) => (
-                                <InboxItemDetail
-                                    key={item.uid || item.id}
-                                    item={item}
-                                    onDelete={handleDeleteItem}
-                                    onUpdate={handleUpdateItem}
-                                    openTaskModal={handleOpenTaskModal}
-                                    openProjectModal={handleOpenProjectModal}
-                                    openNoteModal={handleOpenNoteModal}
-                                    projects={projects}
-                                />
-                            ))}
+                    <div
+                        className={`w-full task-list-container overflow-visible ${TASK_SHEET_CLASS} task-sheet-rails`}
+                    >
+                        {/* Recently captured – collapsible header */}
+                        <div>
+                            <button
+                                onClick={() =>
+                                    setInboxListExpanded((prev) => {
+                                        const next = !prev;
+                                        updateUiSettings({
+                                            inbox: { recentlyCapturedExpanded: next },
+                                        }).catch(() => {});
+                                        return next;
+                                    })
+                                }
+                                className="flex items-center gap-2.5 w-full px-4 py-2.5 rounded-lg text-left hover:bg-gray-100/60 dark:hover:bg-white/[0.04] transition-colors"
+                            >
+                                <span className="text-[10.5px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">
+                                    {t('inbox.recentlyCaptured', 'Recently captured')}
+                                </span>
+                                <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                                    {inboxItems.length}
+                                </span>
+
+                                <span className="flex-1" />
+
+                                <svg
+                                    className={`w-3 h-3 text-gray-400 dark:text-gray-500 transition-transform duration-150 ${inboxListExpanded ? 'rotate-90' : ''}`}
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke="currentColor"
+                                    strokeWidth={2}
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                >
+                                    <path d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                                </svg>
+                            </button>
                         </div>
 
-                        {pagination.hasMore && (
-                            <div className="flex justify-center pt-4">
-                                <button
-                                    onClick={handleLoadMore}
-                                    disabled={isLoading}
-                                    className="inline-flex items-center px-6 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                                >
-                                    {isLoading ? (
-                                        <>
-                                            <svg
-                                                className="animate-spin -ml-1 mr-2 h-4 w-4 text-gray-500"
-                                                xmlns="http://www.w3.org/2000/svg"
-                                                fill="none"
-                                                viewBox="0 0 24 24"
-                                            >
-                                                <circle
-                                                    className="opacity-25"
-                                                    cx="12"
-                                                    cy="12"
-                                                    r="10"
-                                                    stroke="currentColor"
-                                                    strokeWidth="4"
-                                                ></circle>
-                                                <path
-                                                    className="opacity-75"
-                                                    fill="currentColor"
-                                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                                                ></path>
-                                            </svg>
-                                            {t('inbox.loading', 'Loading...')}
-                                        </>
-                                    ) : (
-                                        <>
-                                            <InboxIcon className="h-4 w-4 mr-2" />
-                                            {t(
-                                                'inbox.loadMore',
-                                                'Load more inbox items'
-                                            )}
-                                        </>
-                                    )}
-                                </button>
-                            </div>
-                        )}
+                        {inboxListExpanded && (
+                            <>
+                                {/* The open item detaches into its own card,
+                                    splitting the list around it (see .task-sheet). */}
+                                {inboxItems.map((item, index) => (
+                                    <div key={item.uid || item.id}>
+                                        <div
+                                            data-task-expanded={
+                                                index === openIndex || undefined
+                                            }
+                                        >
+                                            <InboxItemDetail
+                                                item={item}
+                                                onDelete={handleDeleteItem}
+                                                onUpdate={handleUpdateItem}
+                                                openTaskModal={handleOpenTaskModal}
+                                                openProjectModal={handleOpenProjectModal}
+                                                openNoteModal={handleOpenNoteModal}
+                                                projects={projects}
+                                                isNew={item.uid === lastAddedUid}
+                                                onEditingChange={(editing) =>
+                                                    setOpenItemUid((prev) =>
+                                                        editing
+                                                            ? (item.uid ?? null)
+                                                            : prev === item.uid
+                                                              ? null
+                                                              : prev
+                                                    )
+                                                }
+                                            />
+                                        </div>
+                                    </div>
+                                ))}
 
-                        {inboxItems.length > 0 && (
-                            <div className="text-center text-sm text-gray-500 dark:text-gray-400 pt-2">
-                                {t(
-                                    'inbox.showingItems',
-                                    'Showing {{current}} of {{total}} items',
-                                    {
-                                        current: inboxItems.length,
-                                        total: pagination.total,
-                                    }
-                                )}
-                            </div>
+                                <div>
+                                    {/* Load more */}
+                                    {pagination.hasMore && (
+                                        <div className="flex justify-center pt-5">
+                                            <button
+                                                onClick={handleLoadMore}
+                                                disabled={isLoading}
+                                                className="inline-flex items-center gap-2 px-5 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-white/[0.04] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                            >
+                                                {isLoading ? (
+                                                    <>
+                                                        <svg className="animate-spin h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                                        </svg>
+                                                        {t('inbox.loading', 'Loading…')}
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <InboxIcon className="h-3.5 w-3.5" />
+                                                        {t('inbox.loadMore', 'Load more')}
+                                                    </>
+                                                )}
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {/* Item count */}
+                                    <div className="text-center text-xs text-gray-400 dark:text-gray-500 pt-4 pb-2">
+                                        {t(
+                                            'inbox.showingItems',
+                                            'Showing {{current}} of {{total}} items',
+                                            { current: inboxItems.length, total: pagination.total }
+                                        )}
+                                    </div>
+                                </div>
+                            </>
                         )}
                     </div>
                 )}

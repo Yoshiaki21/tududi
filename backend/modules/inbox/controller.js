@@ -1,12 +1,10 @@
 'use strict';
 
 const inboxService = require('./service');
+const { validateReferenceDate } = require('./validation');
 const { UnauthorizedError } = require('../../shared/errors');
 const { getAuthenticatedUserId } = require('../../utils/request-utils');
 
-/**
- * Get authenticated user ID or throw UnauthorizedError.
- */
 function requireUserId(req) {
     const userId = getAuthenticatedUserId(req);
     if (!userId) {
@@ -15,14 +13,17 @@ function requireUserId(req) {
     return userId;
 }
 
-/**
- * Inbox controller - handles HTTP requests/responses.
- */
+// The one thing the item became, if the client says: { task_uid } or
+// { project_uid } or { note_uid }.
+function processTarget(body = {}) {
+    for (const kind of ['task', 'project', 'note']) {
+        const uid = body?.[`${kind}_uid`];
+        if (uid) return { kind, uid };
+    }
+    return null;
+}
+
 const inboxController = {
-    /**
-     * GET /api/inbox
-     * List all active inbox items for the current user.
-     */
     async list(req, res, next) {
         try {
             const userId = requireUserId(req);
@@ -34,10 +35,6 @@ const inboxController = {
         }
     },
 
-    /**
-     * GET /api/inbox/:uid
-     * Get a single inbox item by UID.
-     */
     async getOne(req, res, next) {
         try {
             const userId = requireUserId(req);
@@ -49,10 +46,6 @@ const inboxController = {
         }
     },
 
-    /**
-     * POST /api/inbox
-     * Create a new inbox item.
-     */
     async create(req, res, next) {
         try {
             const userId = requireUserId(req);
@@ -64,10 +57,6 @@ const inboxController = {
         }
     },
 
-    /**
-     * PATCH /api/inbox/:uid
-     * Update an inbox item.
-     */
     async update(req, res, next) {
         try {
             const userId = requireUserId(req);
@@ -83,10 +72,6 @@ const inboxController = {
         }
     },
 
-    /**
-     * DELETE /api/inbox/:uid
-     * Soft delete an inbox item.
-     */
     async delete(req, res, next) {
         try {
             const userId = requireUserId(req);
@@ -98,29 +83,28 @@ const inboxController = {
         }
     },
 
-    /**
-     * PATCH /api/inbox/:uid/process
-     * Mark an inbox item as processed.
-     */
     async process(req, res, next) {
         try {
             const userId = requireUserId(req);
             const { uid } = req.params;
-            const item = await inboxService.process(userId, uid);
+            const item = await inboxService.process(userId, uid, {
+                target: processTarget(req.body),
+            });
             res.json(item);
         } catch (error) {
             next(error);
         }
     },
 
-    /**
-     * POST /api/inbox/analyze-text
-     * Analyze text content without creating an inbox item.
-     */
     async analyzeText(req, res, next) {
         try {
-            const { content } = req.body;
-            const result = inboxService.analyzeText(content);
+            const userId = requireUserId(req);
+            const { content, reference_date, parse_dates } = req.body;
+            const result = await inboxService.analyzeText(userId, content, {
+                referenceDate: validateReferenceDate(reference_date),
+                timezone: req.currentUser?.timezone || 'UTC',
+                parseDates: parse_dates !== false,
+            });
             res.json(result);
         } catch (error) {
             next(error);

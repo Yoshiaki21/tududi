@@ -9,7 +9,9 @@ const { generateETag } = require('../utils/etag-generator');
 const { generateCTag } = require('../utils/ctag-generator');
 const calendarRepository = require('../repositories/calendar-repository');
 const taskRepository = require('../../tasks/repository');
+const { CALDAV_TASK_INCLUDES } = require('../task-includes');
 const vtodoSerializer = require('../icalendar/vtodo-serializer');
+const { canReadTask, visibleTaskWhere } = require('../access');
 
 async function handlePropfind(req, res) {
     try {
@@ -35,19 +37,23 @@ async function handlePropfind(req, res) {
 
         const isTaskRequest = req.params.uid;
         const responses = [];
+        const userTimezone = req.currentUser.timezone || 'UTC';
 
         if (isTaskRequest) {
             const taskUid = req.params.uid.replace('.ics', '');
-            const task = await taskRepository.findByUid(taskUid);
+            const task = await taskRepository.findByUid(taskUid, {
+                include: CALDAV_TASK_INCLUDES,
+            });
 
-            if (!task || task.user_id !== userId) {
+            if (!(await canReadTask(task, userId))) {
                 return res.status(404).json({ error: 'Task not found' });
             }
 
             const response = await buildTaskResponse(
                 task,
                 username,
-                propfindRequest
+                propfindRequest,
+                userTimezone
             );
             responses.push(response);
         } else {
@@ -59,12 +65,16 @@ async function handlePropfind(req, res) {
             responses.push(calendarResponse);
 
             if (depth > 0) {
-                const tasks = await taskRepository.findByUser(userId);
+                const tasks = await taskRepository.findAll(
+                    await visibleTaskWhere(userId),
+                    { include: CALDAV_TASK_INCLUDES }
+                );
                 for (const task of tasks) {
                     const taskResponse = await buildTaskResponse(
                         task,
                         username,
-                        propfindRequest
+                        propfindRequest,
+                        userTimezone
                     );
                     responses.push(taskResponse);
                 }
@@ -84,7 +94,9 @@ async function handlePropfind(req, res) {
 
 async function buildCalendarResponse(username, userId, propfindRequest) {
     const href = buildHref(username);
-    const tasks = await taskRepository.findByUser(userId);
+    const tasks = await taskRepository.findAll(await visibleTaskWhere(userId), {
+        include: CALDAV_TASK_INCLUDES,
+    });
     const ctag = generateCTag(tasks);
 
     const props = {
@@ -100,7 +112,13 @@ async function buildCalendarResponse(username, userId, propfindRequest) {
             },
         },
         'D:getcontenttype': 'text/calendar; charset=utf-8',
-        'C:getctag': ctag,
+        'CS:getctag': ctag,
+        'D:current-user-principal': {
+            'D:href': `/caldav/${encodeURIComponent(username)}/`,
+        },
+        'D:principal-URL': {
+            'D:href': `/caldav/${encodeURIComponent(username)}/`,
+        },
         'D:current-user-privilege-set': {
             'D:privilege': [
                 { 'D:read': '' },
@@ -116,12 +134,19 @@ async function buildCalendarResponse(username, userId, propfindRequest) {
     return buildResponse(href, propstat);
 }
 
-async function buildTaskResponse(task, username, propfindRequest) {
+async function buildTaskResponse(
+    task,
+    username,
+    propfindRequest,
+    userTimezone
+) {
     const href = buildHref(username, task.uid);
     const etag = generateETag(task);
 
     try {
-        const vtodo = await vtodoSerializer.serializeTaskToVTODO(task);
+        const vtodo = await vtodoSerializer.serializeTaskToVTODO(task, {
+            userTimezone,
+        });
 
         const props = {
             'D:resourcetype': '',

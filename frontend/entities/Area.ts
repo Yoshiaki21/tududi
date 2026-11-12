@@ -4,4 +4,9 @@ export interface Area {
     name: string;
     description?: string;
     active?: boolean;
+    color?: string;
+    projects_count?: number;
+    goals_count?: number;
+    tasks_count?: number;
+    sort_position?: number | null;
 }

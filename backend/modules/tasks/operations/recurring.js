@@ -1,11 +1,17 @@
-const { Task } = require('../../../models');
+const { Task, RecurringCompletion } = require('../../../models');
 const taskRepository = require('../repository');
-const { calculateNextDueDate } = require('../recurringTaskService');
+const {
+    calculateNextDueDate,
+    shouldGenerateNextTask,
+} = require('../recurringTaskService');
+const { logEvent } = require('../taskEventService');
+const { logError } = require('../../../services/logService');
 const {
     processDueDateForResponse,
     getSafeTimezone,
     dateStringToUTC,
     getCurrentDateInTimezone,
+    getWeekdayInTimezone,
 } = require('../../../utils/timezone-utils');
 
 async function handleRecurrenceUpdate(task, recurrenceFields, reqBody) {
@@ -22,6 +28,8 @@ async function handleRecurrenceUpdate(task, recurrenceFields, reqBody) {
         'project_id',
         'priority',
         'note',
+        'assigned_to',
+        'involves',
     ].some((field) => {
         const newValue = reqBody[field];
         return newValue !== undefined && newValue !== task[field];
@@ -73,16 +81,66 @@ async function handleRecurrenceUpdate(task, recurrenceFields, reqBody) {
 async function calculateNextIterations(task, startFromDate, userTimezone) {
     const iterations = [];
     const safeTimezone = getSafeTimezone(userTimezone);
+    const moment = require('moment-timezone');
 
-    // Parse start date properly in user's timezone
-    let startDate;
+    // Get today's date string in user's local timezone (YYYY-MM-DD)
+    let todayLocalStr;
     if (startFromDate) {
-        // Convert the date string from user timezone to UTC
-        startDate = dateStringToUTC(startFromDate, safeTimezone, 'start');
+        if (typeof startFromDate === 'string') {
+            todayLocalStr = moment
+                .tz(startFromDate, safeTimezone)
+                .format('YYYY-MM-DD');
+        } else {
+            // Handle Date objects passed from tests
+            todayLocalStr = moment
+                .utc(startFromDate)
+                .tz(safeTimezone)
+                .format('YYYY-MM-DD');
+        }
     } else {
-        // Get today's date in user's timezone and convert to UTC
-        const todayInUserTz = getCurrentDateInTimezone(safeTimezone);
-        startDate = dateStringToUTC(todayInUserTz, safeTimezone, 'start');
+        todayLocalStr = getCurrentDateInTimezone(safeTimezone);
+    }
+
+    // Parse start date using start-of-day in user timezone (used for weekly/daily logic)
+    let startDate = dateStringToUTC(todayLocalStr, safeTimezone, 'start');
+
+    // Daily and weekly recurrence repeat on a fixed cadence measured from the
+    // task's own due date (e.g. "every 14 days"), so the due date - not
+    // "today" - determines which dates are valid occurrences. Anchor on it
+    // and fast-forward through real occurrences (via calculateNextDueDate,
+    // the same stepping logic used to generate the next real instance) until
+    // we reach today. Recalculating the pattern from "today" instead loses
+    // that phase and produces the wrong days whenever the interval is
+    // greater than 1 (#1489).
+    if (
+        (task.recurrence_type === 'daily' ||
+            task.recurrence_type === 'weekly') &&
+        task.due_date
+    ) {
+        let cursor = new Date(task.due_date);
+        if (!isNaN(cursor.getTime())) {
+            while (cursor < startDate) {
+                const next = calculateNextDueDate(task, cursor, safeTimezone);
+                if (!next) break;
+                cursor = next;
+            }
+
+            for (let i = 0; i < 6 && cursor; i++) {
+                if (task.recurrence_end_date) {
+                    const endDate = new Date(task.recurrence_end_date);
+                    if (cursor > endDate) break;
+                }
+
+                iterations.push({
+                    date: processDueDateForResponse(cursor, safeTimezone),
+                    utc_date: cursor.toISOString(),
+                });
+
+                cursor = calculateNextDueDate(task, cursor, safeTimezone);
+            }
+
+            return iterations;
+        }
     }
 
     let nextDate = new Date(startDate);
@@ -96,7 +154,7 @@ async function calculateNextIterations(task, startFromDate, userTimezone) {
             const weekdays = Array.isArray(task.recurrence_weekdays)
                 ? task.recurrence_weekdays
                 : JSON.parse(task.recurrence_weekdays);
-            const todayWeekday = nextDate.getUTCDay();
+            const todayWeekday = getWeekdayInTimezone(nextDate, safeTimezone);
             console.log('Weekly recurrence check:', {
                 weekdays,
                 todayWeekday,
@@ -107,38 +165,40 @@ async function calculateNextIterations(task, startFromDate, userTimezone) {
             task.recurrence_weekday !== null &&
             task.recurrence_weekday !== undefined
         ) {
-            const todayWeekday = nextDate.getUTCDay();
+            const todayWeekday = getWeekdayInTimezone(nextDate, safeTimezone);
             includesToday = task.recurrence_weekday === todayWeekday;
         }
     } else if (task.recurrence_type === 'daily') {
         includesToday = true;
     } else if (task.recurrence_type === 'monthly') {
+        // Use the LOCAL date components to avoid UTC offset drift.
+        // For UTC+ users, start-of-day UTC is the previous UTC day, so
+        // startDate.getUTCDate() would return the wrong day number.
+        const localParts = todayLocalStr.split('-');
+        const localYear = parseInt(localParts[0], 10);
+        const localMonth = parseInt(localParts[1], 10) - 1; // 0-indexed
+        const localDay = parseInt(localParts[2], 10);
+
         const targetDay =
             task.recurrence_month_day !== null &&
             task.recurrence_month_day !== undefined
                 ? task.recurrence_month_day
-                : startDate.getUTCDate();
-        const todayDay = startDate.getUTCDate();
+                : localDay;
 
-        if (targetDay > todayDay) {
-            const currentMonth = startDate.getUTCMonth();
-            const currentYear = startDate.getUTCFullYear();
+        if (targetDay > localDay) {
             const maxDayInMonth = new Date(
-                Date.UTC(currentYear, currentMonth + 1, 0)
+                Date.UTC(localYear, localMonth + 1, 0)
             ).getUTCDate();
 
             if (targetDay <= maxDayInMonth) {
                 includesToday = true;
-                nextDate = new Date(
-                    Date.UTC(
-                        currentYear,
-                        currentMonth,
-                        targetDay,
-                        startDate.getUTCHours(),
-                        startDate.getUTCMinutes(),
-                        startDate.getUTCSeconds(),
-                        startDate.getUTCMilliseconds()
-                    )
+                // Build the target date from local components and convert to UTC.
+                // This avoids the UTC-hour carry that causes a +1 day shift for UTC+ zones.
+                const targetLocalDateStr = `${localParts[0]}-${localParts[1]}-${String(targetDay).padStart(2, '0')}`;
+                nextDate = dateStringToUTC(
+                    targetLocalDateStr,
+                    safeTimezone,
+                    'start'
                 );
             }
         }
@@ -164,7 +224,7 @@ async function calculateNextIterations(task, startFromDate, userTimezone) {
                     ? task.recurrence_weekdays
                     : JSON.parse(task.recurrence_weekdays);
                 const sorted = [...weekdays].sort((a, b) => a - b);
-                const currentDay = nextDate.getUTCDay();
+                const currentDay = getWeekdayInTimezone(nextDate, safeTimezone);
                 const laterInWeek = sorted.filter((d) => d > currentDay);
                 if (laterInWeek.length > 0) {
                     nextDate.setUTCDate(
@@ -183,7 +243,10 @@ async function calculateNextIterations(task, startFromDate, userTimezone) {
                 task.recurrence_weekday !== null &&
                 task.recurrence_weekday !== undefined
             ) {
-                const currentWeekday = nextDate.getUTCDay();
+                const currentWeekday = getWeekdayInTimezone(
+                    nextDate,
+                    safeTimezone
+                );
                 const daysUntilTarget =
                     (task.recurrence_weekday - currentWeekday + 7) % 7;
                 if (daysUntilTarget === 0) {
@@ -196,8 +259,30 @@ async function calculateNextIterations(task, startFromDate, userTimezone) {
             } else {
                 nextDate.setUTCDate(nextDate.getUTCDate() + interval * 7);
             }
+        } else if (task.recurrence_type === 'monthly') {
+            // Advance to next month's occurrence using local timezone arithmetic
+            // to avoid UTC-hour drift that causes off-by-one dates for UTC+ users.
+            const localParts = todayLocalStr.split('-');
+            const localYear = parseInt(localParts[0], 10);
+            const localMonth = parseInt(localParts[1], 10); // 1-indexed
+            const localDay = parseInt(localParts[2], 10);
+            const interval = task.recurrence_interval || 1;
+            const targetDay =
+                task.recurrence_month_day !== null &&
+                task.recurrence_month_day !== undefined
+                    ? task.recurrence_month_day
+                    : localDay;
+            const totalMonths = localMonth - 1 + interval;
+            const nextYear = localYear + Math.floor(totalMonths / 12);
+            const nextMonthZeroIdx = totalMonths % 12;
+            const maxDay = new Date(
+                Date.UTC(nextYear, nextMonthZeroIdx + 1, 0)
+            ).getUTCDate();
+            const finalDay = Math.min(targetDay, maxDay);
+            const nextLocalDateStr = `${nextYear}-${String(nextMonthZeroIdx + 1).padStart(2, '0')}-${String(finalDay).padStart(2, '0')}`;
+            nextDate = dateStringToUTC(nextLocalDateStr, safeTimezone, 'start');
         } else {
-            nextDate = calculateNextDueDate(task, startDate);
+            nextDate = calculateNextDueDate(task, startDate, safeTimezone);
         }
     }
 
@@ -232,7 +317,7 @@ async function calculateNextIterations(task, startFromDate, userTimezone) {
                     : JSON.parse(task.recurrence_weekdays);
                 const interval = task.recurrence_interval || 1;
                 const sorted = [...weekdays].sort((a, b) => a - b);
-                const currentDay = nextDate.getUTCDay();
+                const currentDay = getWeekdayInTimezone(nextDate, safeTimezone);
                 const laterInWeek = sorted.filter((d) => d > currentDay);
 
                 if (laterInWeek.length > 0) {
@@ -254,15 +339,235 @@ async function calculateNextIterations(task, startFromDate, userTimezone) {
                     nextDate.getUTCDate() + (task.recurrence_interval || 1) * 7
                 );
             }
+        } else if (task.recurrence_type === 'monthly') {
+            // Advance by interval months using local timezone date arithmetic.
+            // Using processDueDateForResponse gives us the local date string from
+            // the current nextDate, letting us advance months without UTC drift.
+            const currentLocalStr = processDueDateForResponse(
+                nextDate,
+                safeTimezone
+            );
+            const [y, m, d] = currentLocalStr.split('-').map(Number);
+            const interval = task.recurrence_interval || 1;
+            const targetDay =
+                task.recurrence_month_day !== null &&
+                task.recurrence_month_day !== undefined
+                    ? task.recurrence_month_day
+                    : d;
+            const totalMonths = m - 1 + interval;
+            const nextYear = y + Math.floor(totalMonths / 12);
+            const nextMonthZeroIdx = totalMonths % 12;
+            const maxDay = new Date(
+                Date.UTC(nextYear, nextMonthZeroIdx + 1, 0)
+            ).getUTCDate();
+            const finalDay = Math.min(targetDay, maxDay);
+            const nextLocalDateStr = `${nextYear}-${String(nextMonthZeroIdx + 1).padStart(2, '0')}-${String(finalDay).padStart(2, '0')}`;
+            nextDate = dateStringToUTC(nextLocalDateStr, safeTimezone, 'start');
         } else {
-            nextDate = calculateNextDueDate(task, nextDate);
+            nextDate = calculateNextDueDate(task, nextDate, safeTimezone);
         }
     }
 
     return iterations;
 }
 
+const OCCURRENCE_RECURRENCE_FIELDS = [
+    'recurrence_interval',
+    'recurrence_end_date',
+    'recurrence_weekday',
+    'recurrence_weekdays',
+    'recurrence_month_day',
+    'recurrence_week_of_month',
+];
+
+// overrides are pending attribute changes (a PATCH body) that win over the
+// stored values. Returns null for non-recurring tasks and generated instances.
+function planOccurrenceAdvance(
+    task,
+    { overrides = {}, timezone = 'UTC', now = new Date() } = {}
+) {
+    const resolve = (field) =>
+        overrides[field] !== undefined ? overrides[field] : task[field];
+
+    const recurrenceType = resolve('recurrence_type');
+    if (
+        !recurrenceType ||
+        recurrenceType === 'none' ||
+        task.recurring_parent_id
+    ) {
+        return null;
+    }
+
+    const completionBased = resolve('completion_based');
+    const dueDate = resolve('due_date');
+    const hasOriginalDueDate =
+        dueDate !== undefined && dueDate !== null && dueDate !== '';
+    const originalDueDate = hasOriginalDueDate
+        ? new Date(dueDate)
+        : new Date(now);
+
+    const recurrenceContext = {
+        ...(typeof task.get === 'function' ? task.get({ plain: true }) : task),
+        recurrence_type: recurrenceType,
+        completion_based: completionBased,
+        due_date: originalDueDate,
+    };
+    for (const field of OCCURRENCE_RECURRENCE_FIELDS) {
+        recurrenceContext[field] = resolve(field);
+    }
+
+    const baseDate = completionBased ? now : new Date(originalDueDate);
+    const nextDueDate = calculateNextDueDate(
+        recurrenceContext,
+        baseDate,
+        getSafeTimezone(timezone)
+    );
+
+    return {
+        completedAt: now,
+        originalDueDate: new Date(originalDueDate),
+        nextDueDate,
+        hasNext: Boolean(
+            nextDueDate &&
+            shouldGenerateNextTask(recurrenceContext, nextDueDate)
+        ),
+        completionBased,
+    };
+}
+
+async function recordOccurrence(task, occurrence, userId) {
+    await RecurringCompletion.create({
+        task_id: task.id,
+        completed_at: occurrence.completedAt,
+        original_due_date: occurrence.originalDueDate,
+        skipped: false,
+    });
+
+    try {
+        await logEvent({
+            taskId: task.id,
+            userId,
+            eventType: 'recurring_occurrence_completed',
+            fieldName: 'recurrence',
+            oldValue: occurrence.originalDueDate,
+            newValue: occurrence.nextDueDate,
+            metadata: {
+                action: 'recurring_occurrence_completed',
+                original_due_date: occurrence.originalDueDate.toISOString(),
+                next_due_date: occurrence.nextDueDate?.toISOString?.() ?? null,
+                completion_based: occurrence.completionBased,
+            },
+        });
+    } catch (eventError) {
+        logError(
+            'Error logging recurring occurrence completion event:',
+            eventError
+        );
+    }
+}
+
+// Moves the task to its next due date and back to not started, or leaves it
+// done when the series has ended. Returns null for non-recurring tasks.
+async function completeOccurrence(task, { timezone = 'UTC', userId } = {}) {
+    const occurrence = planOccurrenceAdvance(task, { timezone });
+    if (!occurrence) return null;
+
+    await task.update(
+        occurrence.hasNext
+            ? {
+                  status: Task.STATUS.NOT_STARTED,
+                  completed_at: null,
+                  due_date: occurrence.nextDueDate,
+              }
+            : {
+                  status: Task.STATUS.DONE,
+                  completed_at: occurrence.completedAt,
+              }
+    );
+    await recordOccurrence(task, occurrence, userId);
+
+    return occurrence;
+}
+
+// Moves a recurring task to its next due date without completing it. The
+// occurrence is recorded with skipped = true, so stats, streaks and the daily
+// plan, which all read only skipped = false rows, ignore it.
+async function skipRecurringOccurrence(task, userId, userTimezone) {
+    if (
+        !task.recurrence_type ||
+        task.recurrence_type === 'none' ||
+        task.recurring_parent_id
+    ) {
+        return { error: 'Only recurring tasks can skip an occurrence.' };
+    }
+
+    if (task.status === Task.STATUS.DONE || task.status === 'done') {
+        return { error: 'Completed tasks cannot skip an occurrence.' };
+    }
+
+    const skippedAt = new Date();
+    const originalDueDate = task.due_date
+        ? new Date(task.due_date)
+        : new Date(skippedAt);
+    const recurrenceContext = {
+        ...task.get({ plain: true }),
+        due_date: originalDueDate,
+    };
+    const baseDate = task.completion_based
+        ? skippedAt
+        : new Date(originalDueDate);
+    const nextDueDate = calculateNextDueDate(
+        recurrenceContext,
+        baseDate,
+        getSafeTimezone(userTimezone)
+    );
+
+    if (
+        !nextDueDate ||
+        !shouldGenerateNextTask(recurrenceContext, nextDueDate)
+    ) {
+        return { error: 'This task has no next occurrence to skip to.' };
+    }
+
+    await task.update({
+        due_date: nextDueDate,
+        status: Task.STATUS.NOT_STARTED,
+        completed_at: null,
+    });
+
+    await RecurringCompletion.create({
+        task_id: task.id,
+        completed_at: skippedAt,
+        original_due_date: originalDueDate,
+        skipped: true,
+    });
+
+    try {
+        await logEvent({
+            taskId: task.id,
+            userId,
+            eventType: 'recurring_occurrence_skipped',
+            fieldName: 'recurrence',
+            oldValue: originalDueDate,
+            newValue: nextDueDate,
+            metadata: {
+                action: 'recurring_occurrence_skipped',
+                original_due_date: originalDueDate.toISOString(),
+                next_due_date: nextDueDate.toISOString(),
+            },
+        });
+    } catch (eventError) {
+        logError('Error logging recurring occurrence skip event:', eventError);
+    }
+
+    return { originalDueDate, nextDueDate };
+}
+
 module.exports = {
     handleRecurrenceUpdate,
     calculateNextIterations,
+    planOccurrenceAdvance,
+    recordOccurrence,
+    completeOccurrence,
+    skipRecurringOccurrence,
 };

@@ -36,8 +36,12 @@ This document explains how projects work in tududi from a user behavior perspect
    - "Stalled" detection for projects with no active tasks
 
 4. **Projects can be shared**
-   - Share with other users (read-only or read-write)
+   - Share with other users or with a whole group (read-only or read-write)
+   - The recipient has to accept the invitation before they see anything
    - Shared project access extends to all tasks/notes within
+
+5. **Projects can become templates**
+   - Save a project as a reusable template and start new projects from it (see [Project Templates](#project-templates))
 
 ---
 
@@ -79,6 +83,12 @@ Area: "Personal"
    - Used in URLs: `/project/:uid`
    - Cannot be changed
 
+4. **Start** (optional)
+   - When the project begins: a day, optionally with a time
+   - Same API shape as tasks: `start_date` (YYYY-MM-DD) and `start_time` (HH:mm) in the user's timezone, stored in `start_date_at`
+   - Shown and edited in the project's overview panel; the page header says "Starts" or "Started", or falls back to the created date when no start is set
+   - Cannot be after the project's due date in the web UI
+
 ### Organization
 
 4. **Area** (optional)
@@ -87,7 +97,18 @@ Area: "Personal"
    - Can be changed or removed
    - Examples: "Work", "Personal", "Health"
 
-5. **Tags** (optional)
+5. **Goal** (optional)
+   - Links the project to a specific goal within its area
+   - Set via the Goal section (flag icon) in the project modal - area must be selected first
+   - Stored as `goal_id`; set to `null` when "No goal" is selected
+   - If the linked goal is deleted, `goal_id` is set to `null` automatically (SET NULL)
+
+6. **Maintenance flag** (`is_maintenance`, boolean, default: `false`)
+   - Marks the project as ongoing maintenance work rather than goal-directed progress
+   - Mutually exclusive with `goal_id`: a project is either linked to a goal, maintenance, or unlinked
+   - Displayed in a dedicated "Maintenance" bucket on the Area detail page
+
+7. **Tags** (optional)
    - Flexible categorization system
    - Multiple tags supported: `#q1`, `#urgent`, `#client-work`
    - Tags created automatically when used
@@ -95,7 +116,7 @@ Area: "Personal"
 
 ### Status and Lifecycle
 
-6. **Status** (required, default: `not_started`)
+8. **Status** (required, default: `not_started`)
    - **Planned**: Future project, not started yet
    - **Not Started**: Ready to begin but not yet started
    - **In Progress**: Currently being worked on
@@ -103,25 +124,25 @@ Area: "Personal"
    - **Done**: Project completed successfully
    - **Cancelled**: Project abandoned or no longer relevant
 
-7. **Priority** (optional)
+9. **Priority** (optional)
    - 0 = None (default)
    - 1 = Medium
    - 2 = High
    - Visual indicator in UI (colored dot)
 
-8. **Due Date** (optional)
-   - When the project should be completed
-   - Triggers notifications when approaching or overdue
-   - Displayed in project cards and detail view
+10. **Due Date** (optional)
+    - When the project should be completed
+    - Triggers notifications when approaching or overdue
+    - Displayed in project cards and detail view
 
 ### Display and Organization
 
-9. **Pin to Sidebar** (boolean, default: `false`)
-   - Pins project to left sidebar for quick access
-   - Pinned projects shown above unpinned ones
-   - Useful for currently active projects
+11. **Pin to Sidebar** (boolean, default: `false`)
+    - Pins project to left sidebar for quick access
+    - Pinned projects shown above unpinned ones
+    - Useful for currently active projects
 
-10. **Banner Image** (optional)
+12. **Banner Image** (optional)
     - Visual header image for the project
     - Uploaded via image picker
     - Displayed at top of project detail page
@@ -129,12 +150,12 @@ Area: "Personal"
 
 ### Task Display Preferences
 
-11. **Show Completed Tasks** (boolean, default: `false`)
+13. **Show Completed Tasks** (boolean, default: `false`)
     - Controls whether completed tasks are visible
     - Per-project setting
     - Helps reduce clutter on active projects
 
-12. **Task Sort Order** (string, default: `created_at:desc`)
+14. **Task Sort Order** (string, default: `created_at:desc`)
     - How tasks are sorted within the project
     - Options: `created_at:asc`, `created_at:desc`, `due_date:asc`, `priority:desc`, etc.
     - Per-project preference
@@ -188,8 +209,8 @@ These properties are computed automatically based on project content:
 
 ### Sharing Metadata
 
-**share_count**: Number of users project is shared with
-**is_shared**: `true` if `share_count > 0`
+**share_count**: Number of users who accepted access to the project
+**is_shared**: `true` once the project is shared with anyone, including invitations not accepted yet
 
 ---
 
@@ -247,6 +268,22 @@ These properties are computed automatically based on project content:
 - Affects "active projects" filter (planned/in_progress/waiting)
 - Affects stalled detection
 - Updates last modified timestamp
+- Moving to `done` records `completed_at`; moving away from `done` clears it (a model `beforeSave` hook, so REST, MCP and every other write path behave the same). Cancelled projects get no `completed_at`.
+
+### Completing a Project
+
+- The project page has a **Complete** button (it turns into **Reopen** once the project is done), and picking **Completed** in any status menu does the same.
+- If the project still has open tasks, a dialog asks whether to **mark them done too** or **leave them open**. Recurring task patterns are never completed this way: they keep their schedule.
+- API: `POST /api/project/:uid/complete` with `{ "complete_open_tasks": true|false }` returns `{ project, completed_tasks }`. Requires write access. Open tasks are those not done, archived or cancelled, with `recurrence_type = 'none'`; each is updated on its own so task hooks (webhooks) still fire.
+- The project page shows "Completed <date>" in place of the due date countdown.
+
+### Completed Projects History
+
+- `/projects/completed` (the **History** button on the Projects page) lists done projects newest first, grouped by year and then month of `completed_at`.
+- Each row shows the area, tasks done out of total, how many days the project took (created to completed) and a **Reopen** action, which sets the status back to `in_progress`.
+- **Show cancelled** adds cancelled projects, dated by their last update. The choice is remembered per browser.
+- Projects that were already done before `completed_at` existed were backfilled from `updated_at` by the migration.
+- On an Area page, done and cancelled projects fold into a collapsed **Finished (n)** section below the active ones.
 
 ### Deleting a Project
 
@@ -323,7 +360,27 @@ No Area
   └── Random Ideas
 ```
 
+### Custom Order
+
+**On Projects page:**
+- Pick **Custom** in the sort menu, then drag a card or row to move it (cards and list view both work; on touch, press and hold first)
+- The order is personal: each user keeps their own, stored in `user_project_orders` (one row per user and project), so a shared project can sit in a different place for each member
+- Projects that have not been placed yet (new ones) show at the top, newest first; any drag saves a position for every project
+- With filters or search active, only the visible projects move; hidden projects keep their slots
+- API: `PUT /api/projects/order` with `{ "project_uids": [...] }` replaces the whole order; `GET /api/projects` returns `sort_position` (or `null`) on each project
+
 ---
+
+## Timeline View
+
+The project page has two tabs above the tasks: **Tasks** (the list) and **Timeline** (a Gantt chart). The chosen tab is remembered per browser.
+
+- **Bars** run from a task's start date to its due date. A task with only a due date shows as a diamond; one with only a start shows as a short faded bar. Tasks with neither sit in a "No dates yet" tray under the chart.
+- **Scheduling:** drag a bar to move both dates, drag either end to change one, drag a diamond to move the due date. Times of day are kept. Drag a task from the tray onto a day to give it that day as start and due. Clicking a bar opens the task.
+- **Arrows** show "blocks" relations between the project's tasks (`task_links` on `GET /api/project/:uid`, as `{ from_uid, to_uid }` pairs).
+- **Highlight the path** marks the chain of blocking tasks that sets the finish (from the linked task that ends last, back through the blocker that ends latest) and shows spare days on open tasks off that chain: days until what they block starts, or until the project's due date.
+- **Scale:** Days, Weeks or Months. A line marks today, dashed lines mark the project's start and due date, and open tasks past their due date are orange.
+- The chart follows the page's status filter and search.
 
 ## Tasks and Notes in Projects
 
@@ -358,6 +415,10 @@ No Area
 - Notes shown in separate "Notes" section on project page
 - Sorted by most recent first
 - Can be tagged independently
+
+### Project Attachments
+
+The project page has an **Attachments** tab next to Tasks and Notes. It holds files that belong to the project itself rather than to one task: briefs, plans, photos. It works like a task's attachments: click to upload, preview images and PDFs, download, delete. Anyone the project is shared with can see and download them; people with edit access can add and delete them. Up to 20 files per project, each under the server's upload limit. Files added in the Add box with **Project** chosen, or on an Inbox item that becomes a project, land here. Deleting the project deletes its files.
 
 ### Orphaned Tasks/Notes
 
@@ -402,13 +463,18 @@ No Area
 **How to share:**
 1. Open project detail page
 2. Click "Share" button
-3. Enter email of user to share with
+3. Choose **User** and enter their email, or choose **Group** (the toggle appears once the instance has a group, see [User Groups](18-user-groups.md))
 4. Select access level (read-only or read-write)
-5. User receives notification
+5. The recipient gets a `share_invitation` notification
+
+**Invitations:**
+- Sharing creates a pending invitation; the project stays invisible to the recipient until they accept
+- Declining removes the invitation; the owner can invite again later
+- The share dialog answers the same way whether or not the email belongs to an account, so it cannot be used to find out who has signed up
+- Sharing with a group invites every member separately (see [User Groups](18-user-groups.md))
 
 **Requirements:**
-- Other user must have a tududi account
-- Must use exact email address
+- Access only takes effect for someone with a tududi account who accepts
 - Cannot share with yourself
 
 ### Access Inheritance
@@ -426,19 +492,38 @@ No Area
   - All notes in the project
   - All subtasks of tasks in the project
 
+### Projects in a Shared Area
+
+A project kept in a shared area (or linked to a shared goal) is shared with everyone that area or goal is shared with. Two things change that:
+
+- **Moving the project out** of the area or goal takes that access back. Shares made on the project itself, directly or with a group, stay.
+- **Restricting the project** (`visibility: 'restricted'`) takes the area and goal access back and keeps the project out of them from then on. Only its owner, the owner of its area and people the project itself is shared with see it. The project owner or the area owner can restrict a project, or open it back up (`visibility: 'area'`, the default), which shares it with the area again.
+
 ### Shared Projects Behavior
 
 **For shared users:**
 - Shared projects appear in their Projects list
 - Can filter projects by ownership vs shared
 - Shared indicator shown on project card
-- Cannot change Area (only owner can)
+- Can file the project under one of their own areas: the placement is stored per user (`user_project_areas`) and does not move the project for the owner or anyone else
 - Cannot delete project (only owner can)
+- Tasks in the project show up in their Today, Upcoming and plan suggestions only when they own them or the task is assigned to them; the rest stay on the project page (see [Today Page Sections](02-today-page-sections.md))
 
 **Notifications:**
 - Project owner sees share count badge
 - Shared users see owner's name
 - Activity on shared project can trigger notifications
+
+---
+
+## Project Templates
+
+A template is a project row with `is_template = true`. Templates live on the **Templates** page, not in the Projects list.
+
+- **Save as template**: from a project (`POST /api/project/:uid/save-as-template`). Tasks are copied with their status reset, and tags are copied.
+- **Create from template**: clone a template into a new project (`POST /api/template/:uid/clone`). The default name is "<template> (Copy)" and task statuses are reset unless the caller passes `resetStatus: false`.
+- **Manage**: `GET /api/templates`, `POST /api/template`, `GET`/`PATCH`/`DELETE /api/template/:uid`.
+- **Marketplace**: when `MARKETPLACE_URL` (and optionally `MARKETPLACE_API_KEY`) is set, the Templates page also lists shared templates from that marketplace, which can be previewed and installed (`GET /api/marketplace/templates`, `POST /api/marketplace/templates/:uid/install`). Without it the marketplace list is empty.
 
 ---
 
@@ -528,6 +613,12 @@ No Area
    - Query: `?grouped=true`
    - Groups projects under area names
    - Special "No Area" group for orphaned projects
+
+### Page Controls
+
+- **Cards / list** switch next to search
+- **Status** dropdown also has **Shared**: every project you share or that is shared with you, any status
+- **Cog** menu: **Show someday projects** (projects tagged #someday, hidden by default), saved per user in `ui_settings.project.list.showSomeday`
 
 **Example URLs:**
 - `/projects?status=in_progress` - Active projects
@@ -742,8 +833,7 @@ Displayed on project cards and detail page:
 7. **Notes Section**
    - Note cards (most recent first)
    - "Add Note" button
-8. **Insights Panel** (if productivity assistant enabled)
-   - Auto-suggested next actions
+8. **Insights Panel**
    - Stalled warning
    - Due date alerts
 
@@ -751,24 +841,7 @@ Displayed on project cards and detail page:
 
 ## Special Features
 
-### 1. Auto-Suggest Next Action
-
-**What it does:**
-- AI-powered suggestions for next steps
-- Analyzes project context, tasks, and notes
-- Suggests concrete actions to move project forward
-
-**Appears when:**
-- Project has description and some tasks
-- User has AI features enabled
-- Accessed via "Suggest Next Action" button
-
-**Example suggestions:**
-- "Schedule a meeting with the designer"
-- "Review the latest mockups"
-- "Get feedback from stakeholders"
-
-### 2. Banner Images
+### 1. Banner Images
 
 **Purpose:**
 - Visual identity for projects
@@ -786,7 +859,7 @@ Displayed on project cards and detail page:
 - High resolution (1200x400 or larger)
 - Landscape orientation
 
-### 3. Task Sorting Preferences
+### 2. Task Sorting Preferences
 
 **Per-project sorting:**
 - Each project can have its own task sort order
@@ -805,7 +878,7 @@ Displayed on project cards and detail page:
 - Research project: Sort by created date
 - Deadline-driven project: Sort by due date
 
-### 4. Keyboard Shortcuts
+### 3. Keyboard Shortcuts
 
 **On project page:**
 - `n`: Create new task
@@ -881,6 +954,7 @@ Displayed on project cards and detail page:
 
 ## Related Documentation
 
+- [Goals System](12-goals-system.md) - Goals that projects link to; `goal_id` and `is_maintenance` fields
 - [Areas](07-areas.md) - Top-level organizational categories and project grouping
 - [Recurring Tasks Behavior](01-recurring-tasks-behavior.md) - How recurring tasks work within projects
 - [Today Page Sections](02-today-page-sections.md) - How project tasks appear on Today page
@@ -905,6 +979,6 @@ Displayed on project cards and detail page:
 
 ---
 
-**Document Version:** 1.0.0
-**Last Updated:** 2026-03-14
+**Document Version:** 1.1.0
+**Last Updated:** 2026-09-22
 **Audience:** Developers, AI assistants, and end users

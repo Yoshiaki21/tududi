@@ -1,38 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import {
-    TrashIcon,
-    MagnifyingGlassIcon,
-    StarIcon,
-} from '@heroicons/react/24/outline';
-import { StarIcon as StarIconSolid } from '@heroicons/react/24/solid';
+import { MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import ConfirmDialog from './Shared/ConfirmDialog';
+import NewItemButton from './Shared/NewItemButton';
+import BlankSlate from './Shared/BlankSlate';
 import { getApiPath } from '../config/paths';
 import { getCsrfToken } from '../utils/csrfService';
-
-interface View {
-    id: number;
-    uid: string;
-    name: string;
-    search_query: string | null;
-    filters: string[];
-    priority: string | null;
-    due: string | null;
-    defer: string | null;
-    tags: string[];
-    extras: string[] | null;
-    is_pinned: boolean;
-}
+import ViewRow, { View } from './View/ViewRow';
+import { TASK_SHEET_CLASS } from './Task/taskSheet';
 
 const Views: React.FC = () => {
     const { t } = useTranslation();
-    const navigate = useNavigate();
     const [views, setViews] = useState<View[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
     const [isSearchExpanded, setIsSearchExpanded] = useState(false);
-    const [hoveredViewId, setHoveredViewId] = useState<number | null>(null);
     const [isConfirmDialogOpen, setIsConfirmDialogOpen] = useState(false);
     const [viewToDelete, setViewToDelete] = useState<View | null>(null);
 
@@ -70,14 +52,11 @@ const Views: React.FC = () => {
                 {
                     method: 'DELETE',
                     credentials: 'include',
-                    headers: {
-                        'x-csrf-token': await getCsrfToken(),
-                    },
+                    headers: { 'x-csrf-token': await getCsrfToken() },
                 }
             );
             if (response.ok) {
                 setViews(views.filter((v) => v.uid !== viewToDelete.uid));
-                // Notify sidebar to refresh
                 window.dispatchEvent(new CustomEvent('viewUpdated'));
             }
         } catch (error) {
@@ -97,14 +76,10 @@ const Views: React.FC = () => {
                     'x-csrf-token': await getCsrfToken(),
                 },
                 credentials: 'include',
-                body: JSON.stringify({
-                    is_pinned: !view.is_pinned,
-                }),
+                body: JSON.stringify({ is_pinned: !view.is_pinned }),
             });
-
             if (response.ok) {
                 fetchViews();
-                // Notify sidebar to refresh
                 window.dispatchEvent(new CustomEvent('viewUpdated'));
             }
         } catch (error) {
@@ -117,14 +92,21 @@ const Views: React.FC = () => {
         setIsConfirmDialogOpen(true);
     };
 
-    const closeConfirmDialog = () => {
-        setIsConfirmDialogOpen(false);
-        setViewToDelete(null);
-    };
+    const openUniversalSearch = () =>
+        window.dispatchEvent(new Event('openUniversalSearch'));
 
     const filteredViews = views.filter((view) =>
         view.name.toLowerCase().includes(searchQuery.toLowerCase())
     );
+
+    const filterCount = (view: View) =>
+        view.filters.length +
+        (view.search_query ? 1 : 0) +
+        (view.priority ? 1 : 0) +
+        (view.task_status ? 1 : 0) +
+        (view.due ? 1 : 0) +
+        (view.defer ? 1 : 0) +
+        (view.extras?.length ?? 0);
 
     if (isLoading) {
         return (
@@ -137,44 +119,40 @@ const Views: React.FC = () => {
     }
 
     return (
-        <div className="w-full px-2 sm:px-4 lg:px-6 pt-4 pb-8">
-            <div className="w-full">
-                {/* Views Header */}
-                <div className="flex items-center justify-between mb-8">
+        <div className="w-full px-4 sm:px-6 lg:px-8 pt-4 pb-8">
+            <div className="w-full max-w-7xl mx-auto">
+                {/* Header */}
+                <div className="flex items-center justify-between gap-2 mb-8">
                     <h2 className="text-2xl font-light">{t('views.title')}</h2>
-                    <button
-                        type="button"
-                        onClick={() => setIsSearchExpanded(!isSearchExpanded)}
-                        className={`flex items-center transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset rounded-lg p-2 ${
-                            isSearchExpanded
-                                ? 'bg-blue-50/70 dark:bg-blue-900/20'
-                                : 'bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'
-                        }`}
-                        aria-expanded={isSearchExpanded}
-                        aria-label={
-                            isSearchExpanded
-                                ? t(
-                                      'common.hideSearch',
-                                      'Collapse search panel'
-                                  )
-                                : t('common.showSearch', 'Show search input')
-                        }
-                        title={
-                            isSearchExpanded
-                                ? t('common.hideSearch', 'Hide search')
-                                : t('common.search', 'Search views')
-                        }
-                    >
-                        <MagnifyingGlassIcon className="h-5 w-5 text-gray-600 dark:text-gray-200" />
-                        <span className="sr-only">
-                            {isSearchExpanded
-                                ? t('common.hideSearch', 'Hide search')
-                                : t('common.search', 'Search views')}
-                        </span>
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() =>
+                                setIsSearchExpanded(!isSearchExpanded)
+                            }
+                            className={`flex items-center transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset rounded-lg p-2 ${
+                                isSearchExpanded
+                                    ? 'bg-blue-50/70 dark:bg-blue-900/20'
+                                    : 'bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'
+                            }`}
+                            aria-expanded={isSearchExpanded}
+                            title={
+                                isSearchExpanded
+                                    ? t('common.hideSearch', 'Hide search')
+                                    : t('common.search', 'Search views')
+                            }
+                        >
+                            <MagnifyingGlassIcon className="h-5 w-5 text-gray-600 dark:text-gray-200" />
+                        </button>
+                        <NewItemButton
+                            label={t('views.new', 'New View')}
+                            onClick={openUniversalSearch}
+                            testId="new-view-button"
+                        />
+                    </div>
                 </div>
 
-                {/* Search input section, collapsible */}
+                {/* Collapsible search */}
                 <div
                     className={`transition-all duration-300 ease-in-out ${
                         isSearchExpanded
@@ -194,127 +172,62 @@ const Views: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Views List */}
+                {/* Views grid */}
                 {filteredViews.length === 0 ? (
-                    <p className="text-gray-700 dark:text-gray-300">
-                        {t('views.noViewsFound')}
-                    </p>
+                    views.length === 0 ? (
+                        <BlankSlate
+                            title={t('views.noViewsYet', 'No smart views yet.')}
+                            hint={t(
+                                'views.blankSlateHint',
+                                'A smart view is a saved search, like high priority tasks due this week or notes tagged ideas. Search, set your filters and choose Save as Smart View. Pin a view to keep it in the sidebar.'
+                            )}
+                            actions={[
+                                {
+                                    label: t(
+                                        'views.blankSlateNew',
+                                        'Search to create a view'
+                                    ),
+                                    icon: MagnifyingGlassIcon,
+                                    onClick: openUniversalSearch,
+                                },
+                            ]}
+                        />
+                    ) : (
+                        <BlankSlate
+                            title={t('views.noViewsMatch', 'No views found')}
+                            hint={t(
+                                'views.blankSlateFilteredHint',
+                                'Try a different search.'
+                            )}
+                            actions={[
+                                {
+                                    label: t(
+                                        'views.blankSlateClearSearch',
+                                        'Clear search'
+                                    ),
+                                    icon: XMarkIcon,
+                                    onClick: () => setSearchQuery(''),
+                                },
+                            ]}
+                        />
+                    )
                 ) : (
-                    <div className="space-y-4">
-                        <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {filteredViews.map((view) => (
-                                <li
-                                    key={view.uid}
-                                    className="bg-white dark:bg-gray-900 shadow rounded-lg p-4 cursor-pointer hover:shadow-lg transition-shadow"
-                                    onMouseEnter={() =>
-                                        setHoveredViewId(view.id)
-                                    }
-                                    onMouseLeave={() => setHoveredViewId(null)}
-                                    onClick={() =>
-                                        navigate(`/views/${view.uid}`)
-                                    }
-                                >
-                                    <div className="flex items-start justify-between">
-                                        <div className="flex-grow">
-                                            <h3 className="text-md font-semibold text-gray-900 dark:text-gray-100 mb-2">
-                                                {view.name}
-                                            </h3>
-                                            <div className="text-xs text-gray-600 dark:text-gray-400 space-y-1">
-                                                {view.filters.length > 0 && (
-                                                    <p>
-                                                        •{' '}
-                                                        {view.filters.join(
-                                                            ', '
-                                                        )}
-                                                    </p>
-                                                )}
-                                                {view.search_query && (
-                                                    <p>
-                                                        • &quot;
-                                                        {view.search_query}
-                                                        &quot;
-                                                    </p>
-                                                )}
-                                                {view.priority && (
-                                                    <p>
-                                                        •{' '}
-                                                        {t(
-                                                            'views.priorityLabel'
-                                                        )}{' '}
-                                                        {view.priority}
-                                                    </p>
-                                                )}
-                                                {view.due && (
-                                                    <p>
-                                                        • {t('views.dueLabel')}{' '}
-                                                        {view.due}
-                                                    </p>
-                                                )}
-                                                {view.defer && (
-                                                    <p>
-                                                        •{' '}
-                                                        {t('search.deferUntil')}{' '}
-                                                        {view.defer}
-                                                    </p>
-                                                )}
-                                                {view.extras &&
-                                                    view.extras.length > 0 && (
-                                                        <p>
-                                                            •{' '}
-                                                            {t('search.extras')}
-                                                            :{' '}
-                                                            {view.extras.join(
-                                                                ', '
-                                                            )}
-                                                        </p>
-                                                    )}
-                                            </div>
-                                        </div>
-
-                                        {/* Action buttons */}
-                                        <div className="flex space-x-2 ml-2">
-                                            <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    togglePin(view);
-                                                }}
-                                                className={`${view.is_pinned ? 'text-yellow-500' : 'text-gray-400'} hover:text-yellow-600 focus:outline-none transition-opacity ${hoveredViewId === view.id || view.is_pinned ? 'opacity-100' : 'opacity-0'}`}
-                                                aria-label={t(
-                                                    'common.togglePin',
-                                                    'Toggle pin'
-                                                )}
-                                                title={
-                                                    view.is_pinned
-                                                        ? t('views.unpinView')
-                                                        : t('views.pinView')
-                                                }
-                                            >
-                                                {view.is_pinned ? (
-                                                    <StarIconSolid className="h-5 w-5" />
-                                                ) : (
-                                                    <StarIcon className="h-5 w-5" />
-                                                )}
-                                            </button>
-                                            <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    openConfirmDialog(view);
-                                                }}
-                                                className={`text-gray-500 hover:text-red-700 dark:hover:text-red-300 focus:outline-none transition-opacity ${hoveredViewId === view.id ? 'opacity-100' : 'opacity-0'}`}
-                                                aria-label={`Delete ${view.name}`}
-                                                title={`Delete ${view.name}`}
-                                            >
-                                                <TrashIcon className="h-4 w-4" />
-                                            </button>
-                                        </div>
-                                    </div>
-                                </li>
-                            ))}
-                        </ul>
+                    <div
+                        className={`task-list-container overflow-visible ${TASK_SHEET_CLASS} task-sheet-rails`}
+                    >
+                        {filteredViews.map((view) => (
+                            <div key={view.uid}>
+                                <ViewRow
+                                    view={view}
+                                    filterCount={filterCount(view)}
+                                    onTogglePin={togglePin}
+                                    onDelete={openConfirmDialog}
+                                />
+                            </div>
+                        ))}
                     </div>
                 )}
 
-                {/* ConfirmDialog */}
                 {isConfirmDialogOpen && viewToDelete && (
                     <ConfirmDialog
                         title={t('views.deleteView')}
@@ -322,7 +235,10 @@ const Views: React.FC = () => {
                             viewName: viewToDelete.name,
                         })}
                         onConfirm={handleDeleteView}
-                        onCancel={closeConfirmDialog}
+                        onCancel={() => {
+                            setIsConfirmDialogOpen(false);
+                            setViewToDelete(null);
+                        }}
                     />
                 )}
             </div>

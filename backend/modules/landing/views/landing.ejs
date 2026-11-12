@@ -1,0 +1,1359 @@
+<!DOCTYPE html>
+<html lang="<%= i18n.meta.htmlLang %>" dir="<%= i18n.meta.dir || 'ltr' %>">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= i18n.t('meta.title') %></title>
+    <meta name="description" content="<%= i18n.t('meta.description', { tools: mcpToolCount }) %>">
+    <link rel="canonical" href="<%= canonicalUrl %>" />
+    <%# Every locale lists every locale, itself included: Google drops hreflang
+        sets that are not reciprocal, silently. %>
+    <% locales.forEach(function (l) { %>
+    <link rel="alternate" hreflang="<%= l.htmlLang %>" href="<%= localeUrl(l.code) %>" />
+    <% }); %>
+    <link rel="alternate" hreflang="x-default" href="<%= localeUrl('en') %>" />
+    <%- include('partials/social-meta', { title: i18n.t('meta.title'), description: i18n.t('meta.description', { tools: mcpToolCount }), url: canonicalUrl }) %>
+    <meta property="og:locale" content="<%= i18n.meta.ogLocale %>">
+    <% locales.filter(function (l) { return l.code !== i18n.locale; }).forEach(function (l) { %>
+    <meta property="og:locale:alternate" content="<%= l.ogLocale %>">
+    <% }); %>
+<%
+    // Prices come from config so the launch-price switch is one flag, not an
+    // edit to this template. See config.pricing / LAUNCH_PRICE_ACTIVE.
+    //
+    // Declared up here rather than in the body preamble because the FAQ's
+    // JSON-LD below needs it. EJS compiles the whole template into one function
+    // body, so this const is in scope for the rest of the file - and a second
+    // `const personalPrice` further down would be a SyntaxError, not a shadow.
+    const personalPrice = pricing.launchActive ? pricing.annual : pricing.standard;
+
+    // FAQ structure only - every question and answer lives in
+    // locales/<lang>/landing.json under faq.items.<id>. Ids, order, grouping and
+    // any outbound href stay here for the same reason featureGroups does: they
+    // must be identical in every language, and an id is also a public URL
+    // fragment that a support reply pastes into an email.
+    //
+    // Up here beside the JSON-LD because both that and the <details> markup far
+    // below iterate this same list. One source, so the structured data and the
+    // visible answers cannot drift - which is also Google's requirement for it.
+    //
+    // Only items carrying `link` have a faq.items.<id>.linkLabel string; the
+    // rest render without a link row. Hrefs live here so no translation pass
+    // can break a URL.
+    const faqGroups = [
+        { id: 'project', items: [
+            { id: 'trust' },
+            { id: 'commercialUse' },
+            { id: 'maintained', link: { href: 'https://github.com/chrisvel/tududi/releases' } },
+            { id: 'shutdown' },
+        ]},
+        { id: 'managed', items: [
+            { id: 'freePlan', answer: trialDays > 0 ? 'aTrial' : 'a' },
+            { id: 'aiOptional' },
+            { id: 'aiPrivacy' },
+            { id: 'mcp' },
+            { id: 'leaving' },
+        ]},
+    ];
+
+    // One vars object for every FAQ string: interpolate() is a no-op on a string
+    // with no placeholder, so an answer can reach for any of these without the
+    // template having to track which ones it actually used.
+    const faqVars = {
+        tools: mcpToolCount,
+        price: money(personalPrice),
+        monthly: money(pricing.monthly),
+        proStorageGb: plans.proStorageGb,
+        days: trialDays,
+    };
+
+    // camelCase id -> kebab fragment, so #faq-commercial-use is something a
+    // human can read in a support reply.
+    const faqAnchor = (item) => 'faq-' + item.id.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
+%>
+    <%# FAQPage, built from faqGroups and the same faq.items.* keys the visible
+        <details> render from - never a second hardcoded copy. Google requires
+        every Q&A in this blob to be visible on the page, which one shared
+        iteration guarantees by construction.
+
+        Worth knowing: Google restricted FAQ rich results to health and
+        government sites in 2023, so this earns nothing there today. It stays
+        because Bing and agent crawlers still read it and it costs one loop -
+        the ranking work on this section is done by the crawlable answer text.
+
+        jsonForScript escapes < and > as < / >, which are ordinary
+        JSON string escapes, so a stray angle bracket in a future translation
+        cannot terminate this block early. %>
+    <script type="application/ld+json"><%- jsonForScript({
+        '@context': 'https://schema.org',
+        '@type': 'FAQPage',
+        inLanguage: i18n.meta.htmlLang,
+        mainEntity: faqGroups.flatMap(function (group) {
+            return group.items.map(function (item) {
+                return {
+                    '@type': 'Question',
+                    '@id': canonicalUrl.replace(/\/$/, '') + '/#' + faqAnchor(item),
+                    name: i18n.t('faq.items.' + item.id + '.q', faqVars),
+                    acceptedAnswer: {
+                        '@type': 'Answer',
+                        // Answers are plain text on purpose, so this is the
+                        // rendered string verbatim - nothing to strip, nothing
+                        // that can disagree with what the visitor reads.
+                        text: i18n.t('faq.items.' + item.id + '.' + (item.answer || 'a'), faqVars),
+                    },
+                };
+            });
+        }),
+    }) %></script>
+    <link rel="icon" href="/landing-assets/favicon.ico">
+    <%- include('partials/head-assets') %>
+    <%- include('partials/styles') %>
+</head>
+<body>
+<%
+    // personalPrice is declared in <head>, above the FAQ's JSON-LD, because that
+    // blob needs it too. Re-declaring it here would be a SyntaxError - EJS
+    // compiles this whole file into a single function body.
+
+    const t = i18n.t;
+
+    // faqGroups is declared in <head> for the same reason: the FAQPage JSON-LD
+    // and the <details> markup near the bottom of this file iterate one list.
+
+    // Structure only - every human string lives in locales/<lang>/landing.json
+    // under features.cards.<id>. Icons, order and the featured flag stay here
+    // on purpose: they must be identical in all five languages or the computed
+    // "Show all N features" count and the eight-card hero grid drift apart
+    // between locales, and a translation pass can silently drop a card.
+    const featureGroups = [
+        { id: 'planDay', cards: [
+            { id: 'capture',       icon: 'fas fa-bolt',                 featured: true, shot: true },
+            { id: 'nlpDates',      icon: 'fas fa-calendar-check',       featured: true, shot: true },
+            { id: 'planMyDay',     icon: 'fas fa-wand-magic-sparkles',  featured: true, shot: true },
+            { id: 'todayCalendar', icon: 'fas fa-calendar-day',         featured: true, shot: true },
+            { id: 'aiPlanning',    icon: 'fas fa-robot',                featured: true, shot: true },
+        ]},
+        { id: 'planFocus', cards: [
+            { id: 'goals',        icon: 'fas fa-bullseye',        featured: true, shot: true },
+            { id: 'hierarchy',    icon: 'fas fa-project-diagram', shot: true },
+            { id: 'lifeAreas',    icon: 'fas fa-layer-group', shot: true },
+            { id: 'views',        icon: 'fas fa-filter', shot: true },
+            { id: 'matrixKanban', icon: 'fas fa-th-large',        featured: true, shot: true },
+            { id: 'insights',     icon: 'fas fa-chart-line' },
+        ]},
+        { id: 'tasksProjects', cards: [
+            { id: 'people',    icon: 'fas fa-user-friends', shot: true },
+            { id: 'habits',    icon: 'fas fa-redo-alt',   featured: true, shot: true },
+            { id: 'recurring', icon: 'fas fa-sync-alt' },
+            { id: 'richTasks', icon: 'fas fa-tasks', shot: true },
+            { id: 'subtasks',  icon: 'fas fa-list-ul', shot: true },
+            { id: 'notes',     icon: 'fas fa-sticky-note', shot: true },
+            { id: 'tags',      icon: 'fas fa-tag', shot: true },
+            { id: 'search',    icon: 'fas fa-search', shot: true },
+        ]},
+        { id: 'accessAnywhere', cards: [
+            { id: 'pwa',        icon: 'fas fa-mobile-alt', shot: true },
+            { id: 'oidc',       icon: 'fas fa-id-badge' },
+            { id: 'i18n',       icon: 'fas fa-language' },
+            { id: 'caldav',     icon: 'fas fa-calendar-alt' },
+            { id: 'api',        icon: 'fas fa-code' },
+        ]},
+        { id: 'privacyCollab', cards: [
+            { id: 'privacy', icon: 'fas fa-shield-alt' },
+            { id: 'collab',  icon: 'fas fa-user-friends' },
+        ]},
+    ];
+
+    // Press. Outlet names, URLs, dates and the quotes themselves deliberately
+    // do NOT live in locales/: a citation is a record of what somebody actually
+    // published, and a translated quote is a paraphrase - less credible, and 25
+    // files to touch every time a review lands. Only the headings around them
+    // are localized. Same reasoning as the docker commands further down.
+    //
+    // Wordmarks, not logos: see the .proofbar-outlet note in the stylesheet.
+    const pressOutlets = [
+        { name: 'XDA Developers',    url: 'https://www.xda-developers.com/free-open-source-to-do-list-tracker-has-changed-my-life/' },
+        { name: 'GIGAZINE',          url: 'https://gigazine.net/gsc_news/en/20260429-tududi/' },
+        { name: 'noted.lol',         url: 'https://noted.lol/tududi/' },
+        // awesome-selfhosted used to be listed here. The listing still exists;
+        // it is a directory for people who run servers, and this row is for
+        // people who do not.
+        { name: 'AlternativeTo',     url: 'https://alternativeto.net/software/tududi' },
+    ];
+
+    // `initials` rather than a photo: we do not have portrait rights for these
+    // writers, and a scraped avatar is a liability for the sake of 38 pixels.
+    const pressQuotes = [
+        {
+            quote: 'Tududi stands out as a breath of fresh air among over-engineered and often expensive productivity tools.',
+            author: 'Parth Shah',
+            initials: 'PS',
+            outlet: 'XDA Developers',
+            date: 'June 2025',
+            url: 'https://www.xda-developers.com/free-open-source-to-do-list-tracker-has-changed-my-life/',
+        },
+        {
+            quote: 'Tududi is an immensely useful tool, and one that is easy to integrate into day-to-day workflow.',
+            author: 'Patrick Hearn',
+            initials: 'PH',
+            outlet: 'XDA Developers',
+            date: 'December 2025',
+            url: 'https://www.xda-developers.com/latest-update-for-tududi-makes-organizing-my-projects-much-easier/',
+        },
+        {
+            quote: 'A free, open-source application that allows you to efficiently categorize and track your work, from personal task management to large-scale project management and detailed note-taking.',
+            author: null,
+            initials: 'G',
+            outlet: 'GIGAZINE',
+            date: 'April 2026',
+            url: 'https://gigazine.net/gsc_news/en/20260429-tududi/',
+        },
+    ];
+
+    // The site and the app ship the same languages, so `locales` (from
+    // src/i18n.ts LOCALES) is the only list. Every "N languages" claim on the
+    // page counts it, rather than repeating a number that goes stale.
+    const languageCount = locales.length;
+
+    // tududi Cloud against the three apps people most often weigh it
+    // against, on their individual plans. Vendor names, prices and ticks are
+    // claims about other companies, taken from their public pricing pages
+    // (see compare.footnote for the date), so they live here rather than in
+    // the locales: re-check them before changing any. Only labels and the
+    // text cells are translated. Cells are 'yes', 'no', or a string.
+    const compareVendors = ['tududi Cloud', 'Todoist Pro', 'TickTick Premium', 'Notion Plus'];
+    const comparisonRows = [
+        { id: 'price',      cells: [
+            t('compare.values.perYear', { price: money(personalPrice) }),
+            t('compare.values.perYear', { price: '$60' }),
+            t('compare.values.perYear', { price: '$49.99' }),
+            t('compare.values.perYear', { price: '$120' }),
+        ]},
+        { id: 'aiIncluded', cells: [
+            'yes', 'yes', 'yes',
+            t('compare.values.businessOnly'),
+        ]},
+        { id: 'dayPlanner', cells: ['yes', 'yes', 'yes', t('compare.values.separateApp')] },
+        { id: 'habits',     cells: ['yes', 'no', 'yes', 'no'] },
+        { id: 'goals',      cells: ['yes', 'no', 'no', t('compare.values.diy')] },
+        { id: 'notes',      cells: ['yes', 'no', 'yes', 'yes'] },
+        { id: 'matrix',     cells: ['yes', 'no', 'yes', t('compare.values.diy')] },
+        { id: 'kanban',     cells: ['yes', 'yes', 'yes', 'yes'] },
+        { id: 'views',      cells: ['yes', 'yes', 'yes', 'yes'] },
+        { id: 'people',     cells: ['yes', 'yes', 'yes', 'yes'] },
+        { id: 'caldav',     cells: ['yes', 'no', 'no', 'no'] },
+        { id: 'mcp',       cells: ['yes', 'yes', 'yes', 'yes'] },
+    ];
+%>
+
+    <%- include('partials/nav') %>
+    <!-- Hero -->
+    <section class="hero">
+        <div class="hero-glow"></div>
+        <div class="hero-inner">
+            <div class="hero-badges">
+                <%# One badge, and it says who the page is for. The GitHub star
+                    count and the MCP chip used to sit here too; both are proof
+                    for developers, and the first viewport is written for people
+                    who will never type docker. Stars stay in the footer. %>
+                <span class="hero-badge hero-badge-launch" data-testid="hero-badge">
+                    <i class="fas fa-cloud"></i>
+                    <span><%= t('hero.badge') %></span>
+                </span>
+            </div>
+            <%# Split into two keys rather than one string with a <br> in it, so
+                each translator picks where their own sentence breaks. The second
+                line is optional: a headline short enough to sit on one line
+                leaves it empty rather than shipping a trailing <br>, and a
+                language that needs a break where English does not can still use
+                it. %>
+            <% const heroLine2 = t('hero.titleLine2'); %>
+            <h1><%= t('hero.titleLine1') %><% if (heroLine2) { %><br><%= heroLine2 %><% } %></h1>
+            <p class="hero-lede">
+                <%= t('hero.lede') %>
+            </p>
+            <div class="hero-actions">
+                <%# One offer, not a fork in the road: sign up, or look at a
+                    real instance first. Neither self-hosting nor the source
+                    repository is offered here - both live near the foot of the
+                    page, on the pricing card and in the footer, where someone
+                    who came looking for them will still find them. The stars
+                    chip above stays, because that is proof rather than an exit. %>
+                <a href="<%= appUrl %>/register" class="btn-primary"><i class="fas fa-cloud"></i><%= trialDays > 0 ? t('hero.ctaTrial', faqVars) : t('hero.ctaPrimary') %></a>
+                <%# Rendered only when there is genuinely an instance to open.
+                    demo.available is false while the container is being rebuilt
+                    or if provisioning failed, and the whole button disappears
+                    rather than linking somewhere that would 502 - the same rule
+                    the proof bar applies to the Docker pull count. The stars
+                    chip that used to sit above the headline is gone too: the
+                    first viewport is for someone who has never opened GitHub. %>
+                <% if (demo && demo.available) { %>
+                <a href="<%= appUrl %>/demo" class="btn-demo">
+                    <span class="btn-demo-dot" aria-hidden="true"></span><%= t('hero.ctaDemo') %>
+                </a>
+                <% } %>
+            </div>
+            <p class="hero-note"><i class="fas fa-cloud"></i><%= trialDays > 0 ? t('hero.cloudNoteTrial', faqVars) : t('hero.cloudNote') %></p>
+            <% if (demo && demo.available) { %>
+            <p class="hero-note"><i class="fas fa-eye"></i><%= t('hero.demoNote') %></p>
+            <% } %>
+        </div>
+
+        <%# Outside .hero-inner on purpose: that column is capped at 900px for
+            readable line length, and the screenshot wants the full hero width. %>
+        <div class="browser-frame">
+            <div class="browser-dots">
+                <span style="background:#e0645c;"></span>
+                <span style="background:#e5b95c;"></span>
+                <span style="background:#61c454;"></span>
+            </div>
+            <%# A short loop of the planner drafting a day with AI, then Today.
+                It plays only when a script starts it and the visitor has not
+                asked for reduced motion; everyone else keeps the poster, the
+                same frame as a still. Recorded from a seeded account. %>
+            <video id="hero-video" class="hero-video" muted loop playsinline preload="metadata"
+                   poster="/landing-assets/screenshots/hero-light.png"
+                   aria-label="<%= t('hero.screenshotAlt') %>">
+                <source src="/landing-assets/screenshots/hero.mp4" type="video/mp4">
+            </video>
+            <script>
+                (function () {
+                    var v = document.getElementById('hero-video');
+                    if (!v || !window.matchMedia || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+                    v.preload = 'auto';
+                    var p = v.play();
+                    if (p && p.catch) p.catch(function () {});
+                })();
+            </script>
+        </div>
+    </section>
+
+    <!--
+        Proof bar. Deliberately quiet: small type, low contrast, no cards. It is
+        corroboration for the hero, not a competitor to it.
+
+        Row one is who has covered tududi - previously two unlinked claims
+        ("Covered by XDA", "Listed in awesome-selfhosted") buried mid-sentence
+        in row two, where nobody could check them. Row two is the countable
+        facts. The Docker pull count used to sit here and was dropped: it is
+        proof that people run containers, which is a different argument from
+        the one this part of the page is making.
+    -->
+    <section class="proofbar">
+        <div class="proofbar-inner">
+            <div class="proofbar-outlets">
+                <span class="proofbar-label"><%= t('press.featuredIn') %></span>
+                <% pressOutlets.forEach(function (outlet) { %>
+                <a href="<%= outlet.url %>" class="proofbar-outlet" rel="noopener"><%= outlet.name %></a>
+                <% }); %>
+            </div>
+            <div class="proofbar-stats">
+                <%# Countable facts a non-developer can weigh. The star count
+                    and the MCP tool count were here and moved to the footer:
+                    both are arguments to developers, and this row backs up a
+                    headline written for everyone else. %>
+                <span class="proofbar-item"><%= t('proof.languages', { count: languageCount }) %></span>
+                <span class="proofbar-sep">&middot;</span>
+                <span class="proofbar-item"><%= t('proof.minute') %></span>
+                <span class="proofbar-sep">&middot;</span>
+                <span class="proofbar-item"><%= t('proof.guarantee') %></span>
+            </div>
+        </div>
+    </section>
+
+    <!--
+        The mental load. Three cards naming the problem before any feature is
+        shown: pain first, product second. Structure only here; every string is under pains.* in the
+        locale, and the ids stay put so a translation pass cannot drop a card.
+    -->
+    <% const pains = [
+        { id: 'oneHead',     icon: 'fas fa-brain' },
+        { id: 'notesApp',    icon: 'fas fa-sticky-note' },
+        { id: 'tooManyApps', icon: 'fas fa-th' },
+    ]; %>
+    <section id="pains" class="section" style="background:#f3f4f6;">
+        <div class="container">
+            <div class="section-head">
+                <span class="eyebrow"><%= t('pains.eyebrow') %></span>
+                <h2 class="section-title"><%= t('pains.title') %></h2>
+                <p class="section-sub" style="max-width:720px; margin:0 auto;"><%= t('pains.sub') %></p>
+            </div>
+            <div class="pain-grid">
+                <% pains.forEach(function (pain) { %>
+                <div class="pain-card">
+                    <i class="<%= pain.icon %>" aria-hidden="true"></i>
+                    <h3><%= t('pains.items.' + pain.id + '.title') %></h3>
+                    <p><%= t('pains.items.' + pain.id + '.body') %></p>
+                </div>
+                <% }); %>
+            </div>
+            <p class="pain-turn"><%= t('pains.turn') %></p>
+        </div>
+    </section>
+
+    <!--
+        Plan your day. The loop the product is built around, in the order a
+        day runs: capture, plan, do. Screenshots come from a seeded account,
+        so every name in them is sample data. Step ids double as locale keys
+        and image names; the images live next to the hero shot.
+    -->
+    <% const planSteps = [
+        { id: 'capture', icon: 'fas fa-bolt',          img: 'capture-light.png' },
+        { id: 'plan',    icon: 'fas fa-wand-magic-sparkles', img: 'plan-light.png' },
+        { id: 'today',   icon: 'fas fa-calendar-day',  img: 'today-light.png' },
+    ]; %>
+    <section id="plan" class="section plan-day">
+        <div class="container">
+            <div class="section-head">
+                <span class="eyebrow"><%= t('plan.eyebrow') %></span>
+                <h2 class="section-title"><%= t('plan.title') %></h2>
+                <p class="section-sub" style="max-width:720px; margin:0 auto;"><%= t('plan.sub') %></p>
+            </div>
+            <% planSteps.forEach(function (step, i) { %>
+            <div class="plan-step<%= i % 2 ? ' plan-step-flip' : '' %>">
+                <div class="plan-step-text">
+                    <span class="plan-step-num"><i class="<%= step.icon %>"></i><%= t('plan.stepLabel', { n: i + 1 }) %></span>
+                    <h3><%= t('plan.steps.' + step.id + '.title') %></h3>
+                    <p><%= t('plan.steps.' + step.id + '.body') %></p>
+                    <ul>
+                        <% i18n.tList('plan.steps.' + step.id + '.points').forEach(function (point) { %>
+                        <li><i class="fas fa-check"></i><%= point %></li>
+                        <% }); %>
+                    </ul>
+                </div>
+                <div class="browser-frame plan-step-shot">
+                    <div class="browser-dots">
+                        <span style="background:#e0645c;"></span>
+                        <span style="background:#e5b95c;"></span>
+                        <span style="background:#61c454;"></span>
+                    </div>
+                    <img src="/landing-assets/screenshots/<%= step.img %>" alt="<%= t('plan.steps.' + step.id + '.alt') %>" loading="lazy">
+                </div>
+            </div>
+            <% }); %>
+        </div>
+    </section>
+
+    <!--
+        Features. Eight cards carry the page; the rest stay in the DOM
+        behind a toggle so crawlers still see the full copy without the grid
+        eating a quarter of the page height.
+    -->
+    <section id="features" class="section features">
+        <div class="container">
+            <div class="section-head" style="margin-bottom:72px;">
+                <span class="eyebrow"><%= t('features.eyebrow') %></span>
+                <h2 class="section-title"><%= t('features.title') %></h2>
+                <p class="section-sub" style="max-width:720px; margin:0 auto;">
+                    <%= t('features.sub') %>
+                </p>
+            </div>
+
+            <%# Only one card body has a placeholder, but passing count to all of
+                them is free: interpolate() is a no-op on a string without one. %>
+            <% const cardVars = { count: languageCount }; %>
+            <%# Every card leads with its icon, so a card with a screenshot and one
+                without read as the same set. The screenshot sits behind a quiet
+                link: a real href to the image, so it still opens with JS off,
+                and the script below turns it into the preview dialog. %>
+            <% function featureCard(card) {
+                const title = t('features.cards.' + card.id + '.title', cardVars); %>
+                <div class="feature-card">
+                    <div class="feature-icon"><i class="<%= card.icon %>"></i></div>
+                    <h4><%= title %></h4>
+                    <p><%= t('features.cards.' + card.id + '.body', cardVars) %></p>
+                    <% if (card.shot) { %>
+                    <a class="feature-peek" href="/landing-assets/screenshots/features/<%= card.id %>.webp" data-title="<%= title %>"><i class="far fa-image" aria-hidden="true"></i><%= t('features.preview') %></a>
+                    <% } %>
+                </div>
+            <% } %>
+            <% const featuredCards = featureGroups.flatMap(function (g) { return g.cards.filter(function (c) { return c.featured; }); }); %>
+            <div class="feature-grid">
+                <% featuredCards.forEach(featureCard); %>
+            </div>
+
+            <div id="feature-rest" hidden>
+                <% featureGroups.forEach(function (group) { %>
+                <% const rest = group.cards.filter(function (c) { return !c.featured; }); %>
+                <% if (rest.length) { %>
+                <div class="feature-group">
+                    <div class="feature-group-label">
+                        <span class="feature-group-dot"></span>
+                        <h3><%= t('features.groups.' + group.id) %></h3>
+                    </div>
+                    <div class="feature-grid">
+                        <% rest.forEach(featureCard); %>
+                    </div>
+                </div>
+                <% } %>
+                <% }); %>
+            </div>
+
+            <% const featureTotal = featureGroups.reduce(function (n, g) { return n + g.cards.length; }, 0); %>
+            <div class="feature-more">
+                <button type="button" id="feature-toggle" class="feature-toggle" aria-expanded="false" aria-controls="feature-rest">
+                    <i class="fas fa-plus"></i><span><%= t('features.showAll', { count: featureTotal }) %></span>
+                </button>
+            </div>
+
+            <dialog id="feature-preview" class="feature-preview" aria-labelledby="feature-preview-title">
+                <div class="feature-preview-head">
+                    <h4 id="feature-preview-title"></h4>
+                    <button type="button" class="feature-preview-close" aria-label="<%= t('features.closePreview') %>"><i class="fas fa-times" aria-hidden="true"></i></button>
+                </div>
+                <img alt="" width="1120" height="700">
+            </dialog>
+        </div>
+    </section>
+
+    <!-- AI / MCP -->
+    <section id="ai" class="section section-dark">
+        <div class="container-md">
+            <div class="ai-kicker">
+                <span class="ai-kicker-icon"><i class="fas fa-robot"></i></span>
+                <span class="ai-kicker-label"><%= t('ai.kicker') %></span>
+            </div>
+            <h2 class="ai-title"><%= t('ai.titleLine1') %><br><%= t('ai.titleLine2') %></h2>
+            <%# The only key on this page rendered unescaped - it carries a
+                <strong> around the tool count, and splitting the sentence into
+                three keys would make it untranslatable for any language with a
+                different word order. The *Html suffix is the convention that
+                keeps the unescaped set greppable. %>
+            <p class="ai-lede">
+                <%- t('ai.ledeHtml', { tools: mcpToolCount }) %>
+            </p>
+
+            <%# Staged transcript. See the .agent-demo comment in the stylesheet
+                for why the tool names are not decorative. %>
+            <div class="agent-demo" data-agent-demo>
+                <div class="agent-bar">
+                    <div class="agent-dots">
+                        <span style="background:#ff5f57;"></span>
+                        <span style="background:#febc2e;"></span>
+                        <span style="background:#28c840;"></span>
+                    </div>
+                    <span class="agent-bar-title"><%= t('ai.demo.windowTitle') %></span>
+                    <span class="agent-bar-badge"><i class="fas fa-plug"></i><%= t('ai.demo.badge') %></span>
+                </div>
+                <div class="agent-body">
+                    <div class="agent-turn">
+                        <div class="agent-ask-row"><p class="agent-ask"><%= t('ai.demo.ask1') %></p></div>
+                        <div class="agent-tools">
+                            <i class="fas fa-chevron-right"></i>
+                            <span><%= t('ai.demo.toolLabel') %></span>
+                            <span class="agent-tool">list_tasks</span>
+                            <span class="agent-tool">get_task_metrics</span>
+                            <span class="agent-tool">list_projects</span>
+                        </div>
+                        <div class="agent-answer">
+                            <p><%- t('ai.demo.answer1Html') %></p>
+                            <p class="agent-group-title"><%= t('ai.demo.groupTitle') %></p>
+                            <div class="agent-rows">
+                                <% ['overdue', 'stalled', 'habit'].forEach((row) => { %>
+                                    <div class="agent-row">
+                                        <span class="agent-row-label"><%= t('ai.demo.rows.' + row + '.label') %></span>
+                                        <span class="agent-row-text"><%= t('ai.demo.rows.' + row + '.text') %></span>
+                                    </div>
+                                <% }); %>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="agent-turn agent-turn-2">
+                        <div class="agent-ask-row"><p class="agent-ask"><%= t('ai.demo.ask2') %></p></div>
+                        <div class="agent-tools">
+                            <i class="fas fa-chevron-right"></i>
+                            <span><%= t('ai.demo.toolLabel') %></span>
+                            <span class="agent-tool">update_task</span>
+                            <span class="agent-tool">create_task</span>
+                        </div>
+                        <div class="agent-answer">
+                            <p style="margin-bottom:0;"><%- t('ai.demo.answer2Html') %></p>
+                        </div>
+                    </div>
+                </div>
+                <div class="agent-composer" aria-hidden="true">
+                    <i class="fas fa-plus"></i>
+                    <span class="agent-composer-text"><span class="agent-composer-ph"><%= t('ai.demo.composer') %></span><span class="agent-composer-draft"></span></span>
+                    <span class="agent-composer-send"><i class="fas fa-arrow-up"></i></span>
+                </div>
+            </div>
+            <%# Arming the animation from here rather than from the script at the
+                bottom of the page: by the time that one runs the transcript has
+                usually painted, and blanking a block the visitor is already
+                reading is worse than not animating at all. The full transcript
+                is what ships in the HTML, so no-JS and reduced-motion visitors
+                (and crawlers) get the whole thing, statically. %>
+            <script>
+                (function () {
+                    try {
+                        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+                        if (!('IntersectionObserver' in window)) return;
+                        var demo = document.currentScript.previousElementSibling;
+                        var body = demo.querySelector('.agent-body');
+                        // Freeze the finished height before emptying the window,
+                        // so a transcript that grows line by line does not shove
+                        // the rest of the section down the page while it plays.
+                        body.style.minHeight = body.offsetHeight + 'px';
+                        demo.classList.add('agent-armed');
+                    } catch (e) { /* leave it static */ }
+                })();
+            </script>
+            <p class="agent-caption"><%= t('ai.demo.caption') %></p>
+
+            <div class="auto-grid" style="margin-bottom:48px;">
+                <div class="dark-card">
+                    <i class="fas fa-comments"></i>
+                    <h4><%= t('ai.cards.capture.title') %></h4>
+                    <p><%= t('ai.cards.capture.body') %></p>
+                </div>
+                <div class="dark-card">
+                    <i class="fas fa-lock"></i>
+                    <h4><%= t('ai.cards.dataStays.title') %></h4>
+                    <p><%= t('ai.cards.dataStays.body') %></p>
+                </div>
+                <div class="dark-card">
+                    <i class="fas fa-plug"></i>
+                    <h4><%= t('ai.cards.openProtocol.title') %></h4>
+                    <p><%= t('ai.cards.openProtocol.body') %></p>
+                </div>
+            </div>
+
+            <p class="ai-footnote" style="margin-bottom:20px;">
+                <%= t('ai.footnoteClients') %>
+                <a href="https://docs.tududi.com" class="ai-footnote-link"><%= t('ai.footnoteDocsLink') %></a>
+            </p>
+
+            <p class="ai-footnote"><%= t('ai.footnoteIncluded') %></p>
+
+            <div class="ai-divider">
+                <h3 class="ai-sub-title"><%= t('ai.assistantTitle') %></h3>
+                <p class="ai-sub-lede">
+                    <%= t('ai.assistantLede') %>
+                </p>
+                <div class="auto-grid">
+                    <div class="dark-card">
+                        <i class="fas fa-lightbulb"></i>
+                        <h4><%= t('ai.assistantCards.task.title') %></h4>
+                        <p><%= t('ai.assistantCards.task.body') %></p>
+                    </div>
+                    <div class="dark-card">
+                        <i class="fas fa-wand-magic-sparkles"></i>
+                        <h4><%= t('ai.assistantCards.plan.title') %></h4>
+                        <p><%= t('ai.assistantCards.plan.body') %></p>
+                    </div>
+                    <div class="dark-card">
+                        <i class="fas fa-flag-checkered"></i>
+                        <h4><%= t('ai.assistantCards.wrapUp.title') %></h4>
+                        <p><%= t('ai.assistantCards.wrapUp.body') %></p>
+                    </div>
+                    <div class="dark-card">
+                        <i class="fas fa-heartbeat"></i>
+                        <h4><%= t('ai.assistantCards.project.title') %></h4>
+                        <p><%= t('ai.assistantCards.project.body') %></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!--
+        Press. Three cards, named humans, verbatim sentences, each linking to
+        the piece it came from - the whole point is that a visitor can check it
+        in one click. Placed between the product sections and the price, where
+        it answers "is this any good" just before the ask.
+    -->
+    <section id="press" class="section press">
+        <div class="container-md">
+            <div class="section-head" style="margin-bottom:48px;">
+                <span class="eyebrow"><%= t('press.eyebrow') %></span>
+                <h2 class="section-title"><%= t('press.title') %></h2>
+                <p class="section-sub"><%= t('press.sub') %></p>
+            </div>
+
+            <div class="press-grid">
+                <% pressQuotes.forEach(function (item) { %>
+                <figure class="press-card" style="margin:0;">
+                    <span class="press-mark" aria-hidden="true">&ldquo;</span>
+                    <blockquote class="press-quote" style="margin:0 0 22px;" cite="<%= item.url %>"><%= item.quote %></blockquote>
+                    <figcaption class="press-meta">
+                        <span class="press-avatar" aria-hidden="true"><%= item.initials %></span>
+                        <span class="press-who">
+                            <%# An unbylined piece names the outlet in the strong slot rather
+                                than leaving it empty and demoting the only attribution we have. %>
+                            <strong><%= item.author || item.outlet %></strong>
+                            <span><%= item.author ? item.outlet + ' · ' + item.date : item.date %></span>
+                        </span>
+                    </figcaption>
+                    <a href="<%= item.url %>" class="press-link" rel="noopener">
+                        <%= t('press.readLink') %><i class="fas fa-arrow-right"></i>
+                    </a>
+                </figure>
+                <% }); %>
+            </div>
+        </div>
+    </section>
+
+    <!-- Pricing -->
+    <section id="pricing" class="section">
+        <div class="container">
+            <div class="section-head">
+                <span class="eyebrow"><%= t('pricing.eyebrow') %></span>
+                <h2 class="section-title"><%= t('pricing.title') %></h2>
+                <p class="section-sub"><%= t('pricing.sub') %></p>
+            </div>
+
+            <%# One card with a size picker: just you (Pro) or a Team size,
+                sold in fixed seats like monday.com. The pricing section does
+                not mention self-hosting. %>
+            <div class="plan-grid plan-grid-solo">
+                <%- include('partials/plan-picker', {
+                    soloFeatures: i18n.tList('pricing.plans.cloud.features', faqVars),
+                    teamFeatures: i18n.tList('pricing.plans.team.features', faqVars),
+                    soloAction: trialDays > 0 ? t('pricing.plans.cloud.actionTrial', faqVars) : t('pricing.plans.cloud.action'),
+                    teamAction: trialDays > 0 ? t('pricing.plans.cloud.actionTrial', faqVars) : t('pricing.plans.team.action'),
+                    soloNote: trialDays > 0 ? t('pricing.plans.cloud.priceNoteTrial', faqVars) : t('pricing.plans.cloud.priceNote'),
+                    orLabel: t('pricing.plans.cloud.or'),
+                }) %>
+            </div>
+
+            <div class="plan-notes plan-grid-solo">
+                <% if (nextPrice) { %>
+                <p class="plan-fineprint plan-next-price"><%= t('pricing.nextPrice', nextPrice) %></p>
+                <% } %>
+                <p class="plan-fineprint">
+                    <%= t('pricing.fineprint') %>
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Comparison -->
+    <section style="padding:96px 16px; background:#f3f4f6;">
+        <div class="container-sm">
+            <div class="section-head" style="margin-bottom:48px;">
+                <h2 class="section-title" style="font-size:32px; margin-bottom:16px;"><%= t('compare.title') %></h2>
+                <p class="section-sub" style="font-size:18px;"><%= t('compare.sub') %></p>
+            </div>
+
+            <div class="compare-scroll-wrap">
+            <div class="compare-scroll" tabindex="0" role="region" aria-label="<%= t('compare.title') %>">
+                <div class="compare compare-vendors">
+                    <div class="compare-row compare-head">
+                        <div></div>
+                        <% compareVendors.forEach(function (vendor, i) { %>
+                        <div<%- i === 0 ? ' class="compare-us"' : '' %>><%= vendor %></div>
+                        <% }); %>
+                    </div>
+                    <% comparisonRows.forEach(function (row) { %>
+                    <div class="compare-row">
+                        <div class="compare-label"><%= t('compare.rows.' + row.id) %></div>
+                        <% row.cells.forEach(function (cell, i) { %>
+                        <div class="compare-cell<%= i === 0 ? ' compare-us' : '' %>">
+                            <% if (cell === 'yes') { %><i class="fas fa-check yes" aria-label="✓"></i><% } else if (cell === 'no') { %><i class="fas fa-times no" aria-label="✗"></i><% } else { %><span class="text"><%= cell %></span><% } %>
+                        </div>
+                        <% }); %>
+                    </div>
+                    <% }); %>
+                </div>
+            </div>
+            </div>
+            <p class="compare-footnote"><%= t('compare.footnote') %></p>
+
+        </div>
+    </section>
+
+    <!--
+        FAQ. Objection-handling, so it sits after the price and the comparison
+        table that raise the objections, and before the waitlist - a visitor
+        should have "can I use this at work?" answered before being asked for an
+        email.
+
+        <details> rather than a JS accordion, same reasoning as the nav
+        dropdowns: click-to-open and keyboard access for free, works with JS
+        off, and - the entire point of the section - every answer is real text
+        in the HTML whether its panel is open or not, so crawlers and
+        find-in-page both reach it.
+
+        The first item of each group ships open. Three groups of identical
+        closed rows read as a wall, and one open panel per group shows what the
+        affordance does without anyone having to guess.
+
+        Every <details> carries its own id, so a support reply can link to one
+        answer: /#faq-commercial-use. The FAQPage JSON-LD in <head> is built
+        from the same faqGroups list and the same locale keys.
+    -->
+    <section id="faq" class="section faq">
+        <div class="container-sm">
+            <div class="section-head" style="margin-bottom:48px;">
+                <span class="eyebrow"><%= t('faq.eyebrow') %></span>
+                <h2 class="section-title" style="margin-bottom:16px;"><%= t('faq.title') %></h2>
+                <p class="section-sub"><%= t('faq.sub') %></p>
+            </div>
+
+            <% faqGroups.forEach(function (group) { %>
+            <div class="faq-group">
+                <%# Same label treatment as the feature groups, reusing both
+                    classes - a second uppercase-eyebrow style doing the same job
+                    would just be a second thing to keep in sync. %>
+                <div class="feature-group-label">
+                    <span class="feature-group-dot"></span>
+                    <h3><%= t('faq.groups.' + group.id) %></h3>
+                </div>
+                <div class="faq-list">
+                    <% group.items.forEach(function (item, i) { %>
+                    <details class="faq-item" id="<%= faqAnchor(item) %>"<%= i === 0 ? ' open' : '' %>>
+                        <%# One heading and nothing else: that is all <summary>
+                            accepts besides phrasing content, which is why the
+                            caret is drawn by .faq-q::after rather than an <i>.
+                            h4 under the group's h3 keeps the outline unbroken. %>
+                        <summary class="faq-q"><h4><%= t('faq.items.' + item.id + '.q', faqVars) %></h4></summary>
+                        <div class="faq-a">
+                            <p><%= t('faq.items.' + item.id + '.' + (item.answer || 'a'), faqVars) %></p>
+                            <div class="faq-a-foot">
+                                <% if (item.link) { %>
+                                <a class="faq-a-link" href="<%= item.link.href %>"><%= t('faq.items.' + item.id + '.linkLabel') %><i class="fas fa-arrow-right"></i></a>
+                                <% } %>
+                                <%# Inside the panel rather than the summary: an
+                                    <a> in a <summary> toggles the panel as well
+                                    as following the link, which is neither of
+                                    the two things a click there could mean. %>
+                                <a class="faq-permalink" href="#<%= faqAnchor(item) %>" aria-label="<%= t('faq.permalink') %>"><i class="fas fa-link" aria-hidden="true"></i></a>
+                            </div>
+                        </div>
+                    </details>
+                    <% }); %>
+                </div>
+            </div>
+            <% }); %>
+        </div>
+    </section>
+
+    <!--
+        Final CTA. Replaces the band that used to close the comparison table with
+        "Ready to run your own system?" and a Docker button. Same position in the
+        funnel, opposite recommendation: the filled button is the Cloud
+        account, and self-hosting is left to the pricing card and the footer.
+    -->
+    <section class="section" style="padding-top:72px; padding-bottom:72px;">
+        <div class="container-sm">
+            <div class="closing" style="margin-top:0;">
+                <h2 class="section-title" style="font-size:32px; margin-bottom:14px;"><%= t('finalCta.title') %></h2>
+                <p><%= trialDays > 0 ? t('finalCta.subTrial', faqVars) : t('finalCta.sub') %></p>
+                <div class="closing-actions">
+                    <a href="<%= appUrl %>/register" class="btn-primary"><i class="fas fa-cloud"></i><%= trialDays > 0 ? t('finalCta.primaryTrial') : t('finalCta.primary') %></a>
+                    <a href="#pricing" class="btn-secondary"><%= t('finalCta.secondary') %></a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!--
+        Release-notes signup. Posts to /waitlist on this host, which stores the
+        address in waitlist_subscribers.
+
+        Sits after the comparison because it is the catch for everyone the three
+        cards did not close: the ask is an email, not a card.
+    -->
+    <section class="waitlist" id="waitlist">
+        <div class="waitlist-inner">
+            <%# The release-notes list, with the same title as the footer's form.
+                The anchor and the /waitlist route keep their old names so
+                existing links and stored rows stay valid. %>
+            <h2 class="section-title" style="font-size:30px; margin-bottom:14px;"><%= t('footer.subTitle') %></h2>
+            <p class="section-sub" style="font-size:16.5px; margin-bottom:28px;">
+                <%= t('footer.subBody') %>
+            </p>
+            <div class="waitlist-proof">
+                <% if (githubStars) { %>
+                <a href="https://github.com/chrisvel/tududi" class="waitlist-proof-item" rel="noopener">
+                    <i class="fab fa-github"></i>
+                    <strong><%= githubStars.toLocaleString() %></strong> <%= t('proof.stars') %>
+                </a>
+                <% } %>
+                <a href="https://discord.gg/fkbeJ9CmcH" class="waitlist-proof-item" rel="noopener">
+                    <i class="fab fa-discord"></i>
+                    <% if (discordMembers) { %><strong><%= discordMembers.toLocaleString() %></strong> <%= t('proof.discord') %><% } else { %>Discord<% } %>
+                </a>
+                <a href="https://www.reddit.com/r/tududi/" class="waitlist-proof-item" rel="noopener">
+                    <i class="fab fa-reddit"></i> r/tududi
+                </a>
+            </div>
+            <% if (joined) { %>
+            <p class="waitlist-done" data-testid="waitlist-joined"><%= t('signup.joined') %></p>
+            <% } else { %>
+            <form class="waitlist-form" action="/waitlist" method="post">
+                <input type="text" name="company" value="" autocomplete="off" tabindex="-1" aria-hidden="true" class="hp-field">
+                <input type="email" name="email" placeholder="<%= t('waitlist.placeholder') %>" aria-label="<%= t('waitlist.inputLabel') %>" required>
+                <input type="hidden" name="source" value="waitlist">
+                <input type="hidden" name="locale" value="<%= i18n.locale %>">
+                <button type="submit"><%= t('footer.subSubmit') %></button>
+            </form>
+            <p class="waitlist-note">
+                <%= t('signup.note') %>
+            </p>
+            <% } %>
+        </div>
+    </section>
+
+    <%# The app and this site now ship the same 26 languages, so these chips are
+        the same set as the nav switcher. Rendered from LOCALES rather than a
+        parallel list, and clickable: a static roll-call sitting next to a
+        switcher offering the identical languages is just duplication. %>
+    <section style="padding:64px 16px; background:#fff;">
+        <div class="container">
+            <div style="text-align:center; margin-bottom:28px;">
+                <p class="section-sub" style="font-size:17px;"><%= t('langs.heading', { count: locales.length }) %></p>
+            </div>
+            <div class="lang-list">
+                <% locales.forEach(function (l) { %>
+                <a class="lang-chip<%= l.code === i18n.locale ? ' is-current' : '' %>"
+                   href="<%= l.code === 'en' ? '/?hl=en' : '/' + l.code %>"
+                   hreflang="<%= l.htmlLang %>" lang="<%= l.htmlLang %>" rel="alternate"
+                   <%= l.code === i18n.locale ? 'aria-current="true"' : '' %>><%= l.flag %> <%= l.nativeName %></a>
+                <% }); %>
+            </div>
+        </div>
+    </section>
+
+    <!-- Community -->
+    <section class="community">
+        <div class="community-inner">
+            <h2 class="section-title" style="font-size:30px; margin-bottom:16px;"><%= t('community.title') %></h2>
+            <p class="section-sub" style="font-size:18px; margin-bottom:32px;"><%= t('community.sub') %></p>
+            <div class="community-badges">
+                <%# Plain links styled as badges rather than shields.io images, so
+                    the page loads nothing from a third party. The Discord count
+                    comes from the server-side cache in stats.js and falls back to
+                    the plain join label until the first fetch lands. %>
+                <a href="https://discord.gg/fkbeJ9CmcH" class="community-badge community-badge-discord">
+                    <i class="fab fa-discord" aria-hidden="true"></i>
+                    <% if (discordMembers) { %><strong><%= discordMembers.toLocaleString() %></strong> <%= t('proof.discord') %><% } else { %>Discord<% } %>
+                </a>
+                <a href="https://www.reddit.com/r/tududi/" class="community-badge community-badge-reddit">
+                    <i class="fab fa-reddit-alien" aria-hidden="true"></i> r/tududi
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <%- include('partials/footer') %>
+
+    <script>
+      // Strings the handlers below need. A blob rather than data- attributes:
+      // the copy buttons are *created* in JS, and the subscribe error strings
+      // belong to no element at all.
+      //
+      // jsonForScript escapes '<' as <, so a translation containing a
+      // closing script tag cannot terminate this block early and silently
+      // kill every handler on the page.
+      window.__I18N = <%- jsonForScript(i18n.tGroup('js')) %>;
+    </script>
+
+    <script>
+        const T = window.__I18N || {};
+
+        // Mobile menu toggle
+        const navToggle = document.getElementById('nav-toggle');
+        const navMobile = document.getElementById('nav-mobile');
+
+        const navLangGroup = navMobile.querySelector('.nav-mobile-lang-group');
+
+        function setNavOpen(open) {
+            navMobile.classList.toggle('open', open);
+            navToggle.setAttribute('aria-expanded', String(open));
+            navToggle.querySelector('i').className = open ? 'fas fa-times' : 'fas fa-bars';
+            // Reopening should start at the links, not halfway down the
+            // language list the visitor happened to leave expanded.
+            if (!open && navLangGroup) navLangGroup.open = false;
+        }
+
+        navToggle.addEventListener('click', () => {
+            setNavOpen(!navMobile.classList.contains('open'));
+        });
+
+        navMobile.querySelectorAll('a').forEach(link => {
+            link.addEventListener('click', () => setNavOpen(false));
+        });
+
+        // A tap anywhere else closes the sheet - on a phone the toggle scrolls
+        // out of thumb reach once the language list is open.
+        document.addEventListener('click', (e) => {
+            if (!navMobile.classList.contains('open')) return;
+            if (navMobile.contains(e.target) || navToggle.contains(e.target)) return;
+            setNavOpen(false);
+        });
+
+        const navDropdowns = Array.from(document.querySelectorAll('.nav-dd'));
+
+        document.addEventListener('click', (e) => {
+            navDropdowns.forEach(dd => {
+                if (dd.open && !dd.contains(e.target)) dd.open = false;
+            });
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            if (navMobile.classList.contains('open')) setNavOpen(false);
+            navDropdowns.forEach(dd => { dd.open = false; });
+        });
+
+        // Rotating a phone into landscape can cross the 1180px breakpoint, which
+        // hides the toggle and would strand the sheet open with no way to close.
+        // Must stay equal to the nav-links media query in the stylesheet above.
+        window.addEventListener('resize', () => {
+            if (window.innerWidth > 1180 && navMobile.classList.contains('open')) setNavOpen(false);
+        });
+
+        // Comparison tables (tier comparison and the competitor table both use
+        // this markup): show the edge fade only while there is more table to
+        // scroll to, so it never sits there lying about hidden columns.
+        // querySelectorAll + forEach, not querySelector, since the page now has
+        // two independent tables and each needs its own fade state.
+        document.querySelectorAll('.compare-scroll').forEach((compareScroll) => {
+            const compareWrap = compareScroll.closest('.compare-scroll-wrap');
+            if (!compareWrap) return;
+            const syncCompareFade = () => {
+                // abs() because RTL scrollLeft runs negative in Chrome/Firefox.
+                const remaining = compareScroll.scrollWidth - compareScroll.clientWidth - Math.abs(compareScroll.scrollLeft);
+                compareWrap.classList.toggle('has-more', remaining > 4);
+            };
+            compareScroll.addEventListener('scroll', syncCompareFade, { passive: true });
+            window.addEventListener('resize', syncCompareFade);
+            syncCompareFade();
+        });
+
+        // Smooth scroll
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const href = this.getAttribute('href');
+                const target = document.querySelector(href);
+                if (!target) return;
+                // The FAQ permalink is the one anchor here meant to be copied
+                // out of the address bar, so it is the one that writes the hash
+                // back. replaceState, not push: the nav anchors leave no history
+                // entries and this should not start.
+                if (this.classList.contains('faq-permalink')) {
+                    target.open = true;
+                    history.replaceState(null, '', href);
+                }
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
+        });
+
+        /**
+         * FAQ deep links. Recent Chrome and Safari open a <details> whose id is
+         * the fragment target; Firefox does not, and neither browser handles a
+         * hash that arrives after load. Eight lines so /#faq-commercial-use
+         * lands on an open answer everywhere.
+         */
+        function openFaqFromHash() {
+            if (location.hash.indexOf('#faq-') !== 0) return;
+            const item = document.querySelector(location.hash);
+            if (!item || !item.classList.contains('faq-item')) return;
+            item.open = true;
+            item.scrollIntoView({ block: 'start' });
+        }
+        window.addEventListener('hashchange', openFaqFromHash);
+        openFaqFromHash();
+
+        // Feature grid: eight cards by default, the rest expand in place. The
+        // markup for all 24 is always in the DOM; this only flips the attribute.
+        (function featureToggle() {
+            const button = document.getElementById('feature-toggle');
+            const rest = document.getElementById('feature-rest');
+            if (!button || !rest) return;
+
+            const label = button.querySelector('span');
+            const icon = button.querySelector('i');
+            const showAll = label.textContent;
+
+            button.addEventListener('click', () => {
+                const opening = rest.hidden;
+                rest.hidden = !opening;
+                button.setAttribute('aria-expanded', String(opening));
+                label.textContent = opening ? (T.showFewer || 'Show fewer') : showAll;
+                icon.className = opening ? 'fas fa-minus' : 'fas fa-plus';
+            });
+        })();
+
+        // Feature screenshots open in a small dialog instead of navigating to
+        // the bare image. Without <dialog> support the link still just works.
+        (function featurePreview() {
+            const dialog = document.getElementById('feature-preview');
+            if (!dialog || typeof dialog.showModal !== 'function') return;
+            const title = dialog.querySelector('h4');
+            const img = dialog.querySelector('img');
+
+            document.querySelectorAll('.feature-peek').forEach((link) => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    title.textContent = link.dataset.title;
+                    img.src = link.getAttribute('href');
+                    img.alt = link.dataset.title;
+                    dialog.showModal();
+                });
+            });
+
+            dialog.querySelector('.feature-preview-close').addEventListener('click', () => dialog.close());
+            // A click on the backdrop lands on the dialog element itself.
+            dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
+        })();
+
+        // Copy buttons on the code blocks: the docker commands and the MCP
+        // config. Created for every .setup-pre whether or not its <details> is
+        // open, so unfolding the install commands does not arrive without one.
+        (function copyButtons() {
+            if (!navigator.clipboard) return;
+
+            const copyLabel = T.copy || 'Copy';
+            const copiedLabel = T.copied || 'Copied';
+
+            // The label is now a translation rather than a literal, so it goes
+            // in as a text node instead of through innerHTML.
+            function setLabel(button, iconClass, text) {
+                button.textContent = '';
+                const icon = document.createElement('i');
+                icon.className = iconClass;
+                button.appendChild(icon);
+                button.appendChild(document.createTextNode(text));
+            }
+
+            document.querySelectorAll('.setup-pre').forEach((wrap) => {
+                const pre = wrap.querySelector('pre');
+                if (!pre) return;
+
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'copy-btn';
+                setLabel(button, 'fas fa-copy', copyLabel);
+
+                button.addEventListener('click', async () => {
+                    try {
+                        await navigator.clipboard.writeText(pre.innerText);
+                        setLabel(button, 'fas fa-check', copiedLabel);
+                        setTimeout(() => {
+                            setLabel(button, 'fas fa-copy', copyLabel);
+                        }, 1500);
+                    } catch (e) { /* clipboard denied; the text is still selectable */ }
+                });
+
+                wrap.appendChild(button);
+            });
+        })();
+
+        // Plays the MCP transcript the way the real client shows it: the
+        // question is typed into the composer and sent, the answer waits on a
+        // turning asterisk, the tool row names what it called, and the reply
+        // streams a word at a time.
+        //
+        // Nothing here invents content. Every string is already in the HTML -
+        // this only hides it and hands it back on a clock, so the static page
+        // and the animated one always say exactly the same thing. If the inline
+        // script beside the markup did not arm the block (no JS, reduced motion,
+        // no IntersectionObserver) this returns immediately and the transcript
+        // stays as rendered.
+        (function agentDemo() {
+            const demo = document.querySelector('[data-agent-demo].agent-armed');
+            if (!demo) return;
+
+            const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            // Wrap every word in its own span so the reveal can respect the
+            // <strong> tags in the copy. Walking text nodes rather than
+            // rewriting innerHTML keeps the markup, and the whitespace, intact.
+            function wrapWords(el) {
+                const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+                const texts = [];
+                while (walker.nextNode()) texts.push(walker.currentNode);
+                const words = [];
+                texts.forEach((node) => {
+                    const frag = document.createDocumentFragment();
+                    node.textContent.split(/(\s+)/).forEach((part) => {
+                        if (!part) return;
+                        if (/^\s+$/.test(part)) {
+                            frag.appendChild(document.createTextNode(part));
+                            return;
+                        }
+                        const span = document.createElement('span');
+                        span.className = 'agent-w';
+                        span.textContent = part;
+                        frag.appendChild(span);
+                        words.push(span);
+                    });
+                    node.parentNode.replaceChild(frag, node);
+                });
+                return words;
+            }
+
+            // One-time teardown of each turn into the pieces the timeline plays.
+            // Done up front, before anything is visible, so a visitor who
+            // scrolls in mid-page never sees the disassembly.
+            const turns = Array.from(demo.querySelectorAll('.agent-turn')).map((turn) => {
+                const askRow = turn.querySelector('.agent-ask-row');
+                const ask = turn.querySelector('.agent-ask');
+                const tools = turn.querySelector('.agent-tools');
+                const answer = turn.querySelector('.agent-answer');
+                const question = ask.textContent.trim();
+                ask.textContent = '';
+
+                // The chevron and "Used tududi" label belong to the tool row's
+                // finished state; the thinking indicator stands in until then.
+                const toolParts = Array.from(tools.children);
+                toolParts.forEach((part) => part.classList.add('agent-reveal'));
+
+                const blocks = [];
+                Array.from(answer.children).forEach((child) => {
+                    if (child.classList.contains('agent-rows')) {
+                        Array.from(child.children).forEach((row) => blocks.push(row));
+                        return;
+                    }
+                    blocks.push(child);
+                });
+                blocks.forEach((block) => block.classList.add('agent-reveal'));
+                const words = blocks.map((block) => wrapWords(block));
+
+                return { turn, askRow, ask, tools, toolParts, blocks, words, question };
+            });
+
+            const composer = demo.querySelector('.agent-composer');
+            const draft = composer.querySelector('.agent-composer-draft');
+
+            // Hold the composer at the height of the longest question. Without
+            // this it grows a line the moment a question wraps - on a phone,
+            // every one of them does - and shoves the rest of the section down
+            // mid-sentence, which is the shift the frozen body height exists to
+            // avoid in the first place.
+            composer.classList.add('is-typing');
+            let composerHeight = composer.offsetHeight;
+            turns.forEach((state) => {
+                draft.textContent = state.question;
+                composerHeight = Math.max(composerHeight, composer.offsetHeight);
+            });
+            draft.textContent = '';
+            composer.classList.remove('is-typing');
+            composer.style.minHeight = composerHeight + 'px';
+
+            // The pause before the answer. No status word: the client shows a
+            // turning asterisk, not a label, so there is nothing here to
+            // translate. CSS parks it at the start of the tool row.
+            const SPARK = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" '
+                + 'fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">'
+                + '<path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></svg>';
+
+            function thinkingIndicator() {
+                const el = document.createElement('span');
+                el.className = 'agent-thinking';
+                el.innerHTML = SPARK;
+                return el;
+            }
+
+            let playing = false;
+            let run = 0;
+
+            async function playTurn(state, token) {
+                state.turn.classList.add('is-live');
+
+                // Typed in the composer, then sent: a message is never written
+                // into the thread in place, it arrives there finished.
+                const caret = document.createElement('span');
+                caret.className = 'agent-caret';
+                composer.classList.add('is-typing');
+                draft.appendChild(caret);
+                for (let i = 0; i < state.question.length; i += 1) {
+                    if (token !== run) return;
+                    caret.before(state.question[i]);
+                    // Two ticks per character on average, nudged by punctuation,
+                    // which reads as a person typing rather than a metronome.
+                    await wait(state.question[i] === ' ' ? 34 : 26);
+                }
+                await wait(320);
+                if (token !== run) return;
+                caret.remove();
+                draft.textContent = '';
+                composer.classList.remove('is-typing');
+                state.ask.textContent = state.question;
+                state.askRow.classList.add('is-sent');
+                await wait(380);
+                if (token !== run) return;
+
+                const indicator = thinkingIndicator();
+                state.tools.appendChild(indicator);
+                await wait(950);
+                if (token !== run) return;
+                indicator.remove();
+
+                for (const part of state.toolParts) {
+                    if (token !== run) return;
+                    part.classList.add('is-on');
+                    await wait(150);
+                }
+                await wait(320);
+
+                for (let i = 0; i < state.blocks.length; i += 1) {
+                    if (token !== run) return;
+                    state.blocks[i].classList.add('is-on');
+                    const words = state.words[i];
+                    for (let w = 0; w < words.length; w += 1) {
+                        if (token !== run) return;
+                        words[w].classList.add('is-on');
+                        // Two words a tick: slow enough to read as streaming,
+                        // fast enough that the whole answer lands in seconds.
+                        if (w % 2 === 1) await wait(42);
+                    }
+                    await wait(260);
+                }
+            }
+
+            function reset() {
+                draft.textContent = '';
+                composer.classList.remove('is-typing');
+                turns.forEach((state) => {
+                    state.turn.classList.remove('is-live');
+                    state.askRow.classList.remove('is-sent');
+                    state.ask.textContent = '';
+                    state.toolParts.forEach((part) => part.classList.remove('is-on'));
+                    state.blocks.forEach((block) => block.classList.remove('is-on'));
+                    state.words.forEach((words) => words.forEach((w) => w.classList.remove('is-on')));
+                });
+            }
+
+            async function play() {
+                if (playing) return;
+                playing = true;
+                run += 1;
+                const token = run;
+                reset();
+                for (const state of turns) {
+                    if (token !== run) break;
+                    await playTurn(state, token);
+                    await wait(900);
+                }
+                playing = false;
+            }
+
+            // Starts when the window is properly on screen, and rearms once it
+            // has fully left, so someone scrolling back up gets the session from
+            // the top instead of a frozen half-typed line.
+            //
+            // The trigger is a band across the middle of the viewport rather
+            // than a share of the element: the window is a good deal taller
+            // than a phone screen, and a ratio threshold that reads well on a
+            // laptop can be unreachable on a handset.
+            let armed = true;
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach((entry) => {
+                    if (entry.isIntersecting) {
+                        if (armed) { armed = false; play(); }
+                    } else if (!playing) {
+                        armed = true;
+                    }
+                });
+            }, { rootMargin: '-12% 0px -28% 0px', threshold: 0 });
+
+            observer.observe(demo);
+        })();
+    </script>
+</body>
+</html>

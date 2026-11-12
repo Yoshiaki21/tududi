@@ -1,0 +1,539 @@
+{
+  "meta": {
+    "langSwitcherLabel": "Dili değiştir",
+    "langSwitcherCurrent": "Dil: {{name}}",
+    "description": "Her şeyi yakala, günü yapay zekâyla takviminin etrafında planla; alanlar, hedefler, projeler, notlar ve alışkanlıklar tek sistemde. {{tools}} araçlı bir MCP sunucusu yapay zekâ ajanlarının listen üzerinde çalışmasını sağlar. tududi Cloud hesabı bir dakikada hazır.",
+    "title": "tududi: görev yöneticisi ve yaşam yönetim sistemi, AI aracıları için MCP ile"
+  },
+  "nav": {
+    "demo": "Canlı demo",
+    "features": "Özellikler",
+    "ai": "Yapay zekâ ve MCP",
+    "pricing": "Fiyatlar",
+    "faq": "SSS",
+    "blog": "Blog",
+    "signIn": "Giriş yap",
+    "toggle": "Menüyü aç",
+    "plan": "Gününü planla"
+  },
+  "hero": {
+    "ctaDemo": "Canlı demoyu deneyin",
+    "demoNote": "Örnek verilerle dolu gerçek bir barındırılan örnek; paylaşılır ve düzenli olarak sıfırlanır",
+    "screenshotAlt": "tududi arayüzü; Bugün görünümü ve planlanmış görevler",
+    "cloudNote": "Kurulacak sunucu yok. Aylık veya yıllık, ve istediğiniz zaman iptal edebilirsiniz.",
+    "ctaPrimary": "Hemen başlayın",
+    "lede": "Her şeyi yakala, günü yapay zekâyla takviminin etrafında planla; alanlar, hedefler, projeler, notlar ve alışkanlıklar tek sistemde. Bir dakikada Cloud hesabı aç.",
+    "titleLine1": "Basitleştirilmiş verimlilik",
+    "titleLine2": "",
+    "ctaTrial": "{{days}} günlük ücretsiz denemeni başlat",
+    "cloudNoteTrial": "{{days}} gün ücretsiz, kart gerekmez. Sonra aylık ya da yıllık, istediğin zaman iptal et.",
+    "badge": "Yoğun insanlar için, kurulum gerekmez"
+  },
+  "proof": {
+    "stars": "GitHub yıldızı",
+    "languages": "{{count}} dil",
+    "dockerPulls": "Docker indirmesi",
+    "discord": "Discord üyesi",
+    "minute": "Bir dakikada kuruldu",
+    "guarantee": "14 gün para iade garantisi"
+  },
+  "press": {
+    "featuredIn": "Hakkımızda yazanlar",
+    "eyebrow": "Basın",
+    "title": "Sadece bize güvenmeyin",
+    "sub": "İncelemeciler tududi'yi kendileri kullandıktan sonra ne yazdı.",
+    "readLink": "İncelemeyi oku"
+  },
+  "ai": {
+    "kicker": "Yapay zekâ ve MCP",
+    "cards": {
+      "capture": {
+        "title": "Sohbetten kaydedin ve arayın",
+        "body": "Konuşmadan çıkmadan görev ekleyin, bulun ve tamamlayın."
+      },
+      "dataStays": {
+        "body": "MCP bağlantısı doğrudan kendi tududi örneğinize gider, Cloud'da veya kendi sunucunuzda. Hiçbir şey üçüncü bir tarafın üzerinden geçmez.",
+        "title": "Örneğinizle konuşur"
+      },
+      "openProtocol": {
+        "title": "Açık protokol, bağımlılık yok",
+        "body": "Açık Model Context Protocol üzerine kurulu. Claude ve diğer MCP istemcileriyle çalışır."
+      }
+    },
+    "footnoteClients": "Aynısı Cursor, Windsurf, Cline ve diğer tüm MCP istemcileriyle de geçerli.",
+    "footnoteDocsLink": "MCP belgelerini okuyun →",
+    "assistantTitle": "Yapay zekâ asistanı",
+    "assistantLede": "Verilerinizi okuyup sade bir dille özet döndüren, ayrı ve isteğe bağlı bir katman. Ollama gibi kendi sunucunuzda çalışanlar dahil, OpenAI uyumlu her sağlayıcıyla çalışır.",
+    "assistantCards": {
+      "task": {
+        "title": "Görev analizi",
+        "body": "Belirli bir görev için, istediğinizde üretilen sonraki adım önerileri."
+      },
+      "project": {
+        "title": "Proje analizi",
+        "body": "Bir projenin durumuna hızlı bakış: ne ilerliyor, ne takılmış."
+      },
+      "plan": {
+        "title": "Gününü planla",
+        "body": "Gününü toplantıların etrafındaki boş zamana yayar ve her bloğun nedenini söyler."
+      },
+      "wrapUp": {
+        "title": "Gün sonu özeti",
+        "body": "Gün sonunda: neler yapıldı, dikkat çeken bir örüntü ve yarına ne kalacağı."
+      }
+    },
+    "demo": {
+      "answer1Html": "<strong>Faturalama geçişini yayınla</strong> ile başlayın. Bugün son tarih, ve <strong>Ödemeler</strong>'de üç görev onun ardından bekliyor.",
+      "answer2Html": "Tamamlandı. <strong>Yeniden tasarım taslağını gözden geçir</strong> artık Cuma günü son tarihte, ve <strong>Ödemeler kuyruğunun engelini kaldır</strong> Ödemeler projesinde, bugün son tarihte.",
+      "ask1": "Bugün neye odaklanmalıyım, ve gecikeni bir şey var mı?",
+      "ask2": "Yeniden tasarım incelemesini Cuma'ya taşı ve Ödemelerin engelini kaldırmak için bir görev ekle.",
+      "badge": "tududi MCP",
+      "caption": "Bir örnek oturum. Aracınız MCP üzerinden doğrudan kendi örneğinize bağlanır.",
+      "composer": "Claude'a yanıt ver…",
+      "groupTitle": "Bilmekte fayda var",
+      "rows": {
+        "habit": {
+          "label": "Seri risk altında",
+          "text": "Sabah incelemesi, 12 gün üst üste, bugün henüz kaydedilmedi"
+        },
+        "overdue": {
+          "label": "Süresi geçmiş",
+          "text": "Ev'de 2 görev, en eskisi 6 gündür"
+        },
+        "stalled": {
+          "label": "Durmuş",
+          "text": "Web sitesi yeniden tasarımı, 11 gündür etkinlik yok"
+        }
+      },
+      "toolLabel": "tududi kullanıldı",
+      "windowTitle": "Claude Desktop"
+    },
+    "footnoteIncluded": "MCP, tududi Cloud ile ve her kendi barındırılan örnekle birlikte gelir.",
+    "ledeHtml": "tududi, görevleri, projeleri, alanları, hedefleri, alışkanlıkları, notları, kişileri, etiketleri, görünümleri, gelen kutusunu, aramayı ve metrikleri kapsayan <strong>{{tools}} araç</strong> sunan bir MCP sunucusuyla gelir. Claude'u veya MCP ile uyumlu herhangi bir aracıyı doğrudan kendi örneğinize bağlayın, bu ister Cloud hesabınız olsun ister kendinizin yönettiği bir sunucu olsun. Bağlantı, aradaki bir röle üzerinden geçmek yerine örneğinize gider, bu Todoist ve Notion'ın ne söz verseler de sunamayacağı yapısal bir farktır.",
+    "titleLine1": "Gerçek bir sistem",
+    "titleLine2": "AI aracınızın gerçekten kullanabileceği"
+  },
+  "features": {
+    "eyebrow": "Özellikler",
+    "title": "Düzenli bir yaşam için eksiksiz bir sistem",
+    "showAll": "{{count}} özelliğin tamamını göster",
+    "preview": "Önizle",
+    "closePreview": "Önizlemeyi kapat",
+    "groups": {
+      "planDay": "Yakala ve planla",
+      "planFocus": "Planla ve odaklan",
+      "tasksProjects": "Görevler ve projeler",
+      "accessAnywhere": "Her yerden erişim",
+      "privacyCollab": "Gizlilik ve iş birliği"
+    },
+    "cards": {
+      "capture": {
+        "title": "Her şey için tek kutu",
+        "body": "Her yerden gelen kutusu öğesi, görev, not ya da proje ekle, dosyalarıyla. Yapıştırılan ekran görüntüsü öğenin kendisi olur."
+      },
+      "nlpDates": {
+        "title": "Günlük dille tarihler",
+        "body": "“tomorrow”, “next fri”, “every weekday”: tarihler ve tekrarlar yazarken okunur; #etiketler, +Proje ve @kişi de."
+      },
+      "planMyDay": {
+        "title": "Gününü planla",
+        "body": "Görevleri toplantılarının etrafındaki boş zamana yerleştiren, süreli, sıralı öneriler ve ipuçları sunan bir planlayıcı."
+      },
+      "todayCalendar": {
+        "title": "Takvimle Bugün",
+        "body": "Google, Apple ya da Outlook takvimlerini bağla, toplantıları görevlerinin yanında gör, şu anki blok en üstte."
+      },
+      "aiPlanning": {
+        "title": "Yapay zekâyla gün planı",
+        "body": "Günü yapay zekâyla taslakla, görev süresi tahminleri al ve yarım kalanları taşıyan bir gün sonu özeti."
+      },
+      "goals": {
+        "title": "Hedefler",
+        "body": "Bir sezon ya da bir yıl için sonuçlar belirleyin, hangi Alanların ve Projelerin bunları gerçekten ilerlettiğini görün."
+      },
+      "hierarchy": {
+        "title": "Hiyerarşik düzen",
+        "body": "Hedefler ve Alanlar en üstte yan yana durur: uzun vadeli sonuçlar ve hayatın süregelen alanları. İkisi de Projeleri, Projeler de Görevleri içerir."
+      },
+      "lifeAreas": {
+        "title": "Yaşam alanı yönetimi",
+        "body": "Projeleri yaşam alanlarına göre düzenleyin - İş, Kişisel, Sağlık, Öğrenme."
+      },
+      "views": {
+        "title": "Görünümler",
+        "body": "«Bugün», «Gecikmiş» ya da «Bir gün» gibi akıllı kayıtlı aramalar. Tek tıkla, her seferinde filtreyi yeniden kurmadan."
+      },
+      "matrixKanban": {
+        "title": "Eisenhower Matrisi ve Kanban",
+        "body": "Soru yalnızca «şimdi ne yapayım» olduğunda Eisenhower Matrisi'ne ya da Kanban panosuna geçin."
+      },
+      "insights": {
+        "title": "Verimlilik analizleri",
+        "body": "Projeler arasında tamamlanma eğilimlerini ve iş yükünü görün; zamanınızın gerçekte nereye gittiğini öğrenin."
+      },
+      "people": {
+        "title": "Kişiler",
+        "body": "Görevleri kişilere atayın ve bir projede kimin yer aldığını bir bakışta görün."
+      },
+      "habits": {
+        "title": "Alışkanlık takibi",
+        "body": "Yinelenen alışkanlıkları görev ve projelerin yanında takip edin; sade seriler ve geçmiş kaydıyla."
+      },
+      "recurring": {
+        "title": "Akıllı yinelenen görevler",
+        "body": "Günlük, haftalık ve aylık desenler; tamamlanmaya dayalı yineleme ve üst-alt görev ilişkileri."
+      },
+      "richTasks": {
+        "title": "Zengin görev düzeni",
+        "body": "Öncelikler, son tarihler, etiketler ve akıllı sıralama. Önemli olanı bulmak için güçlü filtreler."
+      },
+      "subtasks": {
+        "title": "Alt görevler ve parçalama",
+        "body": "Karmaşık görevleri yönetilebilir alt görevlere bölün, ilerlemeyi takip edin."
+      },
+      "notes": {
+        "title": "Proje belgeleri",
+        "body": "Projeler için biçimlendirilmiş notlar; tam arama ve düzenleme özellikleriyle."
+      },
+      "tags": {
+        "title": "Esnek etiket sistemi",
+        "body": "Görevler ve notlar için özel etiketler; anında filtreleme ve projeler arası düzen."
+      },
+      "search": {
+        "title": "Akıllı filtreleme ve arama",
+        "body": "Tam metin arama ile projeye, etikete, önceliğe veya son tarihe göre filtreler. Herhangi bir görevi saniyeler içinde bulun."
+      },
+      "pwa": {
+        "title": "Uygulama olarak kurun",
+        "body": "tududi'yi PWA olarak ana ekranınıza veya masaüstünüze ekleyin. Çevrimdışı çalışır, yeniden bağlandığınızda eşitlenir."
+      },
+      "oidc": {
+        "title": "OIDC / SSO girişi",
+        "body": "Mevcut kimlik sağlayıcınızla giriş yapın: Authentik, Keycloak, Google Workspace ya da OIDC uyumlu herhangi bir sağlayıcı."
+      },
+      "i18n": {
+        "title": "Çoklu dil desteği",
+        "body": "{{count}} dilde, eksiksiz yerelleştirmeyle sunuluyor."
+      },
+      "caldav": {
+        "title": "CalDAV eşitleme",
+        "body": "Apple Anımsatıcılar, tasks.org, Thunderbird ve CalDAV uyumlu her uygulamayla çift yönlü görev eşitleme."
+      },
+      "api": {
+        "title": "API erişimi ve Swagger",
+        "body": "Sürümlenmiş Swagger belgeleri ve özel entegrasyonlar için kişisel erişim anahtarları."
+      },
+      "privacy": {
+        "title": "Gizlilik ve denetim",
+        "body": "Verilerinizi kendinize saklayın. Tam denetim için kendiniz barındırın ya da şifreli yedeklemeli Yönetilen bir örnek kullanın."
+      },
+      "collab": {
+        "title": "Projelerde iş birliği",
+        "body": "Projeleri ayrıntılı erişim izinleriyle paylaşın - yalnızca okuma ya da okuma ve yazma."
+      }
+    },
+    "sub": "tududi, hedefleri, projeleri, görevleri, notları ve akıllı görünümleri sakin, odaklı bir sistemde birleştirir. Bunu sizin için işletmemize izin verin, veya tercih ederseniz kendiniz işletin."
+  },
+  "pricing": {
+    "eyebrow": "Fiyatlar",
+    "title": "Kendiniz için ya da ekibiniz için ödeyin",
+    "mostPopular": "EN ÇOK SEÇİLEN",
+    "earlyBird": "ERKEN KAYIT",
+    "perYear": "/yıl, kişi başı",
+    "plans": {
+      "cloud": {
+        "name": "Cloud",
+        "soloName": "Pro",
+        "or": "veya",
+        "launchNote": "Erken kayıt yıllık fiyatı, abone kaldığınız sürece sizin.",
+        "action": "Başlayın →",
+        "features": [
+          "Kurulacak sunucu olmadan bir dakikada çalışır",
+          "Sınırsız görev, proje ve not, ayrıca ekler",
+          "Tek kişilik. Başkalarını eklemek mi istiyorsunuz? Bir Ekip planı seçin",
+          "Yapay zekâyla gün planı, MCP, takvim beslemeleri, CalDAV ve Telegram botu",
+          "Sizin için halledilmiş güncellemeler ve günlük yedeklemeler, {{proStorageGb}} GB depolama ile",
+          "Her şeyi istediğiniz zaman dışa aktarın, hesabınızı kendiniz silin"
+        ],
+        "priceNote": "Her şey dahil. İstediğiniz zaman iptal edin.",
+        "actionTrial": "Ücretsiz dene →",
+        "priceNoteTrial": "{{days}} gün ücretsiz, kart gerekmez. İstediğin zaman iptal et.",
+        "trialNote": "Deneme süresi, daha küçük bir kullanım hakkıyla AI asistanını ve ekleyebileceğin bir üyeyi içerir. Herkese açık not bağlantıları abone olunca açılır."
+      },
+      "team": {
+        "name": "Ekip",
+        "perPersonMonth": "/ay, kişi başı",
+        "perPersonYear": "/yıl, kişi başı",
+        "sizes": "Siz dahil {{sizes}} koltukluk büyüklüklerde satılır. 5 kişilik bir ekip aylık {{example}}.",
+        "moreThan": "{{max}} kişiden fazla mısınız?",
+        "contact": "Bize ulaşın",
+        "action": "Ekibinizi başlatın →",
+        "features": [
+          "Pro'daki her şey, ekipteki herkes için",
+          "Büyüklüğünüze kadar kişi ekleyin, istediğiniz zaman daha büyüğüne geçin",
+          "Ortak projeler, gruplar ve kimin ne yaptığını gösteren bir Herkes panosu",
+          "Herkes kendi özel görevlerini ve notlarını korur",
+          "Tek abonelik, hesap sahibi öder"
+        ]
+      },
+      "picker": {
+        "label": "Kimin için?",
+        "solo": "Sadece ben",
+        "team": "{{n}} kişilik ekip",
+        "perMonth": "/ay",
+        "perYear": "/yıl"
+      }
+    },
+    "fineprint": "İstediğiniz zaman iptal edin ve her şeyi dışa aktarın. tududi Cloud bir gün kapanırsa verilerinizi ve kendi sunucunuza taşınma rehberini alırsınız. Depolama ve API hacmi için adil kullanım geçerlidir. 14 gün para iade garantisi, soru sorulmaz.",
+    "perMonth": "/ay, kişi başı",
+    "nextPrice": "{{date}} tarihinden itibaren kişi başı fiyat aylık {{monthly}} ya da yıllık {{annual}} olacak. Bugünkü fiyatı abone kaldığınız sürece korumak için bu tarihten önce abone olun.",
+    "sub": "Her planda tüm özellikler var. Pro tek kişilik; Ekip planı sabit bir büyüklükte gelir ve bu büyüklüğe kadar kişi eklersiniz."
+  },
+  "compare": {
+    "title": "Hızlı karşılaştırma",
+    "sub": "tududi Cloud en sık karşılaştırıldığı uygulamalarla bireysel planlarda nasıl kıyaslanıyor.",
+    "footnote": "Todoist Pro, TickTick Premium ve Notion Plus, Eylül 2026 itibarıyla herkese açık fiyat sayfalarından. Güncel fiyatlar için sitelerine bakın. Fiyatları dolar cinsinden ABD liste fiyatlarıdır.",
+    "rows": {
+      "price": "Fiyat, yıllık ödeme",
+      "aiIncluded": "Yapay zekâ dahil",
+      "dayPlanner": "Günü takvime göre planlama",
+      "habits": "Alışkanlık takibi",
+      "goals": "Hedefler, alanlar ve projeler",
+      "notes": "Görevlerin yanında notlar",
+      "matrix": "Eisenhower matrisi",
+      "kanban": "Kanban panoları",
+      "views": "Kayıtlı akıllı görünümler",
+      "people": "Görevleri kişilere atama",
+      "caldav": "CalDAV ile görev senkronizasyonu",
+      "mcp": "Yapay zekâ ajanları için MCP sunucusu"
+    },
+    "values": {
+      "perYear": "{{price}}/yıl",
+      "businessOnly": "Yalnızca Business planı",
+      "separateApp": "Ayrı uygulama",
+      "diy": "Kendin kur"
+    }
+  },
+  "waitlist": {
+    "placeholder": "siz@email.com",
+    "inputLabel": "E-posta adresi"
+  },
+  "signup": {
+    "note": "Adresini ve verdiğin tarihi yalnızca haber ve güncelleme göndermek için saklıyoruz. Asla paylaşmıyoruz.",
+    "joined": "Abone oldun. Haberler ve güncellemeler e-postayla gelecek."
+  },
+  "langs": {
+    "heading": "Dünya genelinde {{count}} dilde kullanılabilir"
+  },
+  "community": {
+    "title": "tududi topluluğuna katılın",
+    "sub": "Diğer tududi kullanıcılarıyla tanışın, destek alın ve gelişmeleri takip edin"
+  },
+  "footer": {
+    "colProduct": "Ürün",
+    "colCommunity": "Topluluk ve destek",
+    "colSupport": "Destek olun",
+    "linkCoffee": "Bir kahve ısmarlayın",
+    "subTitle": "E-postayla haberler ve güncellemeler",
+    "subBody": "Ara sıra ürün haberleri ve güncellemeleri. Spam yok, istediğin zaman abonelikten çık.",
+    "subSubmit": "Katıl",
+    "rights": "Tüm hakları saklıdır.",
+    "tagline": "Hayatı ve işi düzenlemek için sakin ve eksiksiz bir sistem.",
+    "linkTerms": "Koşullar",
+    "linkPrivacy": "Gizlilik",
+    "linkRefunds": "İadeler",
+    "linkContact": "İletişim",
+    "linkCookies": "Çerez ayarları"
+  },
+  "consent": {
+    "label": "Çerez tercihi",
+    "body": "Bu web sitesindeki deneyimini iyileştirmek için çerez kullanıyoruz. Çerezler yalnızca kabul edersen yerleştirilir.",
+    "accept": "Kabul et",
+    "decline": "Reddet"
+  },
+  "js": {
+    "showFewer": "Daha az göster",
+    "copy": "Kopyala",
+    "copied": "Kopyalandı"
+  },
+  "faq": {
+    "items": {
+      "freePlan": {
+        "a": "Hayır. Pro tek kişi için aylık {{monthly}} ya da yıllık {{price}}, Ekip planları ise sabit büyüklüklerde kişi başı aynı fiyattır. Ücretsiz katman yok, deneme sayacı yok, sonradan sessizce ücret çekilmeye başlanan kart yok. Size uymazsa 14 günlük para iade garantisi var ve önce göz atmak isterseniz bu sayfada canlı bir demo var.",
+        "q": "tududi Cloud'da ücretsiz bir plan veya deneme var mı?",
+        "aTrial": "Ücretsiz plan yok, ama her yeni hesap kart gerektirmeyen {{days}} günlük ücretsiz deneme alır. Deneme, daha küçük bir kullanım hakkıyla yapay zeka asistanını ve ekleyebileceğin bir üyeyi içerir. Herkese açık not bağlantıları abone olunca açılır. Abone olmazsan hesap, verilerini dışa aktarabilmen için 30 gün salt okunur olur ve ardından silinir. Denemeden sonra Pro aylık {{monthly}} ya da yıllık {{price}}, Ekip planları ise kişi başı aynı fiyat."
+      },
+      "leaving": {
+        "q": "Ayrılabilir miyim, verilerime ne olur?",
+        "a": "Evet, istediğiniz zaman. Profilinizden her şeyi tek dosya olarak dışa aktarın ve aynı biçimi okuyan kendi barındırdığınız bir tududi'ye içe aktarın. Hesabınızı silmek verilerinizi, eklerinizi ve yedeklerinizi sunucularımızdan kaldırır ve aboneliği iptal eder."
+      },
+      "aiOptional": {
+        "a": "Hayır. Her iki AI katmanı da siz etkinleştirene kadar kapalıdır, ve tududi onlarsız da tam bir sistemdir. Onları hiç etkinleştirmezseniz, hiçbir şey eksik olmaz ve hiçbir şey sizi rahatsız etmez.",
+        "q": "AI özelliklerini kullanmak zorunda mıyım?"
+      },
+      "aiPrivacy": {
+        "a": "Bu, iki katmandan hangisini kastettiğinize bağlı, ve fark önemli. MCP sunucusu kendi örneğinizin içinde çalışır: Claude Desktop gibi bir aracı doğrudan o örneğe bağlanır, dolayısıyla konuşma aracınız ile kendi tududinizin arasındadır, aracı bir taraf değil. AI asistanı farklıdır. OpenAI uyumlu bir sağlayıcıyı çağırır, dolayısıyla onu barındırılan bir sağlayıcıya yönlendirirseniz, o isteklerin içeriği o sağlayıcıya gider. Bunun yerine onu Ollama veya LM Studio gibi yerel bir modele yönlendirin, ve hiçbir şey makinenizden çıkmaz. Bir anahtar verene kadar kapalı kalır, dolayısıyla bu her zaman sizin seçiminizdir, varsayılan değil.",
+        "q": "Verilerim bir AI şirketine mi gönderiliyor?"
+      },
+      "commercialUse": {
+        "a": "Evet, ve önce bir şey satın almanız gerekmiyor. MIT lisansı, bir şirket içinde ve ticari bir üründe de olmak üzere, gelir eşiği olmadan ve bildirilecek bir şey olmadan ticari kullanıma izin verir. Finans ekibinizin bir faturaya ihtiyacı varsa, bir Cloud aboneliği ödeme sağlayıcımız üzerinden faturalanır ve bir tane üretir. Bu sayfadaki hiçbir şey izin satmaz, çünkü o izin zaten sizindir.",
+        "q": "tududi'yi işte, veya şirketimde kullanabilir miyim?"
+      },
+      "maintained": {
+        "a": "Evet. Ağırlıklı olarak bir bakımcı tarafından, topluluk katkılarıyla geliştirilir, ve sık sık yayınlanır. Her sürüm, yukarıdaki menüdeki Değişiklik Günlüğü'nden bağlanan GitHub sürümler sayfasında listelenir, dolayısıyla sözümüze güvenmek yerine hızı kendiniz değerlendirebilirsiniz. Geliştirme açıkça yapılır: sorunlar, herkese açık bir yol haritası, ve soruların yanıtlandığı bir Discord.",
+        "linkLabel": "Tüm sürümleri gör",
+        "q": "tududi aktif olarak bakımı yapılıyor mu?"
+      },
+      "mcp": {
+        "a": "MCP, AI aracılarını gerçek sistemlere bağlamak için açık bir standart olan Model Context Protocol'dür. tududi, görevleri, projeleri, alanları, hedefleri, alışkanlıkları, notları, kişileri, etiketleri, görünümleri, gelen kutusunu, aramayı ve metrikleri kapsayan {{tools}} araç sunan bir MCP sunucusuyla gelir, dolayısıyla bir aracı işi sadece hakkında konuşmak yerine yakalayabilir, bulabilir, güncelleyebilir ve bitirebilir. İsteğe bağlıdır, Cloud ile ve her kendi barındırılan örnekle birlikte gelir, ve Claude Desktop, Cursor, Windsurf, Cline veya başka herhangi bir MCP istemcisiyle çalışır.",
+        "q": "MCP nedir, ve bir aracı gerçekte ne yapabilir?"
+      },
+      "shutdown": {
+        "a": "Uygulama MIT lisanslıdır, ve kaynak kodu herkese açıktır, dolayısıyla sizden alınamaz. Herkes onu çalıştırmaya devam edebilir, ve onu fork edebilirsiniz. tududi Cloud'da verileriniz tescilli bir biçim yerine standart bir tududi veritabanında yaşar, dolayısıyla hizmet bir gün kapanırsa, verilerinizi ve onları kendi sunucunuza taşımak için bir kılavuz alırsınız.",
+        "q": "tududi ortadan kalkarsa verilerime ne olur?"
+      },
+      "trust": {
+        "q": "Verilerimi size emanet edebilir miyim?",
+        "a": "Sözümüze inanmak zorunda değilsiniz. tududi açık kaynaklıdır, bu yüzden herkes verilerinizi tam olarak nasıl işlediğini okuyabilir. Cloud'da girdiğiniz her şey sizin kalır: istediğiniz zaman tek dosya olarak dışa aktarın, hesabınızı kendiniz silin ve size uymadığı anlaşılırsa 14 gün para iade garantisi var."
+      }
+    },
+    "eyebrow": "FAQ",
+    "groups": {
+      "managed": "AI, MCP ve Cloud",
+      "project": "Lisans ve proje"
+    },
+    "permalink": "Bu yanıtın bağlantısı",
+    "sub": "Lisans, AI, ve verilerinize ne olduğu. Eksik bir şey varsa, Discord'da sorun.",
+    "title": "Taahhüt etmeden önce yanıtlanmaya değer sorular"
+  },
+  "cloud": {
+    "ctaPricing": "Fiyata bakın",
+    "ctaPrimary": "Başlayın",
+    "includes": [
+      "Sınırsız görev, proje ve not",
+      "Tek kişilik. Ekip planları sabit büyüklüklerde kişi ekler",
+      "Ekler ve dosya yüklemeleri",
+      "Yapay zekâyla gün planı, MCP, takvim beslemeleri, CalDAV ve Telegram botu",
+      "Günlük yedeklemeler ve yönetilen güncellemeler",
+      "E-posta ile destek",
+      "Her şeyi istediğiniz zaman dışa aktarın"
+    ],
+    "lede": "Her iki durumda da aynı sistem. Fark, onu gece üçte çalışır, güncel ve yedeklenmiş tutan kişidir.",
+    "metaDescription": "tududi Cloud, aynı açık kaynak sistemin sunucularımızda çalışan hâlidir; güncellemeler, yedeklemeler ve e-posta sizin yerinize halledilir. Tek kişi için Pro ya da bir grup için Ekip planı, aylık ya da yıllık, istediğiniz zaman iptal edin.",
+    "metaTitle": "tududi Cloud: sizin için işletilen, barındırılan tududi",
+    "note": "Aynı MIT lisanslı uygulama. Her şeyi istediğiniz zaman dışa aktarın.",
+    "orAnnual": "veya",
+    "priceNote": "Ödeme sağlayıcımız tarafından faturalandırılır. Fiyatlara geçerli vergiler dahil değildir.",
+    "pricingSub": "Her şey dahil. İstediğiniz zaman iptal edin.",
+    "pricingTitle": "Size Pro, herkese Ekip",
+    "reasons": {
+      "backups": {
+        "body": "Veritabanı her gece dökülür ve size hizmet veren makinenin dışında saklanır. İstediğiniz zaman her şeyi kendiniz de dışa aktarabilirsiniz.",
+        "title": "Hatırlamanız gerekmeyen yedeklemeler"
+      },
+      "email": {
+        "body": "Doğrulamalar, şifre sıfırlamaları ve hatırlatmalar, kendiniz kurmanın sıkıcı ve zahmetli olacağı ısınmış bir gönderim alanı üzerinden gider.",
+        "title": "Ulaşan e-posta"
+      },
+      "noOps": {
+        "body": "Kiralanacak VPS yok, güncellenecek Docker yok, yenilenecek reverse proxy veya sertifika yok. Giriş yaparsınız, ve orada.",
+        "title": "Yönetilecek sunucu yok"
+      },
+      "sameApp": {
+        "body": "Sadece bulut için özel özellik yok ve kısıtlı kendi barındırılan sürüm yok. Hizmeti bir gün kapatırsak, verilerinizi ve bir geçiş kılavuzu alırsınız.",
+        "title": "Tam olarak aynı uygulama"
+      },
+      "support": {
+        "body": "Kodu bilen bir kişi yanıt verir. Kendi barındırmada topluluğunuz var, ki bu iyi, ama kimse yanıt vermek zorunda değil.",
+        "title": "Yazabileceğiniz biri"
+      },
+      "updates": {
+        "body": "Yeni sürümler hesabınıza pull, yeniden başlatma veya izlemeniz gereken bir geçiş olmadan ulaşır.",
+        "title": "Sizin için uygulanan güncellemeler"
+      }
+    },
+    "title": "Neden tududi Cloud kullanmalı?",
+    "whyEyebrow": "Cloud",
+    "whySub": "Özellikler değil. Her özellik kendi barındırılan sürümde de var.",
+    "whyTitle": "Gerçekte ne için ödüyorsunuz",
+    "ctaTrial": "Ücretsiz dene",
+    "pricingSubTrial": "{{days}} gün ücretsiz dene, kart gerekmez. Sonrasında her şey dahil, istediğin zaman iptal et."
+  },
+  "finalCta": {
+    "primary": "Başlayın",
+    "secondary": "Fiyatlara bakın",
+    "sub": "Sunucuyu, güncellemeleri ve yedeklemeleri biz işletiriz. Siz sistemi alırsınız, ve size uymuyorsa 14 günlük para geri garantisi.",
+    "title": "Bir dakikada organize olun",
+    "subTrial": "Sunucuyu, güncellemeleri ve yedeklemeleri biz yönetiyoruz. {{days}} gün ücretsiz deneyin, kart gerekmez.",
+    "primaryTrial": "Ücretsiz dene"
+  },
+  "contact": {
+    "title": "Bize ulaşın",
+    "lede": "tududi Cloud, faturalandırma veya hesabınla ilgili soruların mı var? Bize bir mesaj gönder, e-postayla yanıtlayalım.",
+    "name": "Ad",
+    "email": "E-posta",
+    "message": "Mesaj",
+    "submit": "Mesajı gönder",
+    "sent": "Teşekkürler, mesajın yolda. E-postayla yanıt vereceğiz.",
+    "invalid": "Lütfen adını, geçerli bir e-posta adresini ve bir mesaj yaz.",
+    "failed": "Mesajın şu anda gönderilemedi. Lütfen bize şu adresten yaz:"
+  },
+  "plan": {
+    "eyebrow": "Gününü planla",
+    "title": "Aklından geçen bir fikirden bitmiş bir güne",
+    "sub": "Aklına geldiği anda not al, günü toplantılarının etrafında yapay zekâyla planla, sonra blok blok ilerle.",
+    "stepLabel": "Adım {{n}}",
+    "steps": {
+      "capture": {
+        "title": "Her şeyi kendi kelimelerinle yakala",
+        "body": "Gelen kutusu, görevler, notlar ve projeler için tek ekleme kutusu, uygulamanın her yerinde. Düşündüğün gibi yaz, gerisini tududi tamamlar.",
+        "points": [
+          "“next fri”, “in 3 days” ya da “every first monday” tarihi veya tekrarı ayarlar",
+          "#etiketler, +Proje ve @kişi yazarken algılanır",
+          "Ekran görüntüsü yapıştır ya da dosya bırak, onlar da eklenir"
+        ],
+        "alt": "Ekleme kutusu bir cümleyi etiketli ve projeli tekrarlayan bir göreve çeviriyor"
+      },
+      "plan": {
+        "title": "Gününü yapay zekâyla planla (ya da onsuz)",
+        "body": "Planlayıcı bugün nelerin sığabileceğini senin seçtiğin sırayla gösterir. Her göreve süre ver ve toplantılar arasındaki boş zamana yerleştir ya da tüm günü yapay zekâ taslaklasın.",
+        "points": [
+          "Sıralı öneriler: gecikenler, bugün bitecekler, sürenler, sonra diğerleri",
+          "Yapay zekâ taslağı toplantılar etrafındaki boş zamanı doldurur, Geri al eski hale getirir",
+          "İpuçları aşırı dolu bir günü ve bir görevin sığacağı boşlukları gösterir"
+        ],
+        "alt": "Görevler ve toplantılar aynı zaman çizelgesinde, günlük planlayıcı"
+      },
+      "today": {
+        "title": "Bugün, takviminle birlikte",
+        "body": "Güne başla; Bugün yalnızca söz verdiklerini gösterir: şu anki blok, ardından gündem, arada Google, Apple ya da Outlook toplantıların.",
+        "points": [
+          "Şimdi kartından tamamla ya da ertele",
+          "Salt okunur takvim beslemeleri, şifreli saklanır",
+          "Gün sonunda yapay zekâ özeti yarım kalanları yarına taşır"
+        ],
+        "alt": "Sıradaki görev, gündem ve iki takvimden toplantılarla Bugün"
+      }
+    }
+  },
+  "pains": {
+    "eyebrow": "Zihinsel yük",
+    "title": "Zor olan düzenlemek değil. Hatırlamak.",
+    "sub": "Çoğu uygulama size bir şeyler yazabileceğiniz bir yer daha verir. Sorun hiçbir zaman yazmak olmadı. Hepsini kafanızda taşımak.",
+    "items": {
+      "oneHead": {
+        "title": "Her şey kafanızda yaşıyor",
+        "body": "Diş hekimi, araba sigortası, hediye, cuma günü teslim edilmesi gereken form. Hepsi orada ve hiçbiri asla yere konmuyor."
+      },
+      "notesApp": {
+        "title": "Bir not uygulaması bir sistem değildir",
+        "body": "Gece yarısı yazılan bir satırı siz dahil kimse okumaz. Aşağı kayar ve endişe bir hafta sonra geri gelir."
+      },
+      "tooManyApps": {
+        "title": "Her köşe için bir uygulama",
+        "body": "Burada bir takvim, orada bir liste, telefonda hatırlatıcılar, taşınma için bir tablo. Bakılacak beş yer ve ihtiyacınız olan asla açık olan değil."
+      }
+    },
+    "turn": "Bir kez yazın. Ona bir yer verin. Kafanızdan çıkmasına izin verin."
+  }
+}

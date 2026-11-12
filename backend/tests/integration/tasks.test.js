@@ -1,7 +1,10 @@
 const request = require('supertest');
 const app = require('../../app');
-const { Task, User } = require('../../models');
+const path = require('path');
+const fs = require('fs').promises;
+const { Task, User, TaskAttachment } = require('../../models');
 const { createTestUser } = require('../helpers/testUtils');
+const { getConfig } = require('../../config/config');
 
 describe('Tasks Routes', () => {
     let user, agent;
@@ -37,6 +40,26 @@ describe('Tasks Routes', () => {
             expect(response.body.priority).toBe(taskData.priority);
             expect(response.body.status).toBe(taskData.status);
             expect(response.body.user_id).toBe(user.id);
+        });
+
+        it('should accept description as an alias for note', async () => {
+            const response = await agent
+                .post('/api/task')
+                .send({ name: 'Alias Task', description: 'via description' });
+
+            expect(response.status).toBe(201);
+            expect(response.body.note).toBe('via description');
+        });
+
+        it('should prefer note over description when both are sent', async () => {
+            const response = await agent.post('/api/task').send({
+                name: 'Both Task',
+                note: 'the note',
+                description: 'the description',
+            });
+
+            expect(response.status).toBe(201);
+            expect(response.body.note).toBe('the note');
         });
 
         it('should require authentication', async () => {
@@ -169,6 +192,30 @@ describe('Tasks Routes', () => {
             expect(response.body.status).toBe(updateData.status);
         });
 
+        it('should update note when sent as description', async () => {
+            await task.update({ note: 'original' });
+
+            const response = await agent
+                .patch(`/api/task/${task.uid}`)
+                .send({ description: 'new text' });
+
+            expect(response.status).toBe(200);
+            expect(response.body.note).toBe('new text');
+            await task.reload();
+            expect(task.note).toBe('new text');
+        });
+
+        it('should keep the note when neither note nor description is sent', async () => {
+            await task.update({ note: 'original' });
+
+            const response = await agent
+                .patch(`/api/task/${task.uid}`)
+                .send({ name: 'Renamed' });
+
+            expect(response.status).toBe(200);
+            expect(response.body.note).toBe('original');
+        });
+
         it('should update recurring task name without transformation', async () => {
             // Create a recurring task
             const recurringTask = await Task.create({
@@ -194,13 +241,13 @@ describe('Tasks Routes', () => {
             expect(response.body.original_name).toBe(updateData.name);
         });
 
-        it('should return 403 for non-existent task', async () => {
+        it('should return 404 for non-existent task', async () => {
             const response = await agent
                 .patch('/api/task/nonexistent-uid-12345')
                 .send({ name: 'Updated' });
 
-            expect(response.status).toBe(403);
-            expect(response.body.error).toBe('Forbidden');
+            expect(response.status).toBe(404);
+            expect(response.body.error).toBe('Task not found.');
         });
 
         it("should not allow updating other user's tasks", async () => {
@@ -254,13 +301,13 @@ describe('Tasks Routes', () => {
             expect(deletedTask).toBeNull();
         }, 10000); // 10 second timeout for DELETE operations
 
-        it('should return 403 for non-existent task', async () => {
+        it('should return 404 for non-existent task', async () => {
             const response = await agent.delete(
                 '/api/task/nonexistent-uid-12345'
             );
 
-            expect(response.status).toBe(403);
-            expect(response.body.error).toBe('Forbidden');
+            expect(response.status).toBe(404);
+            expect(response.body.error).toBe('Task not found.');
         });
 
         it("should not allow deleting other user's tasks", async () => {
@@ -287,6 +334,39 @@ describe('Tasks Routes', () => {
             expect(response.status).toBe(401);
             expect(response.body.error).toBe('Authentication required');
         });
+
+        it('should delete attachment files and rows along with the task (GHSA-43p8-ch4p-gqg4)', async () => {
+            const config = getConfig();
+            const taskUploadDir = path.join(config.uploadPath, 'tasks');
+            const storedFilename = `task-delete-test-${task.id}.pdf`;
+            const filePath = path.join(taskUploadDir, storedFilename);
+
+            await fs.mkdir(taskUploadDir, { recursive: true });
+            await fs.writeFile(filePath, 'attachment content');
+
+            const attachment = await TaskAttachment.create({
+                task_id: task.id,
+                user_id: user.id,
+                original_filename: 'attachment.pdf',
+                stored_filename: storedFilename,
+                file_size: 1024,
+                mime_type: 'application/pdf',
+                file_path: `tasks/${storedFilename}`,
+            });
+
+            try {
+                const response = await agent.delete(`/api/task/${task.uid}`);
+
+                expect(response.status).toBe(200);
+
+                await expect(fs.access(filePath)).rejects.toThrow();
+
+                const remaining = await TaskAttachment.findByPk(attachment.id);
+                expect(remaining).toBeNull();
+            } finally {
+                await fs.rm(filePath, { force: true });
+            }
+        }, 10000);
     });
 
     describe('Task with tags', () => {
@@ -466,7 +546,7 @@ describe('Tasks Routes', () => {
                 user_id: user.id,
                 recurrence_type: 'daily',
                 recurrence_interval: 1,
-                due_date: yesterday, // Template is in the past but should still be included if it's recurring
+                due_date: yesterday, // Missed occurrence, still open
                 status: 0,
             });
 
@@ -509,8 +589,8 @@ describe('Tasks Routes', () => {
             // Should include future instances
             expect(taskIds).toContain(futureInstance.id);
 
-            // Template should not be included because it's in the past
-            expect(taskIds).not.toContain(recurringTemplate.id);
+            // An open template stays listed even when its due date has passed
+            expect(taskIds).toContain(recurringTemplate.id);
         });
     });
 });

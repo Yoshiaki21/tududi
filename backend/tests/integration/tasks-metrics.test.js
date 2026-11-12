@@ -1,4 +1,4 @@
-const { Task, Project } = require('../../models');
+const { Task, Project, Tag } = require('../../models');
 const { createTestUser } = require('../helpers/testUtils');
 const {
     getTaskMetrics,
@@ -58,13 +58,13 @@ describe('Task Metrics Suggested Tasks', () => {
         await createTask({
             name: 'Medium Alpha',
             priority: 'medium',
-            due_date: dayFromNow(4),
+            due_date: dayFromNow(2),
             project_id: projectAlpha.id,
         });
         await createTask({
             name: 'Medium Beta',
             priority: 'medium',
-            due_date: dayFromNow(4),
+            due_date: dayFromNow(2),
             project_id: projectBeta.id,
         });
 
@@ -195,21 +195,21 @@ describe('Task Metrics Overdue and Due Today Tasks', () => {
         const tomorrow = dayFromNow(1);
         const yesterday = dayFromNow(-1);
 
-        // Planned task deferred to tomorrow — should NOT be in today_plan
+        // Planned task deferred to tomorrow - should NOT be in today_plan
         await createTask({
             name: 'Deferred Future Planned',
             status: Task.STATUS.PLANNED,
             defer_until: tomorrow,
         });
 
-        // Planned task deferred to yesterday — should be in today_plan
+        // Planned task deferred to yesterday - should be in today_plan
         await createTask({
             name: 'Deferred Past Planned',
             status: Task.STATUS.PLANNED,
             defer_until: yesterday,
         });
 
-        // In-progress task deferred to tomorrow — should NOT be in tasks_in_progress
+        // In-progress task deferred to tomorrow - should NOT be in tasks_in_progress
         await createTask({
             name: 'Deferred Future In Progress',
             status: Task.STATUS.IN_PROGRESS,
@@ -245,5 +245,58 @@ describe('Task Metrics Overdue and Due Today Tasks', () => {
         // WAITING task should be in today plan, not in overdue
         expect(overdueNames).not.toContain('Overdue Waiting');
         expect(todayPlanNames).toContain('Overdue Waiting');
+    });
+});
+
+describe('Task Metrics Someday Exclusion', () => {
+    let user;
+    let somedayTag;
+
+    const createTask = async (overrides = {}) => {
+        const { priority, status, ...rest } = overrides;
+        return await Task.create({
+            name: rest.name || 'Test task',
+            user_id: user.id,
+            status:
+                typeof status === 'string'
+                    ? Task.getStatusValue(status)
+                    : (status ?? Task.STATUS.NOT_STARTED),
+            priority:
+                typeof priority === 'string'
+                    ? Task.getPriorityValue(priority)
+                    : (priority ?? Task.PRIORITY.LOW),
+            parent_task_id: null,
+            recurring_parent_id: null,
+            ...rest,
+        });
+    };
+
+    beforeEach(async () => {
+        user = await createTestUser({ email: 'someday-test@example.com' });
+        // The 'someday' system tag is auto-seeded when a user is created
+        somedayTag = await Tag.findOne({
+            where: { user_id: user.id, name: 'someday' },
+        });
+    });
+
+    it('excludes someday-tagged in-progress tasks from tasks_in_progress', async () => {
+        const somedayTask = await createTask({
+            name: 'Someday In Progress',
+            status: Task.STATUS.IN_PROGRESS,
+        });
+        await somedayTask.addTag(somedayTag);
+
+        await createTask({
+            name: 'Regular In Progress',
+            status: Task.STATUS.IN_PROGRESS,
+        });
+
+        const metrics = await getTaskMetrics(user.id, 'UTC');
+        const inProgressNames = metrics.tasks_in_progress.map(
+            (task) => task.name
+        );
+
+        expect(inProgressNames).not.toContain('Someday In Progress');
+        expect(inProgressNames).toContain('Regular In Progress');
     });
 });

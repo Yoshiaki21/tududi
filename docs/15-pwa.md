@@ -1,0 +1,322 @@
+# PWA & Offline Support
+
+[← Back to Index](../CLAUDE.md)
+
+---
+
+## Overview
+
+Tududi is an installable Progressive Web App (PWA). Users can add it to their home screen on Android, iOS, and desktop browsers and use it like a native app. When the network is unavailable the app stays readable from cache; write operations are queued and replayed automatically once connectivity returns.
+
+---
+
+## Installation
+
+### What browsers support
+
+| Browser | Install method |
+|---------|---------------|
+| Chrome / Edge (Android, desktop) | Address bar install icon or `⋮ → Install app` |
+| Safari (iOS 16.4+) | Share sheet → Add to Home Screen |
+| Firefox (Android) | `⋮ → Install` |
+
+### Requirements satisfied by Tududi
+
+1. `public/manifest.json` — declares name, icons, `display: standalone`
+2. `<link rel="manifest">` in `public/index.html`
+3. `public/sw.js` — service worker registered from `frontend/index.tsx` in production
+4. HTTPS — required in production; localhost is exempt for development
+
+### Verifying installability (Chrome DevTools)
+
+1. Open DevTools → **Application** → **Manifest** — no errors should appear
+2. **Application** → **Service Workers** — status should be "activated and running"
+3. **Lighthouse** → **PWA** category — installability check should pass
+
+---
+
+## Web App Manifest (`public/manifest.json`)
+
+```json
+{
+  "id": "/",
+  "name": "tududi",
+  "short_name": "tududi",
+  "description": "A simple and effective task management application",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#4a5568",
+  "background_color": "#ffffff",
+  "lang": "en",
+  "orientation": "portrait-primary",
+  "share_target": {
+    "action": "/inbox",
+    "method": "GET",
+    "params": { "title": "title", "text": "text", "url": "url" }
+  },
+  "icons": [
+    { "src": "/icon-logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-logo.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/favicon-32.png", "sizes": "32x32", "type": "image/png" },
+    { "src": "/favicon-16.png", "sizes": "16x16", "type": "image/png" }
+  ]
+}
+```
+
+**Icon notes:**
+- `purpose: "any"` — standard icon used in most contexts
+- `purpose: "maskable"` — Android adaptive icon; the 512×512 PNG has safe-zone padding
+- Two separate entries are required; `"purpose": "any maskable"` in a single entry is a spec violation
+
+**Sub-path deployments (e.g. Home Assistant ingress):** The static `start_url: "/"` and `scope: "/"` will not match the ingress path, so the install prompt will not appear. A dynamic manifest served from the backend is needed for those deployments — this is a known limitation and a future enhancement.
+
+---
+
+## Share Target (Android / desktop share sheet)
+
+Once installed, tududi appears in the OS share sheet. Sharing a link or text from another app (Chrome, YouTube, a mail client, …) hands the content to the Inbox composer.
+
+### How it works
+
+1. `share_target` in the manifest registers tududi as a share handler. `method: "GET"` means the OS performs a plain navigation — no service worker interception needed:
+   ```
+   GET /inbox?title=<page title>&text=<selected text>&url=<link>
+   ```
+2. `captureSharedPayload()` (`frontend/utils/shareTargetService.ts`) runs in `frontend/index.tsx` **before React renders**. It:
+   - composes one string from `title`/`text`/`url`, dropping empty and duplicate values (Chrome on Android sends the same URL as both `text` and `url`)
+   - stores it in `sessionStorage` under `tududi_pending_share` with a timestamp
+   - rewrites the URL with `history.replaceState()` to strip the share params, so a reload doesn't replay the same share (other params such as `?loaded=` are preserved)
+3. `InboxItems` calls `takeSharedText()` on mount and passes the result as `initialValue` to `QuickCaptureInput`. The first call moves the payload out of `sessionStorage` and holds it in module scope for the rest of the page load, so every call returns the same text; `App.tsx` releases it with `clearSharedText()` on the first navigation away from `/inbox`.
+
+   The claim has to survive remounts: `Layout` swaps the routed page out for a full-screen spinner while its stores run their **first** fetch, so `InboxItems` mounts, unmounts and mounts again on every cold start — which is exactly what a launch from the share sheet is. A read that emptied `sessionStorage` on the first, discarded mount left the surviving composer blank every time.
+
+The shared content is **prefilled, not auto-saved** — the user can edit it and still choose Task / Note / Project, and the existing smart parsing (URL preview, `#tag`, `+Project`, task/note suggestion) applies as if they had typed it.
+
+### Why sessionStorage instead of reading the URL directly
+
+If the session has expired, `/inbox` is redirected to `/login` by `App.tsx` and the query params are lost. Stashing the payload first means the share survives the login round-trip: after authentication `App.tsx` sees `hasPendingSharedText()` and navigates to `/inbox`. Pending shares older than 10 minutes are discarded so a stale payload can't hijack a later navigation.
+
+### Limitations
+
+- **Text and links only.** Sharing *files* (images, PDFs) requires `method: "POST"` with a `multipart/form-data` enctype and a service worker `fetch` handler that intercepts the POST to `/inbox` — not implemented.
+- **iOS does not support Web Share Target**, so tududi will not appear in the iOS share sheet. iOS users can still use Shortcuts against the REST API.
+- Sub-path deployments have the same `action: "/inbox"` problem as `start_url` (see above).
+
+---
+
+## Service Worker (`public/sw.js`)
+
+The SW is a plain JS file (not transpiled by webpack) served from the origin root. `CopyWebpackPlugin` copies it from `public/` to `dist/` on every production build.
+
+### Lifecycle
+
+```
+install   → pre-cache STATIC_ASSETS, skipWaiting()
+activate  → delete stale static-cache versions, clients.claim()
+fetch     → route to handler by request type
+message   → handle SKIP_WAITING / SESSION_UPDATE / CLEAR_CACHE
+sync      → replay queued mutations (Background Sync API)
+```
+
+### Cache strategy
+
+| Request type | Handler | Behaviour |
+|---|---|---|
+| Static assets (same-origin, non-API) | cache-first | Serve from `tududi-v2` cache; populate on first network hit |
+| API `GET` `/api/*` | `handleApiGet` | Network-first; on success write to `tududi-api-v1`; on network failure serve stale cache; if no cache return `503 { offline: true }` |
+| API mutations `/api/*` | `handleApiMutation` | Attempt network; if offline queue to IndexedDB, return `202 { queued: true }` with an `X-Tududi-Queued: 1` header; register Background Sync tag `tududi-sync` |
+| Stateless POST endpoints (e.g. `/api/inbox/analyze-text`) | `handleApiNoQueue` | Network-only; on failure return `503 { offline: true }` — never queued, since there's nothing meaningful to replay |
+| Navigation (`mode: navigate`) | inline | Network-first; fall back to cached `/` shell for SPA routing |
+
+### Cache names
+
+| Name | Contents | Cleared when |
+|------|----------|-------------|
+| `tududi-v2` | Static assets (JS, CSS, fonts, icons, manifest) | SW activate removes old versions |
+| `tududi-api-v1` | API GET responses | 401/403 from any live fetch; CLEAR_CACHE message; manual SW update |
+
+### Offline mutation queue
+
+Mutations that fail due to network error are stored in an IndexedDB database named `tududi-offline`, object store `tududi-sync-queue`. Each entry contains:
+
+```
+{ id, url, method, headers (auth headers stripped), body, sessionId, timestamp }
+```
+
+The Background Sync API fires the `tududi-sync` event when connectivity returns. Before replaying each entry the SW re-fetches a fresh CSRF token (`GET /api/csrf-token`) and overwrites whatever `x-csrf-token`/`X-CSRF-Token` header was captured at queue time — a token fetched while offline (see below) may be missing or stale by replay time, and the session-scoped CSRF secret backing it doesn't rotate, so a freshly-issued token is always valid. If the refresh itself fails, the entry replays with its original header and is left queued for the next sync attempt. The SW replays entries in order, deleting successfully-replayed entries from the store. After all replays it sends `{ type: 'SYNC_COMPLETE' }` to all open windows; `frontend/index.tsx` handles this by calling SWR's global `mutate(() => true)` to revalidate all cached data.
+
+**CSRF tokens while offline:** every mutating request needs a CSRF token, normally fetched via `getCsrfToken()` (`frontend/utils/csrfService.ts`) — itself a `GET`, so it's never queued by the SW. If that fetch fails (e.g. offline), `getCsrfToken()` resolves `''` instead of throwing, so the caller's actual mutating `fetch()` still fires and reaches `handleApiMutation` to be queued, rather than aborting before the request is ever made. Frontend code that receives the synthetic `202` response must check for it (`isQueuedOfflineResponse()` / `handleAuthResponse()` throwing `OfflineQueuedError`, both in `frontend/utils/authUtils.ts`) rather than treating the `{ queued: true }` placeholder body as the real resource.
+
+**Limitation:** Creating tasks offline generates a server-assigned numeric ID on replay. If the queue contains multiple dependent mutations (e.g. create task then update it) the second mutation may reference an ID that didn't exist at queue time. This edge case is tracked alongside the broader id/uid consistency work.
+
+### SW update flow
+
+When a new version of `sw.js` is deployed:
+
+1. Browser detects the changed file during the next visit
+2. New SW installs in the background (`install` event)
+3. `frontend/index.tsx` detects `updatefound` → `statechange: 'installed'` → sends `{ type: 'SKIP_WAITING' }` to the new worker
+4. New SW calls `self.skipWaiting()` → takes control immediately
+5. `activate` event deletes old static caches (API cache is preserved)
+
+---
+
+## Push Notifications
+
+Tududi sends notifications to phones and desktops with the standard Web Push protocol (VAPID), so one implementation covers every platform. Each user turns push on per device in **Profile → Notifications**, then picks which notification types use the **Push** column.
+
+### Platform support
+
+| Platform | Works | Notes |
+|----------|-------|-------|
+| Android (Chrome, Edge, Samsung Internet, Firefox) | Browser tab or installed app | Delivered through FCM / Mozilla push |
+| iPhone / iPad (iOS 16.4+) | Installed app only | Add tududi to the Home Screen first, then open it from there and turn push on. In a Safari tab the Notifications page shows this hint instead of the button |
+| Desktop Chrome, Edge, Firefox, Safari | Yes | |
+
+Push needs HTTPS (or `localhost`). Notifications arrive while tududi is closed.
+
+### How it works
+
+1. The Notifications tab calls `enablePush()` in `frontend/utils/pushService.ts` from the button click (iOS only shows the permission prompt for a user gesture), subscribes with the server's public VAPID key and posts the subscription to `POST /api/push/subscriptions`.
+2. Notification producers (due/overdue tasks and projects, defer until, task assigned, habit reminders, comments and mentions) add `'push'` to `sources` when the user enabled push for that type (`deliverySources()` in `backend/utils/notificationPreferences.js`).
+3. `Notification.createNotification` hands the row to `backend/modules/push/service.js`, which sends to every device of the user. A tap opens the task, project or habit. A reminder that is recreated by the scheduler is pushed at most once per 24 hours, like Telegram.
+4. The service worker shows the notification (`push` event) and focuses or opens the app on tap (`notificationclick`).
+
+Devices the push service reports as gone (404/410) are deleted; other errors are retried and the device is dropped after 5 failures in a row.
+
+### Keys and configuration
+
+No configuration is needed. On first use the server generates a VAPID key pair and stores it in the `settings` table (the private key is encrypted when `TUDUDI_SESSION_SECRET` or `TUDUDI_OIDC_SECRET_ENCRYPTION_KEY` is set). Optional variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` | Pin the key pair (e.g. several instances sharing a database). Generate with `npx web-push generate-vapid-keys` |
+| `VAPID_SUBJECT` | Contact URL or `mailto:` sent to push services. Defaults to `FRONTEND_URL` when it is a public https address, otherwise `mailto:noreply@tududi.com` (Apple rejects `localhost`) |
+
+If the keys change, existing subscriptions stop working; each device re-subscribes automatically the next time the app is opened.
+
+### Shared devices
+
+Signing out removes the device from the account on the server but keeps the browser subscription. It is re-attached on the next sign-in only for the same account that turned push on (`tududi_push_owner` in `localStorage`), so another person signing in on that device does not receive the first person's notifications.
+
+### API
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/push/config` | Public VAPID key |
+| `GET /api/push/subscriptions` | The user's devices |
+| `POST /api/push/subscriptions` | Add or refresh this device (`{ endpoint, keys: { p256dh, auth } }`) |
+| `DELETE /api/push/subscriptions` | Remove this device (`{ endpoint }`) |
+
+Push requests bypass the offline mutation queue.
+
+### Testing locally
+
+On the dev server (`npm start`, `localhost:8080`) the push-only worker is enough to try push in a desktop browser. Phones need an HTTPS address (a staging deployment or a tunnel).
+
+---
+
+## Session Security
+
+The service worker caches API responses and queues mutations across page navigations. In a multi-user or shared-device scenario this creates two risks:
+
+**Risk 1 — Cached data visible to next user:** If User A logs out and User B logs in, the API cache could serve User A's task list to User B.
+
+**Mitigation:**
+- `handleApiGet` detects 401/403 responses from live fetches and calls `clearUserData()`, which deletes `tududi-api-v1` and purges the mutation queue.
+- `App.tsx` calls `notifySwClearCache()` when `/api/current_user` returns 401.
+- `Navbar.tsx` calls `notifySwClearCache()` in `handleLogout()` before navigating to `/login`.
+- The SW handles the `CLEAR_CACHE` postMessage by deleting the API cache and clearing IndexedDB.
+
+**Risk 2 — Queued mutations replayed under wrong session:** User A queues mutations, logs out, User B logs in. Background Sync fires and could replay User A's operations authenticated as User B.
+
+**Mitigation:**
+- Auth-sensitive headers (`Authorization`, `Cookie`, `Cookie2`, `X-Auth-Token`) are stripped before storing queue entries — they cannot be persisted or forged.
+- `App.tsx` calls `notifySwSession(user.id)` after successful login. The SW stores this as `sessionUserId`.
+- Each queued entry is tagged with the `sessionUserId` at queue time.
+- On replay, if `entry.sessionId !== sessionUserId` the entry is deleted without executing.
+- The SW also broadcasts `{ type: 'AUTH_EXPIRED' }` to open clients on any 401, allowing the app to redirect to login.
+
+### SW communication utilities (`frontend/utils/swUtils.ts`)
+
+```typescript
+notifySwSession(userId)   // Called after login in App.tsx
+notifySwClearCache()      // Called on logout (Navbar.tsx) and on 401 (App.tsx)
+```
+
+Both functions handle the case where the SW has not yet taken control of the page (falls back to `navigator.serviceWorker.ready`).
+
+---
+
+## Development Mode
+
+In development the service worker is registered as `/sw.js?push-only`. In that mode it caches nothing and intercepts no requests (no offline queue either), so hot reloading always serves fresh code, but push notifications work on `localhost:8080`. `frontend/index.tsx` still unregisters any other worker (for example a full one left by a production build on the same origin) and clears all caches at startup.
+
+```typescript
+// In frontend/index.tsx (dev only, simplified: the push-only worker is kept)
+if (isDevelopment && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then((registrations) => {
+        registrations.forEach((r) => r.unregister());
+    });
+    if ('caches' in window) {
+        caches.keys().then((names) => names.forEach((n) => caches.delete(n)));
+    }
+}
+```
+
+---
+
+## Adding New API Endpoints
+
+No changes to the service worker are needed for new API endpoints. The SW applies its strategy based on the `/api/` path prefix:
+
+- **GET endpoints**: automatically cached in `tududi-api-v1` on first successful response
+- **Mutations**: automatically queued when offline
+
+If a new endpoint should **not** be cached (e.g. an endpoint that returns one-time tokens or download URLs), add its path prefix to a blocklist in `handleApiGet`:
+
+```javascript
+const NO_CACHE_PATHS = ['/api/auth/token', '/api/downloads/'];
+
+async function handleApiGet(request) {
+    const url = new URL(request.url);
+    if (NO_CACHE_PATHS.some((p) => url.pathname.startsWith(p))) {
+        return fetch(request); // network only, no cache
+    }
+    // ... rest of handler
+}
+```
+
+---
+
+## Updating the Cache Version
+
+When making a breaking change to the static asset structure — removing or renaming a cached file, or editing a pre-cached one such as `manifest.json`, since cache-first would otherwise serve the stale copy forever — bump `CACHE_VERSION` at the top of `public/sw.js`:
+
+```javascript
+const CACHE_VERSION = 'tududi-v4'; // was tududi-v3
+```
+
+The `activate` event deletes all caches that don't match the current `CACHE_VERSION` or `API_CACHE`. If the API response format changes significantly, also bump `API_CACHE`:
+
+```javascript
+const API_CACHE = 'tududi-api-v2'; // was tududi-api-v1
+```
+
+---
+
+## Known Limitations
+
+| Limitation | Detail |
+|-----------|--------|
+| Sub-path deployments | Static `manifest.json` uses `start_url: "/"` — install prompt won't appear for Home Assistant ingress or other sub-path setups |
+| Offline task creation | Creating a task offline queues a POST; the server-assigned `id` is unknown at queue time, so dependent mutations in the same offline session may fail on replay |
+| No conflict resolution | If the server state changed while offline, replayed mutations apply on top of the new state without merging — last writer wins |
+| iOS Safari background sync | iOS does not support the Background Sync API; queued mutations are replayed the next time the app is opened while online |
+| Share target scope | Text and links only (`method: "GET"`); sharing files would need a POST share target intercepted by the service worker. Not available on iOS, which has no Web Share Target support |
+
+---
+
+[← Back to Index](../CLAUDE.md)

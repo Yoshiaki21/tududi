@@ -24,9 +24,50 @@ module.exports = (sequelize) => {
                 type: DataTypes.DATE,
                 allowNull: true,
             },
+            // Starter key while this task is an untouched example from the
+            // welcome screen; cleared on the first edit or completion.
+            example_of: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
             defer_until: {
                 type: DataTypes.DATE,
                 allowNull: true,
+            },
+            // When work on the task begins. Whole-day starts are stored as
+            // the start of the day in the user's timezone.
+            start_date: {
+                type: DataTypes.DATE,
+                allowNull: true,
+            },
+            start_has_time: {
+                type: DataTypes.BOOLEAN,
+                allowNull: false,
+                defaultValue: false,
+            },
+            reminder_at: {
+                type: DataTypes.DATE,
+                allowNull: true,
+            },
+            // True when due_date holds a specific time of day, false when it
+            // is a whole-day due (stored as end of day in the user's timezone).
+            due_has_time: {
+                type: DataTypes.BOOLEAN,
+                allowNull: false,
+                defaultValue: false,
+            },
+            // Set once the reminder_at notification has been sent.
+            reminder_sent_at: {
+                type: DataTypes.DATE,
+                allowNull: true,
+            },
+            estimated_minutes: {
+                type: DataTypes.INTEGER,
+                allowNull: true,
+                validate: {
+                    min: 5,
+                    max: 720,
+                },
             },
             priority: {
                 type: DataTypes.INTEGER,
@@ -97,7 +138,7 @@ module.exports = (sequelize) => {
                 type: DataTypes.INTEGER,
                 allowNull: true,
                 validate: {
-                    min: 1,
+                    min: -1,
                     max: 5,
                 },
             },
@@ -119,6 +160,22 @@ module.exports = (sequelize) => {
                 allowNull: true,
                 references: {
                     model: 'projects',
+                    key: 'id',
+                },
+            },
+            area_id: {
+                type: DataTypes.INTEGER,
+                allowNull: true,
+                references: {
+                    model: 'areas',
+                    key: 'id',
+                },
+            },
+            goal_id: {
+                type: DataTypes.INTEGER,
+                allowNull: true,
+                references: {
+                    model: 'goals',
                     key: 'id',
                 },
             },
@@ -188,6 +245,77 @@ module.exports = (sequelize) => {
             habit_last_completion_at: {
                 type: DataTypes.DATE,
                 allowNull: true,
+            },
+            habit_polarity: {
+                type: DataTypes.STRING,
+                allowNull: false,
+                defaultValue: 'build',
+            },
+            habit_unit: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            habit_target_value: {
+                type: DataTypes.FLOAT,
+                allowNull: true,
+            },
+            habit_schedule_days: {
+                type: DataTypes.JSON,
+                allowNull: true,
+            },
+            habit_interval_days: {
+                type: DataTypes.INTEGER,
+                allowNull: true,
+            },
+            habit_time_of_day: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            habit_reminder_time: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            habit_reminder_sent_on: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            habit_color: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            habit_strength: {
+                type: DataTypes.FLOAT,
+                allowNull: false,
+                defaultValue: 0,
+            },
+            ai_insights: {
+                type: DataTypes.JSON,
+                allowNull: true,
+                defaultValue: null,
+            },
+            assigned_to: {
+                type: DataTypes.STRING,
+                allowNull: true,
+                defaultValue: null,
+                references: {
+                    model: 'people',
+                    key: 'uid',
+                },
+            },
+            involves: {
+                type: DataTypes.TEXT,
+                allowNull: true,
+                defaultValue: null,
+                get() {
+                    const raw = this.getDataValue('involves');
+                    return raw ? JSON.parse(raw) : [];
+                },
+                set(value) {
+                    this.setDataValue(
+                        'involves',
+                        value && value.length > 0 ? JSON.stringify(value) : null
+                    );
+                },
             },
             work_hours: {
                 type: DataTypes.FLOAT,

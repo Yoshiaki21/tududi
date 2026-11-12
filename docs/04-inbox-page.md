@@ -38,6 +38,33 @@ The **Inbox** is tududi's quick capture system - a temporary holding area where 
 
 ## How to Add Items to Inbox
 
+### The Add box (Inbox, Task, Note, Project)
+
+One box is used everywhere you add something. It is the input at the top of the Inbox page, a popover under the blue **Add** button in the navbar (wide screens), and a sheet opened by the round **Add** button at the bottom of the screen (phones and tablets, hidden on the Inbox page and while editing a task or note). `Alt+Shift+T` and the sidebar's New > Task open it on **Task**. Every other entry point opens it on **Inbox**.
+
+**Add to.** A row of choices next to the Add button decides what the text becomes: Inbox, Task, Note or Project. Nothing is guessed. The selected choice is what gets created, and the box always starts on Inbox when it opens.
+
+| Add to | First line | Other lines | Also read from the first line |
+|--------|-----------|-------------|-------------------------------|
+| Inbox | kept exactly as typed | kept exactly as typed | applied later, when the item is converted |
+| Task | title | notes | due date, recurrence, `@person`, `~Area`, `#tags`, `+Project` |
+| Note | title | body | `#tags`, `+Project` (a note has no due date, so date words stay in the title) |
+| Project | name | description | due date, `#tags`, `~Area` |
+
+Dates, `@person` and `~area` are read from the first line only, so a date mentioned further down a long note never becomes its due date. `#tags` are read anywhere in the text. An unknown `#tag`, `+Project` or `~Area` is created when you add.
+
+**Slash menu.** Type `/` at the start of a word (not inside a URL or `and/or`) to list the tokens, each with an icon and its syntax: Tag, Project, Person, Area, Due date and Repeat. Pick one with the mouse, Up/Down and Enter, or Tab, and a list of values opens (your tags, projects, assignable people, areas, or ready-made dates and repeats). Keep typing to narrow the list; Enter inserts the token, quoting names with spaces, and an unknown tag or project can be created from the list. Escape closes the menu and keeps what you typed. The list follows what you are adding: Task shows everything, Note only Tag and Project, Project Tag, Area and Due date, and Inbox everything, since it reads the tokens when converted. Values are sorted alphabetically. Typing `~` at the start of a word opens the area list directly, and typing the tokens by hand still works. In the Add box a tag, project or area picked from a list (the `/` menu, or the `#`, `+` and `~` suggestions) does not stay in the text: it appears as a badge under the box, is added to the item when you save, and is removed with the X on its badge.
+
+**Several lines.** By default everything you type becomes one item. When the text has more than one line, the box says so in one sentence ("This will be 1 task. The first line is the title and the other 2 lines are its notes.") with a link to switch to **One item per line**, which makes one item per non-empty line and strips list markers such as `-`, `*` and `1.`. If one line fails to save, the lines that were not saved stay in the box.
+
+**Files.** Paste, drop, or pick files with the paperclip button and they are saved with whatever the text becomes. An Inbox item, task or project keeps them as attachments. A note gets them in its text, after what was typed: images show inline and other files become links. A pasted screenshot on its own is enough: its file name becomes the title. Pasted images are renamed from the browser's generic `image.png` to `Pasted image <date time>.png`. When a copy carries both text and a picture (spreadsheet cells, for example), the text is pasted and the picture is ignored. With One item per line, the files go on the first item. Each file must be under the server's upload limit, and one item holds up to 20. If a file fails to upload, the item is still saved and the failed file names are shown.
+
+When an Inbox item with files becomes a task, project or note, its files move there (for a note, into its text). Deleting an Inbox item deletes its files. Inbox files are visible only to their owner.
+
+**Enter.** On a computer keyboard Enter adds and Shift+Enter starts a new line. On a touch device Return starts a new line and the Add button adds, with a Line break button available if Return is set to add. Ctrl or Cmd + Enter always adds. Both defaults can be changed under Profile > Keyboard Shortcuts > Adding items, along with One item per line. These settings are kept on the device.
+
+**Confirmation and Undo.** There is no toast. One quiet line under the box says what was saved ("Saved "Call Sam" to Inbox.") with an Undo link, and it stays until you type again. Undo deletes what was just created. Closing the popover or sheet keeps any half-typed text, and focus returns to where it was.
+
 ### Quick Capture Input
 
 Located at the top of the Inbox page:
@@ -58,7 +85,19 @@ Located at the top of the Inbox page:
    - Keyboard shortcut: `g` then `i` (Go to Inbox)
    - Sidebar navigation clicks auto-focus input
 
+### Share Sheet (installed PWA)
+
+Share a link or selected text from another app (Android, or desktop Chrome/Edge) and pick tududi:
+- The app opens on `/inbox` with the shared title, text and URL prefilled in Quick Capture
+- Nothing is saved yet — edit it, then press Enter or pick Task / Note / Project
+- Smart parsing, URL preview and suggestions behave exactly as if you had typed it
+- If your session expired, you land on login first and the shared content is restored afterwards
+
+See [PWA & Offline Support](15-pwa.md) for the manifest configuration and limitations (text/links only, not available on iOS).
+
 ### Telegram Integration
+
+Telegram is off by default. Set `TELEGRAM_ENABLED=true` on the server to turn it on; until then the Telegram settings tab and sidebar icon are hidden.
 
 Send messages to your tududi bot:
 - Each message creates an inbox item
@@ -126,26 +165,84 @@ The system automatically analyzes your input and extracts metadata:
 - If you don't, system adds it automatically for URLs
 - Applies to both explicit tags and when converting to note
 
-### 4. Cleaned Content
+### 4. Due Dates
+
+Write a date in plain English and it becomes the task's due date:
+
+- `Call plumber tomorrow`, `Submit form today`
+- `Book table next fri`, `Pay invoice on monday`
+- `Follow up in 3 days`, `Renew passport Oct 12`
+
+**Rules:**
+- Dates are worked out in your timezone. For an item that sat in the inbox, relative dates count from when it was captured: "tomorrow" in an item added on Monday means Tuesday, even if you convert it on Wednesday.
+- Only one date is used. With more than one, the last one wins.
+- The date words are removed from the task name. A phrase with a time (`tomorrow at 3pm`) still sets the date but stays in the name, because due dates have no time.
+- Bare words that are usually just words are ignored: `may`, `march`, `sun`, `sat`, `wed`, and numbers on their own. Nothing inside a `#tag`, `+project`, `@person` or URL is read as a date.
+- A calendar chip under the input shows the date. Its × keeps the words as plain text and nothing is parsed from that phrase.
+
+### 5. Recurrence
+
+`every ...` phrases make a recurring task, starting at the first matching day:
+
+| You write | Repeats |
+|-----------|---------|
+| `every day`, `daily` (at the end) | Every day |
+| `every 3 days`, `every other week`, `every 2 months` | That interval |
+| `every week`, `weekly` (at the end) | Every week |
+| `every weekday` | Monday to Friday |
+| `every mon, wed and fri` | Those weekdays |
+| `every month`, `monthly` (at the end) | Every month |
+| `every month on the 15th`, `every 15th` | That day of the month |
+| `every first monday`, `every last friday` | That weekday of the month |
+| `every last day of the month` | The last day of each month |
+
+`daily`, `weekly` and `monthly` only count as the last word, so `Write weekly report` stays a plain name.
+
+### 6. People (@person)
+
+**Syntax:** `@name` or `@"Full Name"`
+
+- Type `@` to pick from the people the task can be assigned to. Names with spaces are inserted in quotes.
+- The list is the same as the assignee list (see [People, Members & Roles](19-people-and-roles.md)): the project's list when the text has a `+project`, otherwise your contacts and your workspace.
+- A full name matches first. A first name matches only when one person has it.
+- A matched person is removed from the name and the task is assigned to them (members are notified as usual). An `@word` that matches nobody stays in the text, so email addresses and handles are safe.
+
+### 7. Areas (~area)
+
+**Syntax:** `~name` or `~"Area Name"`
+
+- Names are matched, ignoring case, against the areas you own or that are shared with you read-write. The first `~word` that names one is used.
+- A matched area is removed from the title and the task goes into that area. An unknown `~Name` is treated like an unknown `#tag` or `+Project`: it is removed from the title and the area is created when you save. Only a name that starts with a letter counts, so `walk ~5 km` stays as typed.
+- A chip under the input shows the area. Its × keeps the words as plain text.
+- It works on Task and Project (the new project starts in that area), and when an inbox item is converted to a task. A Note has no area, so the words stay in the note.
+- The area is set on the task itself, even when the task also has a `+project`. With no `+project`, a `~area` also means the Focus project is not used (see [Focus](25-focus.md)).
+
+### 8. Cleaned Content
 
 After parsing, the system creates "cleaned content":
-- Original: `Review contract +ClientWork #urgent #review`
+- Original: `Review contract tomorrow @Maria +ClientWork #urgent`
 - Cleaned: `Review contract`
-- Tags and projects are stripped for display/conversion
+- Tags, projects, the date or recurrence phrase and a matched person are stripped
+- A word that only introduces the date goes with it: `Pay the bill until next thursday` and `Send report by friday` become `Pay the bill` and `Send report` (`until`, `till`, `by`, `before`, `due`, `due by`, `due on`). A phrase with a time stays in the title, and so does its lead word
 - Cleaned version is used as task name, note title, or project name
+- Opening an inbox item shows the cleaned text in its edit box. The stripped words are carried: they show as chips (date, tags, project, person, area), count when the item is saved as a task, note or project, and are added back to the end of the first line when the edited text is saved. A chip's × removes that word. Saving the box untouched changes nothing
 
 ---
 
 ## Intelligent Suggestions
+
+In the Add box the destination is always chosen explicitly, so these suggestions no longer create anything automatically. The legacy suggestion logic below still describes how the backend classifies text (`suggested_type`), which the Inbox uses when converting items.
 
 The system analyzes your content and suggests what type of item to create:
 
 ### Suggestion Logic
 
 **1. Suggests TASK when:**
-- Content starts with an action verb (detected using NLP)
-- Has a project reference
+- Content has a due date, a recurrence or a matched `@person` (and no URL), or
+- Content starts with an action verb (detected using NLP) and has a project reference
 - Examples:
+  - ✅ `Call plumber tomorrow` → Suggests Task (date)
+  - ✅ `Ask @Maria about rent` → Suggests Task (person)
   - ✅ `Call John +Work` → Suggests Task (verb "Call")
   - ✅ `Review proposal +ClientProject` → Suggests Task (verb "Review")
   - ✅ `Fix the bug +Development` → Suggests Task (verb "Fix")
@@ -160,7 +257,7 @@ The system analyzes your content and suggests what type of item to create:
   - ✅ `Important info +Work` → Suggests Note (no verb)
 
 **3. No suggestion when:**
-- No project reference
+- No project reference, date or person
 - Just plain text or tags without context
 - Examples:
   - ⚪ `Random thought #idea` → No suggestion
@@ -172,7 +269,7 @@ The system analyzes your content and suggests what type of item to create:
 **Suggestion badges:**
 - Blue "Task" badge appears if suggested as task
 - Purple "Note" badge appears if suggested as note
-- Reason shown in tooltip: "verb detected", "bookmark tag", "URL detected"
+- Reason shown in tooltip: "verb detected", "date detected", "person detected", "bookmark tag", "URL detected"
 
 **Icons:**
 - 🌐 Globe icon: Bookmark/URL content
@@ -432,7 +529,8 @@ While editing, you see action buttons:
 |----------|--------|
 | `r` | Refresh inbox items |
 | Focus in input | Type to add item |
-| `Enter` or `Tab` | Submit item (configurable in settings) |
+| `Enter` | Add (Shift+Enter for a new line; changeable in Profile > Keyboard Shortcuts) |
+| `Alt+Shift+T` | Open the Add box on Task (anywhere in the app) |
 
 ### In quick capture composer
 
@@ -731,6 +829,21 @@ While editing, you see action buttons:
 
 ---
 
+## Analyze API
+
+`POST /api/inbox/analyze-text` parses text without saving anything. The composer calls it as you type; Telegram, MCP or API clients can call it too.
+
+**Body:**
+- `content` (required)
+- `reference_date` (optional, ISO 8601): what "today" means for relative dates. Defaults to now; a future value is capped at now.
+- `parse_dates` (optional): `false` skips dates and recurrence.
+
+**Response fields:** `parsed_tags`, `parsed_projects`, `cleaned_content`, `parsed_due_date` (`YYYY-MM-DD`, also the first occurrence of a recurrence), `parsed_date_text` (the matched phrase), `parsed_recurrence` (`recurrence_type` plus the matching `recurrence_*` fields, or `null`), `parsed_person` (the name as typed), `parsed_assignee` (`{ uid, name }` or `null`), `suggested_type`, `suggested_reason`.
+
+To create the task, send `parsed_due_date` as `due_date`, the `parsed_recurrence` fields as they are, and `parsed_assignee.uid` as `assigned_to`.
+
+---
+
 ## Related Documentation
 
 - [Today Page Sections](02-today-page-sections.md) - How tasks flow from inbox to Today
@@ -740,6 +853,7 @@ While editing, you see action buttons:
 
 **Technical Implementation Files:**
 - Inbox processing service: `/backend/modules/inbox/inboxProcessingService.js`
+- Date, recurrence, @person and ~area parsing: `/backend/modules/inbox/nlpParsers.js`
 - Inbox model: `/backend/models/inbox_item.js`
 - Inbox API routes: `/backend/modules/inbox/routes.js`
 - Inbox controller: `/backend/modules/inbox/controller.js`
@@ -751,5 +865,5 @@ While editing, you see action buttons:
 ---
 
 **Document Version:** 1.0.0
-**Last Updated:** 2026-03-14
+**Last Updated:** 2026-09-25
 **Audience:** Developers, AI assistants, and end users

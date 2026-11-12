@@ -4,20 +4,41 @@ import { Task } from '../entities/Task';
 import { Project } from '../entities/Project';
 import { updateTask } from '../utils/tasksService';
 import {
+    CalendarFeed,
+    CalendarRangeEvent,
+    fetchCalendarEventsRange,
+    fetchCalendarFeeds,
+    updateCalendarFeed,
+} from '../utils/calendarFeedsService';
+import CalendarFeedsManager from './CalendarFeeds/CalendarFeedsManager';
+import { useToast } from './Shared/ToastContext';
+import {
     ChevronLeftIcon,
     ChevronRightIcon,
-    CalendarIcon,
     XMarkIcon,
+    Cog6ToothIcon,
     ArrowTopRightOnSquareIcon,
+    CalendarDaysIcon,
+    ClockIcon,
+    FolderIcon,
+    TagIcon,
 } from '@heroicons/react/24/outline';
-import { format, addWeeks, addDays } from 'date-fns';
+import {
+    format,
+    addWeeks,
+    addDays,
+    startOfMonth,
+    endOfMonth,
+    subDays,
+} from 'date-fns';
 import { el, enUS, es, ja, uk, de } from 'date-fns/locale';
 import CalendarMonthView from './Calendar/CalendarMonthView';
 import CalendarWeekView from './Calendar/CalendarWeekView';
 import CalendarDayView from './Calendar/CalendarDayView';
 import { getApiPath } from '../config/paths';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { parseDateString } from '../utils/dateUtils';
+import { openTaskPanel } from '../store/taskPanelStore';
 
 const getLocale = (language: string) => {
     switch (language) {
@@ -43,12 +64,33 @@ interface CalendarEvent {
     end: Date;
     type: 'task' | 'event';
     color?: string;
+    feedUid?: string;
 }
+
+const localDate = (day: string, minute = 0) => {
+    const [year, month, date] = day.split('-').map(Number);
+    return new Date(year, month - 1, date, 0, minute);
+};
+
+const feedEventToCalendarEvent = (event: CalendarRangeEvent): CalendarEvent => {
+    const start = localDate(event.date, event.start_minute ?? 0);
+    const end = event.all_day
+        ? localDate(event.date, 24 * 60)
+        : localDate(event.date, event.end_minute ?? event.start_minute ?? 0);
+    return {
+        id: `feed-${event.feed_uid}-${event.uid}-${event.date}-${event.start_minute ?? 'all-day'}`,
+        title: event.title || event.feed_name,
+        start,
+        end,
+        type: 'event',
+        color: event.color || '#6b7280',
+        feedUid: event.feed_uid,
+    };
+};
 
 const Calendar: React.FC = () => {
     const { t, i18n } = useTranslation();
-    const navigate = useNavigate();
-    const location = useLocation();
+    const { showErrorToast } = useToast();
     const [currentDate, setCurrentDate] = useState(new Date());
     const [view, setView] = useState<'month' | 'week' | 'day'>('month');
     const [events, setEvents] = useState<CalendarEvent[]>([]);
@@ -57,27 +99,108 @@ const Calendar: React.FC = () => {
     const [allTasks, setAllTasks] = useState<any[]>([]);
     const [, setProjects] = useState<Project[]>([]);
     const [isEventDetailModalOpen, setIsEventDetailModalOpen] = useState(false);
-
-    // Dispatch global modal events
+    const [feeds, setFeeds] = useState<CalendarFeed[]>([]);
+    const [feedsLoading, setFeedsLoading] = useState(true);
+    const [feedEvents, setFeedEvents] = useState<CalendarRangeEvent[]>([]);
+    const [feedErrors, setFeedErrors] = useState<string[]>([]);
+    const [isManagerOpen, setIsManagerOpen] = useState(false);
 
     const locale = getLocale(i18n.language);
 
-    // Load tasks and projects on component mount
     useEffect(() => {
         loadTasks();
         loadProjects();
     }, []);
 
+    useEffect(() => {
+        fetchCalendarFeeds()
+            .then(setFeeds)
+            .catch(() =>
+                showErrorToast(
+                    t('profile.calendars.loadError', 'Could not load calendars')
+                )
+            )
+            .finally(() => setFeedsLoading(false));
+    }, []);
+
+    // Month, week and day views all draw from one month-sized window (padded
+    // a week each side), so paging within a month never refetches.
+    const visibleMonth = format(currentDate, 'yyyy-MM');
+    const feedUidsKey = feeds.map((feed) => feed.uid).join(',');
+
+    useEffect(() => {
+        if (!feedUidsKey) {
+            setFeedEvents([]);
+            setFeedErrors([]);
+            return;
+        }
+        let cancelled = false;
+        const monthStart = startOfMonth(currentDate);
+        fetchCalendarEventsRange(
+            format(subDays(monthStart, 7), 'yyyy-MM-dd'),
+            format(addDays(endOfMonth(monthStart), 7), 'yyyy-MM-dd')
+        )
+            .then((data) => {
+                if (cancelled) return;
+                setFeedEvents(data.events);
+                setFeedErrors(data.errors.map((error) => error.feed_uid));
+            })
+            .catch(() => {
+                if (cancelled) return;
+                setFeedEvents([]);
+                setFeedErrors(feedUidsKey.split(','));
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [visibleMonth, feedUidsKey]);
+
+    const shownFeedUids = new Set(
+        feeds.filter((feed) => feed.show_on_calendar).map((feed) => feed.uid)
+    );
+    const calendarEvents = [
+        ...events,
+        ...feedEvents
+            .filter((event) => shownFeedUids.has(event.feed_uid))
+            .map(feedEventToCalendarEvent),
+    ];
+    const failedFeedNames = feeds
+        .filter(
+            (feed) =>
+                feed.show_on_calendar && feedErrors.includes(feed.uid)
+        )
+        .map((feed) => feed.name);
+
+    const toggleFeed = async (feed: CalendarFeed) => {
+        const apply = (value: boolean) =>
+            setFeeds((current) =>
+                current.map((f) =>
+                    f.uid === feed.uid ? { ...f, show_on_calendar: value } : f
+                )
+            );
+        const next = !feed.show_on_calendar;
+        apply(next);
+        try {
+            await updateCalendarFeed(feed.uid, { show_on_calendar: next });
+        } catch {
+            apply(!next);
+            showErrorToast(
+                t(
+                    'profile.calendars.toggleError',
+                    'Could not update that calendar'
+                )
+            );
+        }
+    };
+
     const loadTasks = async () => {
         setIsLoadingTasks(true);
         try {
-            const response = await fetch(getApiPath('tasks'), {
+            const response = await fetch(getApiPath('tasks?type=calendar'), {
                 credentials: 'include',
             });
             if (response.ok) {
                 const data = await response.json();
-
-                // Handle different API response formats
                 let tasks;
                 if (Array.isArray(data)) {
                     tasks = data;
@@ -86,17 +209,10 @@ const Calendar: React.FC = () => {
                 } else if (data && data.data && Array.isArray(data.data)) {
                     tasks = data.data;
                 } else {
-                    console.error('Unexpected API response format:', data);
                     tasks = [];
                 }
-
-                // Store the original tasks for later reference
                 setAllTasks(tasks);
-
-                const taskEvents = convertTasksToEvents(tasks);
-                setEvents(taskEvents);
-            } else {
-                console.error('Failed to load tasks, status:', response.status);
+                setEvents(convertTasksToEvents(tasks));
             }
         } catch (error) {
             console.error('Error loading tasks:', error);
@@ -107,73 +223,35 @@ const Calendar: React.FC = () => {
 
     const convertTasksToEvents = (tasks: any[]): CalendarEvent[] => {
         const taskEvents: CalendarEvent[] = [];
-
-        if (!Array.isArray(tasks)) {
-            console.error('convertTasksToEvents received non-array:', tasks);
-            return [];
-        }
+        if (!Array.isArray(tasks)) return [];
 
         tasks.forEach((task) => {
-            // Add deferred tasks with defer_until dates
+            const name = task.original_name || task.name || task.title || `Task ${task.id}`;
+
             if (task.defer_until) {
                 const deferDate = new Date(task.defer_until);
-                const taskEvent = {
+                taskEvents.push({
                     id: `task-defer-${task.id}`,
-                    title: `⏰ ${task.name || task.title || `Task ${task.id}`}`,
+                    title: name,
                     start: deferDate,
-                    end: new Date(deferDate.getTime() + 60 * 60 * 1000), // 1 hour duration
-                    type: 'task' as const,
-                    color: task.completed_at ? '#22c55e' : '#f59e0b', // Green if completed, amber if deferred
-                };
-                taskEvents.push(taskEvent);
+                    end: new Date(deferDate.getTime() + 60 * 60 * 1000),
+                    type: 'task',
+                    color: task.completed_at ? '#22c55e' : '#f59e0b',
+                });
             }
 
-            // Add tasks with due dates
             if (task.due_date) {
                 const dueDate = parseDateString(task.due_date);
                 if (dueDate) {
-                    const taskEvent = {
+                    taskEvents.push({
                         id: `task-${task.id}`,
-                        title: task.name || task.title || `Task ${task.id}`,
+                        title: name,
                         start: dueDate,
-                        end: new Date(dueDate.getTime() + 60 * 60 * 1000), // 1 hour duration
-                        type: 'task' as const,
-                        color: task.completed_at ? '#22c55e' : '#3b82f6', // Green if completed, blue if not
-                    };
-                    taskEvents.push(taskEvent);
+                        end: new Date(dueDate.getTime() + 60 * 60 * 1000),
+                        type: 'task',
+                        color: task.completed_at ? '#22c55e' : '#3b82f6',
+                    });
                 }
-            }
-
-            // Add tasks scheduled for today (if they don't have defer_until or due_date)
-            if (!task.defer_until && !task.due_date && task.created_at) {
-                const createdDate = new Date(task.created_at);
-                const today = new Date();
-
-                // Show tasks created today on the calendar
-                if (createdDate.toDateString() === today.toDateString()) {
-                    const taskEvent = {
-                        id: `task-created-${task.id}`,
-                        title: `📝 ${task.name || task.title || `Task ${task.id}`}`,
-                        start: createdDate,
-                        end: new Date(createdDate.getTime() + 30 * 60 * 1000), // 30 min duration
-                        type: 'task' as const,
-                        color: task.completed_at ? '#22c55e' : '#3b82f6', // Green if completed, blue if not
-                    };
-                    taskEvents.push(taskEvent);
-                }
-            }
-
-            // Always add tasks to calendar for easier debugging (only if no defer_until, due_date, or created_at)
-            if (!task.defer_until && !task.due_date && !task.created_at) {
-                const taskEvent = {
-                    id: `task-fallback-${task.id}`,
-                    title: `📌 ${task.name || task.title || `Task ${task.id}`}`,
-                    start: new Date(), // Today
-                    end: new Date(Date.now() + 30 * 60 * 1000), // 30 min duration
-                    type: 'task' as const,
-                    color: task.completed_at ? '#22c55e' : '#8b5cf6', // Green if completed, purple if not
-                };
-                taskEvents.push(taskEvent);
             }
         });
 
@@ -205,42 +283,25 @@ const Calendar: React.FC = () => {
                 }
                 return newDate;
             } else if (view === 'week') {
-                return direction === 'prev'
-                    ? addWeeks(prev, -1)
-                    : addWeeks(prev, 1);
+                return direction === 'prev' ? addWeeks(prev, -1) : addWeeks(prev, 1);
             } else {
-                // day
-                return direction === 'prev'
-                    ? addDays(prev, -1)
-                    : addDays(prev, 1);
+                return direction === 'prev' ? addDays(prev, -1) : addDays(prev, 1);
             }
         });
     };
 
-    const goToToday = () => {
-        setCurrentDate(new Date());
-    };
+    const goToToday = () => setCurrentDate(new Date());
 
-    const handleDateClick = () => {
-        // Date click handler - can be used for future functionality
-    };
+    const handleDateClick = () => {};
 
     const handleEventClick = (event: CalendarEvent) => {
-        // Handle task events
         if (event.type === 'task') {
-            // Extract task ID from event ID (handles task-, task-defer-, task-created-, task-fallback-)
-            const taskId = event.id.replace(
-                /^task(-defer|-created|-fallback)?-/,
-                ''
-            );
+            const taskId = event.id.replace(/^task(-defer|-created|-fallback)?-/, '');
             const task = allTasks.find((t) => t.id.toString() === taskId);
-
             if (task) {
-                // Normalize task shape before opening TaskDetails
                 const taskEntity: Task = {
                     ...task,
-                    name: task.name || task.title || `Task ${task.id}`,
-                    // Ensure all required Task properties are present
+                    name: task.original_name || task.name || task.title || `Task ${task.id}`,
                     priority: task.priority || 'low',
                     status: task.status || 'not_started',
                     tags: task.tags || [],
@@ -250,158 +311,92 @@ const Calendar: React.FC = () => {
                     completed_at: task.completed_at,
                     project_id: task.project_id,
                 };
-
                 setSelectedTask(taskEntity);
                 setIsEventDetailModalOpen(true);
             }
         }
     };
 
-    const handleTimeSlotClick = () => {
-        // Time slot click handler - can be used for future functionality
-    };
+    const handleTimeSlotClick = () => {};
 
     const handleEditTask = () => {
         if (selectedTask?.uid) {
             setIsEventDetailModalOpen(false);
             const targetUid = selectedTask.uid;
             setSelectedTask(null);
-            navigate(`/task/${targetUid}`, { state: { from: location.pathname + location.search } });
+            openTaskPanel(targetUid);
         }
     };
 
-    const handleEventDrop = async (
-        eventId: string,
-        newDate: Date,
-        newHour?: number
-    ) => {
-        console.log('Event drop:', { eventId, newDate, newHour });
-
-        // Extract task ID from event ID
-        const taskId = eventId.replace(
-            /^task(-defer|-created|-fallback)?-/,
-            ''
-        );
+    const handleEventDrop = async (eventId: string, newDate: Date, newHour?: number) => {
+        const taskId = eventId.replace(/^task(-defer|-created|-fallback)?-/, '');
         const task = allTasks.find((t) => t.id.toString() === taskId);
+        if (!task?.uid) return;
 
-        if (!task) {
-            console.error('Task not found:', taskId);
-            return;
-        }
-
-        if (!task.uid) {
-            console.error('Task has no uid:', task);
-            return;
-        }
-
-        console.log('Found task:', task);
-
-        // Calculate new date/time
         const newDateTime = new Date(newDate);
         if (newHour !== undefined) {
             newDateTime.setHours(newHour, 0, 0, 0);
         } else {
-            // If no hour specified (month view), keep the original time or set to start of day
             if (task.due_date) {
                 const originalTime = parseDateString(task.due_date);
-                if (originalTime) {
-                    newDateTime.setHours(
-                        originalTime.getHours(),
-                        originalTime.getMinutes(),
-                        0,
-                        0
-                    );
-                } else {
-                    newDateTime.setHours(0, 0, 0, 0);
-                }
+                newDateTime.setHours(
+                    originalTime ? originalTime.getHours() : 0,
+                    originalTime ? originalTime.getMinutes() : 0,
+                    0,
+                    0
+                );
             } else {
                 newDateTime.setHours(0, 0, 0, 0);
             }
         }
 
-        // Determine which field to update based on event type
         const isDeferEvent = eventId.startsWith('task-defer-');
         const fieldToUpdate = isDeferEvent ? 'defer_until' : 'due_date';
+        const updatedTask = { ...task, [fieldToUpdate]: newDateTime.toISOString() };
 
-        console.log('Updating task:', {
-            uid: task.uid,
-            field: fieldToUpdate,
-            newDateTime: newDateTime.toISOString(),
-        });
-
-        // Optimistically update the UI first
-        const updatedTask = {
-            ...task,
-            [fieldToUpdate]: newDateTime.toISOString(),
-        };
-
-        // Update local tasks state
-        setAllTasks((prev) =>
-            prev.map((t) => (t.id === task.id ? updatedTask : t))
-        );
-
-        // Update events state
+        setAllTasks((prev) => prev.map((t) => (t.id === task.id ? updatedTask : t)));
         setEvents((prevEvents) =>
-            prevEvents.map((event) => {
-                if (event.id === eventId) {
-                    return {
-                        ...event,
-                        start: newDateTime,
-                        end: new Date(newDateTime.getTime() + 60 * 60 * 1000),
-                    };
-                }
-                return event;
-            })
+            prevEvents.map((event) =>
+                event.id === eventId
+                    ? { ...event, start: newDateTime, end: new Date(newDateTime.getTime() + 60 * 60 * 1000) }
+                    : event
+            )
         );
 
-        // Update in background
         try {
-            await updateTask(task.uid, {
-                [fieldToUpdate]: newDateTime.toISOString(),
-            });
-            console.log('Task updated successfully');
+            await updateTask(task.uid, { [fieldToUpdate]: newDateTime.toISOString() });
         } catch (error) {
             console.error('Error updating task:', error);
-            // Revert on error
             await loadTasks();
         }
     };
 
     return (
-        <div className="h-full flex flex-col px-4 py-4 bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800">
-            <div className="w-full flex-1 flex flex-col min-h-0">
+        <div className="h-full flex flex-col px-4 sm:px-6 lg:px-8 pt-4">
+            <div className="w-full max-w-7xl mx-auto flex-1 flex flex-col min-h-0">
                 {/* Header */}
-                <div className="flex items-center justify-between mb-6 bg-white dark:bg-gray-800 rounded-xl shadow-md p-4 border border-gray-200 dark:border-gray-700">
-                    <div className="flex items-center space-x-4">
-                        <div className="flex items-center bg-gradient-to-br from-blue-500 to-blue-600 p-2.5 rounded-lg shadow-md">
-                            <CalendarIcon className="h-6 w-6 text-white" />
-                        </div>
-                        <div>
-                            <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
-                                {t('sidebar.calendar')}
-                            </h2>
-                            <span className="text-sm font-medium text-gray-600 dark:text-gray-400">
-                                {format(currentDate, 'MMMM yyyy', { locale })}
-                            </span>
-                        </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
+                    <div>
+                        <h2 className="text-2xl font-light dark:text-white">
+                            {t('sidebar.calendar')}
+                        </h2>
+                        <span className="text-sm text-gray-400 dark:text-gray-500">
+                            {format(currentDate, 'MMMM yyyy', { locale })}
+                        </span>
                     </div>
 
-                    <div className="flex items-center space-x-3">
+                    <div className="flex flex-wrap items-center gap-2">
                         {/* View selector */}
-                        <div className="flex rounded-lg border-2 border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700 p-0.5 shadow-inner">
-                            {['month', 'week', 'day'].map((viewType) => (
+                        <div className="flex rounded-lg bg-gray-100 dark:bg-gray-800 p-0.5 border border-gray-200 dark:border-gray-600">
+                            {(['month', 'week', 'day'] as const).map((viewType) => (
                                 <button
                                     key={viewType}
-                                    onClick={() =>
-                                        setView(
-                                            viewType as 'month' | 'week' | 'day'
-                                        )
-                                    }
-                                    className={`px-4 py-2 text-sm font-semibold capitalize transition-all duration-200 ${
+                                    onClick={() => setView(viewType)}
+                                    className={`px-3 py-1.5 text-sm font-medium capitalize rounded-md transition-all duration-150 ${
                                         view === viewType
-                                            ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-md'
-                                            : 'text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-                                    } ${viewType === 'month' ? 'rounded-l-md' : ''} ${viewType === 'day' ? 'rounded-r-md' : ''}`}
+                                            ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-gray-100 shadow-sm'
+                                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                                    }`}
                                 >
                                     {t(`calendar.${viewType}`)}
                                 </button>
@@ -411,31 +406,86 @@ const Calendar: React.FC = () => {
                         {/* Navigation */}
                         <button
                             onClick={() => navigateView('prev')}
-                            className="p-2.5 rounded-lg bg-white dark:bg-gray-700 border-2 border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition-all duration-200 hover:shadow-md"
+                            className="p-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 hover:shadow-sm transition-all"
                         >
-                            <ChevronLeftIcon className="h-5 w-5 text-gray-700 dark:text-gray-300" />
+                            <ChevronLeftIcon className="h-4 w-4 text-gray-600 dark:text-gray-300" />
                         </button>
 
                         <button
                             onClick={goToToday}
-                            className="px-4 py-2.5 text-sm font-semibold bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-200 shadow-md hover:shadow-lg"
+                            className="px-3 py-1.5 text-sm font-medium bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
                         >
                             {t('calendar.today')}
                         </button>
 
                         <button
                             onClick={() => navigateView('next')}
-                            className="p-2.5 rounded-lg bg-white dark:bg-gray-700 border-2 border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 transition-all duration-200 hover:shadow-md"
+                            className="p-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600 hover:shadow-sm transition-all"
                         >
-                            <ChevronRightIcon className="h-5 w-5 text-gray-700 dark:text-gray-300" />
+                            <ChevronRightIcon className="h-4 w-4 text-gray-600 dark:text-gray-300" />
                         </button>
                     </div>
                 </div>
 
+                {/* Calendars: show or hide each connected calendar */}
+                <div className="flex flex-wrap items-center gap-2 mb-4">
+                    {feeds.map((feed) => (
+                        <button
+                            key={feed.uid}
+                            type="button"
+                            role="switch"
+                            aria-checked={feed.show_on_calendar}
+                            onClick={() => void toggleFeed(feed)}
+                            title={
+                                feed.show_on_calendar
+                                    ? t('calendar.hideCalendar', 'Hide {{name}}', {
+                                          name: feed.name,
+                                      })
+                                    : t('calendar.showCalendar', 'Show {{name}}', {
+                                          name: feed.name,
+                                      })
+                            }
+                            className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm transition-colors ${
+                                feed.show_on_calendar
+                                    ? 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-100'
+                                    : 'bg-transparent text-gray-400 line-through hover:bg-gray-100 dark:text-gray-500 dark:hover:bg-gray-800'
+                            }`}
+                        >
+                            <span
+                                className="h-2.5 w-2.5 rounded-full"
+                                style={{
+                                    backgroundColor: feed.show_on_calendar
+                                        ? feed.color || '#6b7280'
+                                        : 'transparent',
+                                    boxShadow: `inset 0 0 0 2px ${feed.color || '#6b7280'}`,
+                                }}
+                            />
+                            {feed.name}
+                        </button>
+                    ))}
+                    <button
+                        type="button"
+                        onClick={() => setIsManagerOpen(true)}
+                        className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200 transition-colors"
+                    >
+                        <Cog6ToothIcon className="h-4 w-4" />
+                        {t('calendar.manageCalendars', 'Calendars')}
+                    </button>
+                    {failedFeedNames.length > 0 && (
+                        <span className="text-xs text-amber-600 dark:text-amber-400">
+                            {t(
+                                'calendar.feedError',
+                                'Could not load: {{names}}',
+                                { names: failedFeedNames.join(', ') }
+                            )}
+                        </span>
+                    )}
+                </div>
+
                 {/* Loading indicator */}
                 {isLoadingTasks && (
-                    <div className="text-center py-4 px-6 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 mb-4">
-                        <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
+                    <div className="text-center py-3 px-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800 mb-3">
+                        <span className="text-sm text-blue-600 dark:text-blue-400">
                             {t('calendar.loadingTasks')}
                         </span>
                     </div>
@@ -446,28 +496,26 @@ const Calendar: React.FC = () => {
                     {view === 'month' && (
                         <CalendarMonthView
                             currentDate={currentDate}
-                            events={events}
+                            events={calendarEvents}
                             onDateClick={handleDateClick}
                             onEventClick={handleEventClick}
                             onEventDrop={handleEventDrop}
                         />
                     )}
-
                     {view === 'week' && (
                         <CalendarWeekView
                             currentDate={currentDate}
-                            events={events}
+                            events={calendarEvents}
                             onDateClick={handleDateClick}
                             onEventClick={handleEventClick}
                             onTimeSlotClick={handleTimeSlotClick}
                             onEventDrop={handleEventDrop}
                         />
                     )}
-
                     {view === 'day' && (
                         <CalendarDayView
                             currentDate={currentDate}
-                            events={events}
+                            events={calendarEvents}
                             onEventClick={handleEventClick}
                             onTimeSlotClick={handleTimeSlotClick}
                             onEventDrop={handleEventDrop}
@@ -475,7 +523,15 @@ const Calendar: React.FC = () => {
                     )}
                 </div>
 
-                {/* Event Details Modal */}
+                {isManagerOpen && (
+                    <CalendarsModal
+                        feeds={feeds}
+                        loading={feedsLoading}
+                        onFeedsChange={(update) => setFeeds(update)}
+                        onClose={() => setIsManagerOpen(false)}
+                    />
+                )}
+
                 {selectedTask && (
                     <TaskEventModal
                         isOpen={isEventDetailModalOpen}
@@ -487,14 +543,79 @@ const Calendar: React.FC = () => {
                         onEditTask={handleEditTask}
                     />
                 )}
-
-                {/* Full Task Edit Modal */}
             </div>
         </div>
     );
 };
 
-// Simple Task Event Details Modal Component
+interface CalendarsModalProps {
+    feeds: CalendarFeed[];
+    loading: boolean;
+    onFeedsChange: (update: (feeds: CalendarFeed[]) => CalendarFeed[]) => void;
+    onClose: () => void;
+}
+
+const CalendarsModal: React.FC<CalendarsModalProps> = ({
+    feeds,
+    loading,
+    onFeedsChange,
+    onClose,
+}) => {
+    const { t } = useTranslation();
+
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') onClose();
+        };
+        document.addEventListener('keydown', onKeyDown);
+        return () => document.removeEventListener('keydown', onKeyDown);
+    }, [onClose]);
+
+    return (
+        <div
+            className="fixed inset-0 bg-black/40 flex items-center justify-center z-40 p-4"
+            onClick={onClose}
+        >
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-label={t('calendar.manageCalendars', 'Calendars')}
+                className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto"
+                onClick={(event) => event.stopPropagation()}
+            >
+                <div className="flex items-start justify-between p-5 pb-2">
+                    <div className="pr-3">
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                            {t('calendar.manageCalendars', 'Calendars')}
+                        </h3>
+                        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                            {t(
+                                'calendar.manageDescription',
+                                'Connect read-only calendars and choose which ones appear here. Tududi never changes them.'
+                            )}
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        aria-label={t('calendar.close', 'Close')}
+                        className="shrink-0 p-1 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    >
+                        <XMarkIcon className="w-4 h-4" />
+                    </button>
+                </div>
+                <div className="p-5 pt-3">
+                    <CalendarFeedsManager
+                        feeds={feeds}
+                        loading={loading}
+                        onFeedsChange={onFeedsChange}
+                    />
+                </div>
+            </div>
+        </div>
+    );
+};
+
 interface TaskEventModalProps {
     isOpen: boolean;
     task: Task;
@@ -502,168 +623,119 @@ interface TaskEventModalProps {
     onEditTask: () => void;
 }
 
-const TaskEventModal: React.FC<TaskEventModalProps> = ({
-    isOpen,
-    task,
-    onClose,
-    onEditTask,
-}) => {
+const TaskEventModal: React.FC<TaskEventModalProps> = ({ isOpen, task, onClose, onEditTask }) => {
     const { t, i18n } = useTranslation();
     const locale = getLocale(i18n.language);
 
     if (!isOpen) return null;
 
+    const priorityConfig = {
+        high: { label: t('calendar.high', 'High'), className: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' },
+        medium: { label: t('calendar.medium', 'Medium'), className: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300' },
+        low: { label: t('calendar.low', 'Low'), className: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400' },
+    };
+
     return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 max-w-md w-full mx-4">
-                <div className="flex justify-between items-start mb-4">
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                        📋 {t('calendar.taskDetails')}
-                    </h3>
+        <div
+            className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4"
+            onClick={onClose}
+        >
+            <div
+                role="dialog"
+                aria-modal="true"
+                className="bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 w-full max-w-sm max-h-[90vh] flex flex-col"
+                onClick={(event) => event.stopPropagation()}
+            >
+                {/* Header */}
+                <div className="shrink-0 flex items-start justify-between p-5 pb-4">
+                    <div className="flex-1 min-w-0 pr-3">
+                        <p className="text-xs font-semibold tracking-widest uppercase text-gray-400 dark:text-gray-500 mb-1.5">
+                            {t('calendar.task', 'Task')}
+                        </p>
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 leading-snug break-words line-clamp-4">
+                            {task.name || `Task ${task.id}`}
+                        </h3>
+                    </div>
                     <button
                         onClick={onClose}
-                        className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                        className="shrink-0 p-1 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
                     >
-                        <XMarkIcon className="w-6 h-6" />
+                        <XMarkIcon className="w-4 h-4" />
                     </button>
                 </div>
 
-                <div className="space-y-4">
-                    {/* Task Title */}
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            {t('calendar.title')}
-                        </label>
-                        <p className="text-gray-900 dark:text-gray-100">
-                            {task.name || `Task ${task.id}`}
-                        </p>
+                <div className="min-h-0 overflow-y-auto">
+                    {/* Pills row */}
+                    <div className="flex items-center gap-2 px-5 pb-4 flex-wrap">
+                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${
+                            task.completed_at
+                                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                                : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+                        }`}>
+                            {task.completed_at ? t('calendar.completed', 'Completed') : t('calendar.pending', 'Pending')}
+                        </span>
+                        {task.priority && task.priority in priorityConfig && (
+                            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${priorityConfig[task.priority as keyof typeof priorityConfig].className}`}>
+                                {priorityConfig[task.priority as keyof typeof priorityConfig].label}
+                            </span>
+                        )}
                     </div>
 
-                    {/* Task Status */}
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            {t('calendar.status')}
-                        </label>
-                        <div className="flex items-center">
-                            <span
-                                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                    task.completed_at
-                                        ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-                                        : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
-                                }`}
-                            >
-                                {task.completed_at
-                                    ? `✅ ${t('calendar.completed')}`
-                                    : `⏳ ${t('calendar.pending')}`}
-                            </span>
-                        </div>
-                    </div>
-
-                    {/* Due Date */}
-                    {task.due_date && (
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                {t('calendar.dueDate')}
-                            </label>
-                            <p className="text-gray-900 dark:text-gray-100">
-                                {parseDateString(task.due_date) &&
-                                    format(
-                                        parseDateString(task.due_date) as Date,
-                                        'PPP',
-                                        {
-                                            locale: locale,
-                                        }
-                                    )}
-                            </p>
-                        </div>
-                    )}
-
-                    {/* Priority */}
-                    {task.priority && (
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                {t('calendar.priority')}
-                            </label>
-                            <span
-                                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                    task.priority === 'high'
-                                        ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
-                                        : task.priority === 'medium'
-                                          ? 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200'
-                                          : 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-                                }`}
-                            >
-                                {t(`calendar.${task.priority}`)}
-                            </span>
-                        </div>
-                    )}
-
-                    {/* Project */}
-                    {task.Project?.name && (
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                {t('calendar.project')}
-                            </label>
-                            <p className="text-gray-900 dark:text-gray-100">
-                                {task.Project.name}
-                            </p>
-                        </div>
-                    )}
-
-                    {/* Area - Note: Area relationship not in Task entity, removing this section */}
-
-                    {/* Note */}
-                    {task.note && (
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                {t('calendar.description')}
-                            </label>
-                            <p className="text-gray-900 dark:text-gray-100 whitespace-pre-wrap">
+                    {/* Metadata */}
+                    <div className="px-5 pb-4 space-y-3">
+                        {task.due_date && parseDateString(task.due_date) && (
+                            <div className="flex items-center gap-2.5 text-sm text-gray-600 dark:text-gray-300">
+                                <CalendarDaysIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 shrink-0" />
+                                <span>{format(parseDateString(task.due_date) as Date, 'PPP', { locale })}</span>
+                            </div>
+                        )}
+                        {task.defer_until && (
+                            <div className="flex items-center gap-2.5 text-sm text-gray-600 dark:text-gray-300">
+                                <ClockIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 shrink-0" />
+                                <span>{format(new Date(task.defer_until), 'PPP', { locale })}</span>
+                            </div>
+                        )}
+                        {task.Project?.name && (
+                            <div className="flex items-center gap-2.5 text-sm text-gray-600 dark:text-gray-300">
+                                <FolderIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 shrink-0" />
+                                <span>{task.Project.name}</span>
+                            </div>
+                        )}
+                        {task.tags && task.tags.length > 0 && (
+                            <div className="flex items-start gap-2.5 text-sm text-gray-600 dark:text-gray-300">
+                                <TagIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 shrink-0 mt-0.5" />
+                                <span className="flex flex-wrap gap-1">
+                                    {task.tags.map((tag: any) => (
+                                        <span key={tag.id || tag.name} className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded">
+                                            {tag.name}
+                                        </span>
+                                    ))}
+                                </span>
+                            </div>
+                        )}
+                        {task.note && (
+                            <p className="text-sm text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3 leading-relaxed whitespace-pre-wrap break-words">
                                 {task.note}
                             </p>
-                        </div>
-                    )}
-
-                    {/* Created Date */}
-                    {task.created_at && (
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                {t('calendar.created')}
-                            </label>
-                            <p className="text-xs text-gray-500 dark:text-gray-400">
-                                {format(new Date(task.created_at), 'PPp', {
-                                    locale: locale,
-                                })}
-                            </p>
-                        </div>
-                    )}
+                        )}
+                    </div>
                 </div>
 
-                {/* Action Buttons */}
-                <div className="mt-6 flex justify-between">
+                {/* Footer */}
+                <div className="shrink-0 flex items-center justify-between px-5 py-4 border-t border-gray-100 dark:border-gray-700">
                     <Link
                         to="/tasks"
-                        className="inline-flex items-center px-3 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300"
+                        className="inline-flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
                     >
-                        <ArrowTopRightOnSquareIcon className="w-4 h-4 mr-1" />
-                        {t('calendar.goToTasks')}
+                        <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" />
+                        {t('calendar.goToTasks', 'All tasks')}
                     </Link>
-
-                    <div className="flex space-x-3">
-                        <button
-                            onClick={onClose}
-                            className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600"
-                        >
-                            {t('calendar.close')}
-                        </button>
-
-                        <button
-                            onClick={onEditTask}
-                            className="px-4 py-2 text-sm font-medium bg-blue-500 text-white rounded-md hover:bg-blue-600"
-                        >
-                            {t('calendar.editTask')}
-                        </button>
-                    </div>
+                    <button
+                        onClick={onEditTask}
+                        className="px-4 py-1.5 text-sm font-medium bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                    >
+                        {t('calendar.editTask', 'Open task')}
+                    </button>
                 </div>
             </div>
         </div>

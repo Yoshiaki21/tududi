@@ -52,6 +52,17 @@ module.exports = (sequelize) => {
                 type: DataTypes.STRING,
                 allowNull: false,
             },
+            // Optional name shown instead of the file name
+            title: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            // Pasted into a comment, not listed with the task files
+            inline: {
+                type: DataTypes.BOOLEAN,
+                allowNull: false,
+                defaultValue: false,
+            },
         },
         {
             tableName: 'task_attachments',

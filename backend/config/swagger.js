@@ -150,6 +150,13 @@ const options = {
                             enum: ['low', 'medium', 'high'],
                             description: 'Project priority',
                         },
+                        completed_at: {
+                            type: 'string',
+                            format: 'date-time',
+                            nullable: true,
+                            description:
+                                'When the project was marked done, null otherwise',
+                        },
                         created_at: {
                             type: 'string',
                             format: 'date-time',
@@ -187,6 +194,11 @@ const options = {
                             type: 'integer',
                             description: 'Associated project ID',
                         },
+                        is_public: {
+                            type: 'boolean',
+                            description:
+                                'True while the note is shared publicly by link',
+                        },
                         created_at: {
                             type: 'string',
                             format: 'date-time',
@@ -194,6 +206,26 @@ const options = {
                         updated_at: {
                             type: 'string',
                             format: 'date-time',
+                        },
+                    },
+                },
+                NotePublicShare: {
+                    type: 'object',
+                    properties: {
+                        enabled: {
+                            type: 'boolean',
+                            description: 'Whether the public link works',
+                        },
+                        token: {
+                            type: 'string',
+                            nullable: true,
+                            description:
+                                'Token of the public link, null while sharing is off',
+                        },
+                        shared_at: {
+                            type: 'string',
+                            format: 'date-time',
+                            nullable: true,
                         },
                     },
                 },

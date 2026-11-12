@@ -6,18 +6,25 @@ const {
     Task,
     Tag,
     Area,
+    Goal,
     Note,
     User,
-    Permission,
     TaskAttachment,
-    ProjectAttachment,
+    UserProjectArea,
+    UserProjectOrder,
     sequelize,
 } = require('../../models');
+const { projectAttachments } = require('../../services/entityAttachments');
+const permissionSources = require('../../services/permissionSources');
 const { Op } = require('sequelize');
-const { deleteFileFromDisk } = require('../../utils/attachment-utils');
+const {
+    deleteFileFromDisk,
+    deleteAttachmentFiles,
+} = require('../../utils/attachment-utils');
 const path = require('path');
 const { getConfig } = require('../../config/config');
 const { logError } = require('../../services/logService');
+const { withForeignKeyChecksDisabled } = require('../../utils/db-dialect');
 
 const config = getConfig();
 
@@ -45,11 +52,25 @@ class ProjectsRepository extends BaseRepository {
                 {
                     model: Area,
                     required: false,
-                    attributes: ['id', 'uid', 'name'],
+                    attributes: ['id', 'uid', 'name', 'color'],
+                },
+                {
+                    model: Goal,
+                    as: 'Goal',
+                    required: false,
+                    attributes: [
+                        'id',
+                        'uid',
+                        'title',
+                        'status',
+                        'horizon',
+                        'target_date',
+                        'area_id',
+                    ],
                 },
                 {
                     model: Tag,
-                    attributes: ['id', 'name', 'uid'],
+                    attributes: ['id', 'name', 'uid', 'color'],
                     through: { attributes: [] },
                 },
                 {
@@ -68,25 +89,14 @@ class ProjectsRepository extends BaseRepository {
     async getShareCounts(projectUids) {
         if (projectUids.length === 0) return {};
 
-        const shareCounts = await Permission.findAll({
-            attributes: [
-                'resource_uid',
-                [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
-            ],
-            where: {
-                resource_type: 'project',
-                resource_uid: { [Op.in]: projectUids },
-            },
-            group: ['resource_uid'],
-            raw: true,
-        });
+        return permissionSources.countDistinctUsersByResource(
+            'project',
+            projectUids
+        );
+    }
 
-        const uidToCount = {};
-        shareCounts.forEach((item) => {
-            uidToCount[item.resource_uid] = parseInt(item.count, 10);
-        });
-
-        return uidToCount;
+    async getSharedProjectUids(projectUids) {
+        return permissionSources.findSharedResourceUids('project', projectUids);
     }
 
     /**
@@ -116,7 +126,7 @@ class ProjectsRepository extends BaseRepository {
                     include: [
                         {
                             model: Tag,
-                            attributes: ['id', 'name', 'uid'],
+                            attributes: ['id', 'name', 'uid', 'color'],
                             through: { attributes: [] },
                             required: false,
                         },
@@ -126,7 +136,7 @@ class ProjectsRepository extends BaseRepository {
                             include: [
                                 {
                                     model: Tag,
-                                    attributes: ['id', 'name', 'uid'],
+                                    attributes: ['id', 'name', 'uid', 'color'],
                                     through: { attributes: [] },
                                     required: false,
                                 },
@@ -149,7 +159,7 @@ class ProjectsRepository extends BaseRepository {
                     include: [
                         {
                             model: Tag,
-                            attributes: ['id', 'name', 'uid'],
+                            attributes: ['id', 'name', 'uid', 'color'],
                             through: { attributes: [] },
                         },
                     ],
@@ -160,8 +170,22 @@ class ProjectsRepository extends BaseRepository {
                     attributes: ['id', 'uid', 'name'],
                 },
                 {
+                    model: Goal,
+                    as: 'Goal',
+                    required: false,
+                    attributes: [
+                        'id',
+                        'uid',
+                        'title',
+                        'status',
+                        'horizon',
+                        'target_date',
+                        'area_id',
+                    ],
+                },
+                {
                     model: Tag,
-                    attributes: ['id', 'name', 'uid'],
+                    attributes: ['id', 'name', 'uid', 'color'],
                     through: { attributes: [] },
                 },
             ],
@@ -177,13 +201,27 @@ class ProjectsRepository extends BaseRepository {
             include: [
                 {
                     model: Tag,
-                    attributes: ['id', 'name', 'uid'],
+                    attributes: ['id', 'name', 'uid', 'color'],
                     through: { attributes: [] },
                 },
                 {
                     model: Area,
                     required: false,
                     attributes: ['id', 'uid', 'name'],
+                },
+                {
+                    model: Goal,
+                    as: 'Goal',
+                    required: false,
+                    attributes: [
+                        'id',
+                        'uid',
+                        'title',
+                        'status',
+                        'horizon',
+                        'target_date',
+                        'area_id',
+                    ],
                 },
             ],
         });
@@ -193,12 +231,11 @@ class ProjectsRepository extends BaseRepository {
      * Get share count for a single project.
      */
     async getShareCount(projectUid) {
-        return Permission.count({
-            where: {
-                resource_type: 'project',
-                resource_uid: projectUid,
-            },
-        });
+        const counts = await permissionSources.countDistinctUsersByResource(
+            'project',
+            [projectUid]
+        );
+        return counts[projectUid] || 0;
     }
 
     /**
@@ -217,119 +254,133 @@ class ProjectsRepository extends BaseRepository {
      */
     async deleteWithOrphaning(project, userId) {
         await sequelize.transaction(async (transaction) => {
-            await sequelize.query('PRAGMA foreign_keys = OFF', { transaction });
+            await withForeignKeyChecksDisabled(
+                sequelize,
+                async () => {
+                    try {
+                        await this.deleteProjectContents(
+                            project,
+                            userId,
+                            transaction
+                        );
+                    } catch (error) {
+                        logError('Error deleting project:', error);
+                        throw error;
+                    }
+                },
+                { transaction }
+            );
+        });
+    }
 
-            try {
-                // Find all tasks belonging to this project (parent tasks only)
-                const tasks = await Task.findAll({
-                    where: {
-                        project_id: project.id,
-                        user_id: userId,
-                        parent_task_id: null, // Only get parent tasks
-                    },
+    // Tasks still open in a project. Recurring patterns are left out: they
+    // keep their own schedule and are not one-off work to finish.
+    async findOpenTasks(projectId) {
+        return Task.findAll({
+            where: {
+                project_id: projectId,
+                status: { [Op.notIn]: [2, 3, 5] },
+                recurrence_type: 'none',
+            },
+        });
+    }
+
+    // Removes a project's tasks, attachments and cover image, orphans its
+    // notes and finally deletes the project row, inside the given transaction.
+    async deleteProjectContents(project, userId, transaction) {
+        // Find all tasks belonging to this project (parent tasks only)
+        const tasks = await Task.findAll({
+            where: {
+                project_id: project.id,
+                user_id: userId,
+                parent_task_id: null, // Only get parent tasks
+            },
+            include: [
+                {
+                    model: TaskAttachment,
+                    as: 'Attachments',
+                    required: false,
+                },
+                {
+                    model: Task,
+                    as: 'Subtasks',
                     include: [
                         {
                             model: TaskAttachment,
                             as: 'Attachments',
                             required: false,
                         },
-                        {
-                            model: Task,
-                            as: 'Subtasks',
-                            include: [
-                                {
-                                    model: TaskAttachment,
-                                    as: 'Attachments',
-                                    required: false,
-                                },
-                            ],
-                            required: false,
-                        },
                     ],
-                    transaction,
-                });
+                    required: false,
+                },
+            ],
+            transaction,
+        });
 
-                // Helper function to delete attachments for a task
-                const deleteTaskAttachments = async (task) => {
-                    if (task.Attachments && task.Attachments.length > 0) {
-                        for (const attachment of task.Attachments) {
-                            const filePath = path.join(
-                                config.uploadPath,
-                                attachment.file_path
-                            );
-                            await deleteFileFromDisk(filePath);
-                            await attachment.destroy({ transaction });
-                        }
-                    }
-                };
-
-                // Delete attachments for tasks and subtasks
-                for (const task of tasks) {
-                    // Delete parent task attachments
-                    await deleteTaskAttachments(task);
-
-                    // Delete subtask attachments
-                    if (task.Subtasks && task.Subtasks.length > 0) {
-                        for (const subtask of task.Subtasks) {
-                            await deleteTaskAttachments(subtask);
-                        }
-                    }
-                }
-
-                // Delete tasks (including subtasks)
-                await Task.destroy({
-                    where: { project_id: project.id, user_id: userId },
-                    transaction,
-                });
-
-                // Orphan notes (they are reference material and may be useful without the project)
-                await Note.update(
-                    { project_id: null },
-                    {
-                        where: { project_id: project.id, user_id: userId },
-                        transaction,
-                    }
-                );
-
-                // Delete project attachments (files + DB records)
-                const projectAttachments = await ProjectAttachment.findAll({
-                    where: { project_id: project.id },
-                    transaction,
-                });
-                for (const attachment of projectAttachments) {
-                    const filePath = path.join(config.uploadPath, attachment.file_path);
-                    await deleteFileFromDisk(filePath);
+        // Helper function to delete attachments for a task
+        const deleteTaskAttachments = async (task) => {
+            if (task.Attachments && task.Attachments.length > 0) {
+                await deleteAttachmentFiles(task.Attachments);
+                for (const attachment of task.Attachments) {
                     await attachment.destroy({ transaction });
                 }
-
-                // Delete project cover image if it exists
-                if (project.image_url) {
-                    // Extract filename from URL like /api/uploads/projects/filename.jpg
-                    const urlMatch = project.image_url.match(
-                        /\/api\/uploads\/projects\/(.+)$/
-                    );
-                    if (urlMatch) {
-                        const filename = urlMatch[1];
-                        const imagePath = path.join(
-                            config.uploadPath,
-                            'projects',
-                            filename
-                        );
-                        await deleteFileFromDisk(imagePath);
-                    }
-                }
-
-                // Delete the project
-                await project.destroy({ transaction });
-            } catch (error) {
-                logError('Error deleting project:', error);
-                throw error;
-            } finally {
-                await sequelize.query('PRAGMA foreign_keys = ON', {
-                    transaction,
-                });
             }
+        };
+
+        // Delete attachments for tasks and subtasks
+        for (const task of tasks) {
+            // Delete parent task attachments
+            await deleteTaskAttachments(task);
+
+            // Delete subtask attachments
+            if (task.Subtasks && task.Subtasks.length > 0) {
+                for (const subtask of task.Subtasks) {
+                    await deleteTaskAttachments(subtask);
+                }
+            }
+        }
+
+        await projectAttachments.removeAll(project.id, { transaction });
+
+        // Delete tasks (including subtasks)
+        await Task.destroy({
+            where: { project_id: project.id, user_id: userId },
+            transaction,
         });
+
+        // Orphan notes (they are reference material and may be useful without the project)
+        await Note.update(
+            { project_id: null },
+            {
+                where: { project_id: project.id, user_id: userId },
+                transaction,
+            }
+        );
+
+        // Delete project cover image if it exists
+        if (project.image_url) {
+            // Extract filename from URL like /api/uploads/projects/filename.jpg
+            const urlMatch = project.image_url.match(
+                /\/api\/uploads\/projects\/(.+)$/
+            );
+            if (urlMatch) {
+                const filename = urlMatch[1];
+                const imagePath = path.join(
+                    config.uploadPath,
+                    'projects',
+                    filename
+                );
+                await deleteFileFromDisk(imagePath);
+            }
+        }
+
+        await UserProjectOrder.destroy({
+            where: { project_id: project.id },
+            transaction,
+        });
+
+        // Delete the project
+        await project.destroy({ transaction });
     }
 
     /**
@@ -346,6 +397,84 @@ class ProjectsRepository extends BaseRepository {
      */
     async createTag(name, userId) {
         return Tag.create({ name, user_id: userId });
+    }
+
+    /**
+     * Upsert a per-user area override for a shared project.
+     * area_id may be null to remove the project from the user's area.
+     */
+    async upsertUserProjectArea(userId, projectId, areaId) {
+        const [record] = await UserProjectArea.upsert(
+            { user_id: userId, project_id: projectId, area_id: areaId },
+            { conflictFields: ['user_id', 'project_id'] }
+        );
+        return record;
+    }
+
+    /**
+     * Get all per-user area overrides for a given user indexed by project_id.
+     */
+    async getUserProjectAreaOverrides(userId) {
+        const rows = await UserProjectArea.findAll({
+            where: { user_id: userId },
+            include: [
+                {
+                    model: Area,
+                    as: 'Area',
+                    required: false,
+                    attributes: ['id', 'uid', 'name', 'color'],
+                },
+            ],
+            raw: false,
+        });
+        const map = {};
+        rows.forEach((row) => {
+            map[row.project_id] = {
+                area_id: row.area_id,
+                Area: row.Area ? row.Area.toJSON() : null,
+            };
+        });
+        return map;
+    }
+
+    // Custom order positions of the Projects page for a user, by project_id.
+    async getUserProjectPositions(userId) {
+        const rows = await UserProjectOrder.findAll({
+            where: { user_id: userId },
+            attributes: ['project_id', 'position'],
+            raw: true,
+        });
+        const map = {};
+        rows.forEach((row) => {
+            map[row.project_id] = row.position;
+        });
+        return map;
+    }
+
+    async findIdsByUids(whereClause, uids) {
+        return this.model.findAll({
+            where: { [Op.and]: [whereClause, { uid: { [Op.in]: uids } }] },
+            attributes: ['id', 'uid'],
+            raw: true,
+        });
+    }
+
+    // Replaces the user's whole custom order with projectIds, in that order.
+    async replaceUserProjectOrder(userId, projectIds) {
+        await sequelize.transaction(async (transaction) => {
+            await UserProjectOrder.destroy({
+                where: { user_id: userId },
+                transaction,
+            });
+            await UserProjectOrder.bulkCreate(
+                projectIds.map((projectId, index) => ({
+                    user_id: userId,
+                    project_id: projectId,
+                    position: index,
+                })),
+                { transaction }
+            );
+        });
     }
 }
 

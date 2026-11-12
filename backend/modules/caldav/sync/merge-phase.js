@@ -1,9 +1,11 @@
-const { AppError } = require('../../../shared/errors/AppError');
+const { AppError } = require('../../../shared/errors');
 const logger = require('../../../services/logService');
 const { Task } = require('../../../models');
 const SyncStateRepository = require('../repositories/sync-state-repository');
 const CalendarRepository = require('../repositories/calendar-repository');
 const ConflictResolver = require('./conflict-resolver');
+const { uid: generateUid } = require('../../../utils/uid');
+const { normalizeHref, extractUidFromHref } = require('../utils/href-utils');
 
 class MergePhase {
     async execute(calendar, changedTasks, options = {}) {
@@ -57,41 +59,96 @@ class MergePhase {
     }
 
     async _handleDeletion(change, calendar, dryRun, results) {
-        const uid = this._extractUidFromHref(change.href);
-        const existingTask = await Task.findOne({
-            where: { uid, user_id: calendar.user_id },
-        });
+        // Resolve by the href we recorded when the task was pulled. Only fall
+        // back to reading a uid out of the filename for sync states written
+        // before remote_href existed - for an externally created resource that
+        // filename is not the uid, and guessing finds the wrong task or none.
+        const hrefState = await SyncStateRepository.findByCalendarAndHref(
+            calendar.id,
+            change.href
+        );
+
+        const uid = extractUidFromHref(change.href);
+
+        const existingTask = hrefState
+            ? await Task.findOne({
+                  where: { id: hrefState.task_id, user_id: calendar.user_id },
+              })
+            : await Task.findOne({
+                  where: { uid, user_id: calendar.user_id },
+              });
 
         if (!existingTask) {
             logger.logInfo(
-                `Task ${uid} already deleted or doesn't exist, skipping`
+                `Task for ${change.href} already deleted or doesn't exist, skipping`
             );
+
+            // The row is gone but its sync state may not be: the task table is
+            // written with foreign keys disabled, so the cascade never fires.
+            if (!dryRun && hrefState) {
+                await SyncStateRepository.destroy(hrefState);
+            }
             return;
         }
 
-        const syncState = await SyncStateRepository.findByTaskAndCalendar(
-            existingTask.id,
-            calendar.id
-        );
+        const taskUid = existingTask.uid;
+
+        const syncState =
+            hrefState ||
+            (await SyncStateRepository.findByTaskAndCalendar(
+                existingTask.id,
+                calendar.id
+            ));
 
         if (syncState && existingTask.updated_at > syncState.last_synced_at) {
             logger.logInfo(
-                `Task ${uid} was modified locally after remote deletion, conflict detected`
+                `Task ${taskUid} was modified locally after remote deletion, conflict detected`
             );
 
+            if (calendar.conflict_resolution === 'manual') {
+                if (!dryRun) {
+                    await SyncStateRepository.markConflict(
+                        existingTask.id,
+                        calendar.id,
+                        existingTask.toJSON(),
+                        null
+                    );
+                }
+
+                results.conflicts.push({
+                    uid: taskUid,
+                    taskId: existingTask.id,
+                    type: 'remote_deleted_local_modified',
+                });
+                return;
+            }
+
+            // The local edit is the newer change, so it wins: forget the
+            // remote copy and let the push phase create the resource again.
+            // Leaving the state in 'conflict' (as before) meant the push phase
+            // skipped the task forever, because nothing on the server could
+            // ever settle a conflict about a resource that no longer exists.
             if (!dryRun) {
-                await SyncStateRepository.markConflict(
+                await SyncStateRepository.createOrUpdate(
                     existingTask.id,
                     calendar.id,
-                    existingTask.toJSON(),
-                    null
+                    {
+                        etag: '',
+                        remote_href: null,
+                        sync_status: 'pending',
+                        conflict_local_version: null,
+                        conflict_remote_version: null,
+                        conflict_detected_at: null,
+                    }
                 );
             }
 
-            results.conflicts.push({
-                uid,
+            results.merged.push({
+                uid: taskUid,
                 taskId: existingTask.id,
+                action: 'conflict_resolved',
                 type: 'remote_deleted_local_modified',
+                strategy: 'local',
             });
             return;
         }
@@ -101,12 +158,37 @@ class MergePhase {
             await SyncStateRepository.deleteByTaskId(existingTask.id);
         }
 
-        results.deleted.push({ uid, taskId: existingTask.id });
-        logger.logInfo(`Task ${uid} deleted`);
+        results.deleted.push({ uid: taskUid, taskId: existingTask.id });
+        logger.logInfo(`Task ${taskUid} deleted`);
     }
 
     async _handleCreateOrUpdate(change, calendar, dryRun, results) {
         const { task: remoteTask, etag, href } = change;
+
+        // Ensure the remote task has a UID. Some CalDAV servers may omit the
+        // UID property (protocol violation) — assign a Tududi-generated one so
+        // the task can still be stored and accessed.
+        if (!remoteTask.uid) {
+            remoteTask.uid = generateUid();
+            logger.logInfo(
+                `Remote task from ${href} had no UID; assigned ${remoteTask.uid}`
+            );
+        }
+
+        // Tasks with no name cannot be stored. Use the href filename as a
+        // fallback so the task is still created rather than silently dropped.
+        if (!remoteTask.name) {
+            const hrefBasename = href
+                ? href
+                      .replace(/\.ics$/i, '')
+                      .split('/')
+                      .pop()
+                : null;
+            remoteTask.name = hrefBasename || 'Untitled';
+            logger.logInfo(
+                `Remote task ${remoteTask.uid} had no name; using fallback "${remoteTask.name}"`
+            );
+        }
 
         const existingTask = await Task.findOne({
             where: { uid: remoteTask.uid, user_id: calendar.user_id },
@@ -118,7 +200,9 @@ class MergePhase {
                 calendar,
                 etag,
                 dryRun,
-                results
+                results,
+                null,
+                href
             );
             return;
         }
@@ -135,7 +219,27 @@ class MergePhase {
                 etag,
                 dryRun,
                 results,
-                existingTask
+                existingTask,
+                href
+            );
+            return;
+        }
+
+        // A push that failed its If-Match leaves the state in 'conflict', and
+        // the push phase skips it from then on. Unless the user asked to settle
+        // conflicts by hand, resolve it here on the next pull, whether or not
+        // the remote copy changed again, so the task does not stay stuck.
+        if (
+            syncState.sync_status === 'conflict' &&
+            calendar.conflict_resolution !== 'manual'
+        ) {
+            await this._handleConflict(
+                existingTask,
+                remoteTask,
+                calendar,
+                etag,
+                dryRun,
+                results
             );
             return;
         }
@@ -170,9 +274,81 @@ class MergePhase {
                 calendar,
                 etag,
                 dryRun,
-                results
+                results,
+                href
             );
         }
+    }
+
+    // Returns a plain object with only the fields that the Task model accepts,
+    // with values clamped to valid ranges so that no Sequelize validation error
+    // is raised for otherwise well-formed CalDAV data.
+    _sanitizeRemoteTask(remoteTask) {
+        const {
+            uid,
+            name,
+            note,
+            due_date,
+            due_has_time,
+            defer_until,
+            reminder_at,
+            completed_at,
+            status,
+            priority,
+            recurrence_type,
+            recurrence_interval,
+            recurrence_end_date,
+            recurrence_weekdays,
+            recurrence_month_day,
+            recurrence_weekday,
+            recurrence_week_of_month,
+            completion_based,
+            habit_mode,
+            habit_current_streak,
+            habit_total_completions,
+            order,
+        } = remoteTask;
+
+        // Clamp week_of_month: -1 means "last week" and is valid per iCalendar
+        // BYDAY semantics.  The model allows -1 through 5.
+        const safeWeekOfMonth =
+            recurrence_week_of_month !== null &&
+            recurrence_week_of_month !== undefined
+                ? Math.max(-1, Math.min(5, recurrence_week_of_month))
+                : null;
+
+        // Clamp month_day: -1 means "last day", 1–31 are regular days.
+        const safeMonthDay =
+            recurrence_month_day !== null && recurrence_month_day !== undefined
+                ? Math.max(-1, Math.min(31, recurrence_month_day))
+                : null;
+
+        return {
+            uid,
+            name,
+            note,
+            due_date,
+            due_has_time: due_has_time ?? false,
+            defer_until,
+            reminder_at,
+            completed_at,
+            status: status ?? 0,
+            // A remote task without PRIORITY has no priority, not Low: the old
+            // default is what made 2Do's tasks come back as PRIORITY:7.
+            priority: priority ?? null,
+            recurrence_type: recurrence_type || 'none',
+            recurrence_interval,
+            recurrence_end_date,
+            recurrence_weekdays,
+            recurrence_month_day: safeMonthDay,
+            recurrence_weekday,
+            recurrence_week_of_month: safeWeekOfMonth,
+            completion_based: completion_based ?? false,
+            habit_mode: habit_mode ?? false,
+            habit_current_streak: habit_current_streak ?? 0,
+            habit_total_completions: habit_total_completions ?? 0,
+            order,
+        };
     }
 
     async _createNewTask(
@@ -181,7 +357,8 @@ class MergePhase {
         etag,
         dryRun,
         results,
-        existingTask = null
+        existingTask = null,
+        href = null
     ) {
         if (dryRun) {
             results.merged.push({
@@ -192,22 +369,30 @@ class MergePhase {
             return;
         }
 
+        const taskData = this._sanitizeRemoteTask(remoteTask);
+
         let task;
         if (existingTask) {
             await existingTask.update({
-                ...remoteTask,
+                ...taskData,
+                uid: existingTask.uid,
                 user_id: calendar.user_id,
             });
             task = existingTask;
         } else {
             task = await Task.create({
-                ...remoteTask,
+                ...taskData,
                 user_id: calendar.user_id,
             });
         }
 
         await SyncStateRepository.createOrUpdate(task.id, calendar.id, {
             etag,
+            // Omitted rather than nulled when the server gave no href, so an
+            // already-recorded path is never overwritten with nothing.
+            ...(normalizeHref(href)
+                ? { remote_href: normalizeHref(href) }
+                : {}),
             last_modified: new Date(),
             last_synced_at: new Date(),
             sync_status: 'synced',
@@ -228,7 +413,8 @@ class MergePhase {
         calendar,
         etag,
         dryRun,
-        results
+        results,
+        href = null
     ) {
         if (dryRun) {
             results.merged.push({
@@ -241,7 +427,7 @@ class MergePhase {
         }
 
         await existingTask.update({
-            ...remoteTask,
+            ...this._sanitizeRemoteTask(remoteTask),
             id: existingTask.id,
             uid: existingTask.uid,
             user_id: existingTask.user_id,
@@ -249,6 +435,11 @@ class MergePhase {
 
         await SyncStateRepository.createOrUpdate(existingTask.id, calendar.id, {
             etag,
+            // Omitted rather than nulled when the server gave no href, so an
+            // already-recorded path is never overwritten with nothing.
+            ...(normalizeHref(href)
+                ? { remote_href: normalizeHref(href) }
+                : {}),
             last_modified: new Date(),
             last_synced_at: new Date(),
             sync_status: 'synced',
@@ -308,18 +499,39 @@ class MergePhase {
         }
 
         if (!dryRun) {
-            await existingTask.update(resolved.taskData);
+            if (resolved.winner === 'local') {
+                // Keep the local task as it is and record the server's current
+                // etag, so the push phase sends the local version with an
+                // If-Match the server accepts. Marking it synced instead (as
+                // before) meant the winning local edit was never pushed.
+                await SyncStateRepository.createOrUpdate(
+                    existingTask.id,
+                    calendar.id,
+                    {
+                        etag,
+                        last_modified: new Date(),
+                        sync_status: 'pending',
+                    }
+                );
+            } else {
+                await existingTask.update({
+                    ...this._sanitizeRemoteTask(remoteTask),
+                    id: existingTask.id,
+                    uid: existingTask.uid,
+                    user_id: existingTask.user_id,
+                });
 
-            await SyncStateRepository.createOrUpdate(
-                existingTask.id,
-                calendar.id,
-                {
-                    etag,
-                    last_modified: new Date(),
-                    last_synced_at: new Date(),
-                    sync_status: 'synced',
-                }
-            );
+                await SyncStateRepository.createOrUpdate(
+                    existingTask.id,
+                    calendar.id,
+                    {
+                        etag,
+                        last_modified: new Date(),
+                        last_synced_at: new Date(),
+                        sync_status: 'synced',
+                    }
+                );
+            }
         }
 
         results.merged.push({
@@ -371,11 +583,6 @@ class MergePhase {
         );
 
         return task;
-    }
-
-    _extractUidFromHref(href) {
-        const match = href.match(/([^/]+)\.ics$/);
-        return match ? match[1] : href;
     }
 }
 

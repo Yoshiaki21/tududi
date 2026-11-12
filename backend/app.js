@@ -1,10 +1,11 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
-const morgan = require('morgan');
+const pinoHttp = require('pino-http');
 const session = require('express-session');
 const SequelizeStore = require('connect-session-sequelize')(session.Store);
 const { sequelize } = require('./models');
@@ -18,6 +19,8 @@ const taskScheduler = require('./modules/tasks/taskScheduler');
 const { initializeEmailService } = require('./services/emailService');
 const { setConfig, getConfig } = require('./config/config');
 const config = getConfig();
+const distIndexPath = path.join(__dirname, 'dist', 'index.html');
+const serveFromDist = config.production || fs.existsSync(distIndexPath);
 const API_VERSION = process.env.API_VERSION || 'v1';
 const API_BASE_PATH = `/api/${API_VERSION}`;
 
@@ -37,22 +40,60 @@ const sessionStore = new SequelizeStore({
     db: sequelize,
 });
 
+// Browsers read a backslash in an http(s) URL as a slash, so a path like
+// /\evil.example can come back in a redirect as a link to another host
+// (GHSA-m2j3-rgfr-57pq). No route uses one, so refuse them outright.
+app.use((req, res, next) => {
+    const pathname = req.originalUrl.split('?')[0];
+    if (/\\|%5c/i.test(pathname)) {
+        return res.status(400).send('Bad Request');
+    }
+    return next();
+});
+
 // Middlewares
 app.use(
     helmet({
         contentSecurityPolicy: {
             directives: {
                 defaultSrc: ["'self'"],
-                scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
-                styleSrc: ["'self'", "'unsafe-inline'"],
+                // challenges.cloudflare.com is Turnstile, the captcha on the
+                // public forms; harmless to allow when it is not configured
+                scriptSrc: [
+                    "'self'",
+                    "'unsafe-inline'",
+                    "'unsafe-eval'",
+                    'https://challenges.cloudflare.com',
+                    // Paddle.js, the checkout overlay of hosted billing
+                    'https://cdn.paddle.com',
+                ],
+                styleSrc: [
+                    "'self'",
+                    "'unsafe-inline'",
+                    'https://cdn.paddle.com',
+                ],
                 imgSrc: ["'self'", 'data:', 'https:'],
-                connectSrc: ["'self'"],
+                connectSrc: [
+                    "'self'",
+                    'https://checkout-service.paddle.com',
+                    'https://sandbox-checkout-service.paddle.com',
+                ],
                 fontSrc: ["'self'"],
                 objectSrc: ["'none'"],
                 mediaSrc: ["'self'"],
-                frameSrc: ["'none'"],
+                // youtube-nocookie.com plays the welcome video on the
+                // starter picker
+                frameSrc: [
+                    "'self'",
+                    'https://challenges.cloudflare.com',
+                    'https://www.youtube-nocookie.com',
+                    'https://buy.paddle.com',
+                    'https://sandbox-buy.paddle.com',
+                ],
                 upgradeInsecureRequests:
-                    process.env.DISABLE_HSTS === 'true' ? null : [],
+                    process.env.UPGRADE_INSECURE_REQUESTS === 'true'
+                        ? []
+                        : null,
             },
         },
         hsts:
@@ -65,8 +106,46 @@ app.use(
                 : false,
     })
 );
-app.use(compression());
-app.use(morgan('combined'));
+app.use(
+    compression({
+        filter: (req, res) => {
+            if (
+                req.path.startsWith('/caldav/') ||
+                req.path.startsWith('/.well-known/caldav') ||
+                (req.method === 'PROPFIND' &&
+                    (req.path === '/' || req.path === '/principals/'))
+            ) {
+                return false;
+            }
+            return compression.filter(req, res);
+        },
+    })
+);
+// Structured request log. Health probes are skipped so a 60-second
+// container healthcheck does not write a line forever.
+const { logger, stripQuery } = require('./services/logService');
+app.use(
+    pinoHttp({
+        logger,
+        autoLogging: {
+            ignore: (req) => /\/api(\/v\d+)?\/health(\/|$)/.test(req.url),
+        },
+        customLogLevel: (req, res, err) => {
+            if (err || res.statusCode >= 500) return 'error';
+            if (res.statusCode >= 400) return 'warn';
+            return 'info';
+        },
+        serializers: {
+            req: (req) => ({
+                id: req.id,
+                method: req.method,
+                url: stripQuery(req.url),
+                remoteAddress: req.remoteAddress,
+            }),
+            res: (res) => ({ statusCode: res.statusCode }),
+        },
+    })
+);
 
 // CORS configuration
 app.use(
@@ -88,6 +167,7 @@ app.use(
             'Content-Type',
             'Accept',
             'X-Requested-With',
+            'x-csrf-token',
             'Depth',
             'If-Match',
             'If-None-Match',
@@ -97,6 +177,15 @@ app.use(
         preflightContinue: true,
     })
 );
+
+// Stripe webhook: raw body, before JSON parsing, sessions, CSRF and rate
+// limiting. The signature is the authentication.
+const billingModule = require('./modules/billing');
+['/api', API_BASE_PATH].forEach((base) => {
+    app.post(`${base}/billing/webhook`, billingModule.webhookHandler());
+});
+// Paddle's default payment link (pay an invoice, replace a failed card).
+app.get('/billing/pay', billingModule.payPage);
 
 // Body parsing (skip for CalDAV routes which need raw body access)
 app.use((req, res, next) => {
@@ -126,9 +215,34 @@ app.use((req, res, next) => {
     })(req, res, next);
 });
 
-// RFC 9728 — Protected Resource Metadata (no auth required)
+// RFC 9728 - Protected Resource Metadata (no auth required)
 const oauthRoutes = require('./modules/oauth/routes');
 app.use(oauthRoutes);
+
+// Resolves the session cookie's `secure` flag. Defaults to 'auto' (express-session
+// sets it based on the request's protocol, respecting `trust proxy`), so cookies are
+// sent over HTTPS-only whenever the connection actually is HTTPS. COOKIE_SECURE=false
+// is an explicit, documented opt-out (see backend/.env.example) for self-hosted
+// deployments that run over plain HTTP with no reverse-proxy TLS termination; it is
+// never the default.
+// lgtm[js/clear-text-cookie] - secure defaults to 'auto'/true; COOKIE_SECURE=false
+// requires explicit deployer opt-in and is logged loudly in production.
+function resolveCookieSecure() {
+    if (process.env.COOKIE_SECURE === 'false') {
+        if (config.production) {
+            console.warn(
+                '[Security] COOKIE_SECURE=false in production — session cookies will be ' +
+                    'sent over plain HTTP. Only use this for deployments with no TLS ' +
+                    '(e.g. local networks). See backend/.env.example.'
+            );
+        }
+        return false;
+    }
+    if (process.env.COOKIE_SECURE === 'true') {
+        return true;
+    }
+    return 'auto';
+}
 
 // Session configuration
 const sessionMiddleware = session({
@@ -138,15 +252,7 @@ const sessionMiddleware = session({
     saveUninitialized: false,
     cookie: {
         httpOnly: true,
-        secure: (() => {
-            if (process.env.COOKIE_SECURE === 'false') {
-                return false;
-            }
-            if (process.env.COOKIE_SECURE === 'true') {
-                return true;
-            }
-            return 'auto';
-        })(),
+        secure: resolveCookieSecure(),
         maxAge: 2592000000, // 30 days
         sameSite: 'lax',
     },
@@ -175,41 +281,121 @@ app.use((req, res, next) => {
     return next();
 });
 
-// Static files
-if (config.production) {
-    app.use(express.static(path.join(__dirname, 'dist')));
+// Counts page views for the admin dashboard. Before the host switches so the
+// marketing and blog hosts are seen too; it only looks at the finished
+// response, so it cannot change what is served.
+app.use(require('./services/visitService').track());
+
+// Marketing page for the hostnames in TUDUDI_LANDING_HOSTS. A no-op unless
+// that variable is set, so a self-hosted instance never sees it. It sits
+// before the static handlers because the landing hosts must not serve the
+// app shell at '/'.
+const landingModule = require('./modules/landing');
+app.use(landingModule.hostSwitch(config.landing));
+
+// The blog at the root of the hostnames in TUDUDI_BLOG_HOSTS. Also a no-op
+// unless set; it serves the app shell marked as the blog, so it sits before
+// the static handlers for the same reason.
+const blogModule = require('./modules/blog');
+app.use(
+    blogModule.hostSwitch({
+        shellPath: () =>
+            serveFromDist
+                ? distIndexPath
+                : path.join(__dirname, '../public', 'index.html'),
+        cacheShell: config.production,
+    })
+);
+
+// Static files. Webpack output is content-hashed, so the bundles can be
+// cached for a year; the shell (index.html) and the service worker must
+// always be revalidated or a deploy would never reach returning visitors.
+const NEVER_CACHE = new Set(['/index.html', '/sw.js', '/manifest.json']);
+if (serveFromDist) {
+    app.use(
+        express.static(path.join(__dirname, 'dist'), {
+            index: false,
+            redirect: false,
+            maxAge: '1y',
+            immutable: true,
+            setHeaders: (res, filePath) => {
+                const rel = filePath.slice(path.join(__dirname, 'dist').length);
+                if (NEVER_CACHE.has(rel.replace(/\\/g, '/'))) {
+                    res.setHeader('Cache-Control', 'no-cache');
+                }
+            },
+        })
+    );
 } else {
-    app.use(express.static('public'));
+    app.use(express.static('public', { redirect: false }));
 }
 
 // Serve locales
-if (config.production) {
-    app.use('/locales', express.static(path.join(__dirname, 'dist/locales')));
+if (serveFromDist) {
+    app.use(
+        '/locales',
+        express.static(path.join(__dirname, 'dist/locales'), {
+            redirect: false,
+        })
+    );
 } else {
     app.use(
         '/locales',
-        express.static(path.join(__dirname, '../public/locales'))
+        express.static(path.join(__dirname, '../public/locales'), {
+            redirect: false,
+        })
     );
 }
 
-// Serve uploaded files
+// Authentication middleware
+const { requireAuth } = require('./middleware/auth');
+const { requireSubscription } = require('./middleware/entitlements');
+const { uploadsAccessControl } = require('./middleware/uploadsAccess');
+const { INLINE_SAFE_EXTENSIONS } = require('./utils/attachment-utils');
+
+// Serve uploaded files - requires authentication so attachments (which may
+// include private task/project data) aren't readable by anyone who guesses
+// or obtains a URL (GHSA-x24w-9w59-wqhq), and requires the requesting user
+// to have read access to the specific task/project the file belongs to, so
+// one authenticated user can't read another user's files by guessing a
+// filename (GHSA-49fc-pf7x-cj8x). nosniff stops the browser from ignoring
+// the declared Content-Type and guessing a different one to render.
+// Files whose extension isn't in the inline-safe allowlist are forced to
+// download rather than render, so a browser navigating directly to a file
+// can't execute it as a top-level document - this covers any file whose
+// extension predates a MIME allow-list change, regardless of what the DB
+// thinks its type is (GHSA-43p8-ch4p-gqg4).
+const { uploadsLimiter } = require('./middleware/rateLimiter');
 const registerUploadsStatic = (basePath) => {
-    app.use(`${basePath}/uploads`, express.static(config.uploadPath));
+    app.use(
+        `${basePath}/uploads`,
+        requireAuth,
+        uploadsLimiter,
+        uploadsAccessControl,
+        express.static(config.uploadPath, {
+            redirect: false,
+            setHeaders: (res, filePath) => {
+                res.setHeader('X-Content-Type-Options', 'nosniff');
+                const ext = path.extname(filePath).toLowerCase();
+                if (!INLINE_SAFE_EXTENSIONS.has(ext)) {
+                    res.setHeader('Content-Disposition', 'attachment');
+                }
+            },
+        })
+    );
 };
 
 registerUploadsStatic('/api');
 if (API_VERSION && API_BASE_PATH !== '/api') {
     registerUploadsStatic(API_BASE_PATH);
 }
-
-// Authentication middleware
-const { requireAuth } = require('./middleware/auth');
 const { logError } = require('./services/logService');
 
 // Rate limiting middleware
 const {
     apiLimiter,
     authenticatedApiLimiter,
+    bearerFailureLimiter,
 } = require('./middleware/rateLimiter');
 
 // Error handler for modular architecture
@@ -218,9 +404,14 @@ const errorHandler = require('./shared/middleware/errorHandler');
 // Modular routes
 const adminModule = require('./modules/admin');
 const areasModule = require('./modules/areas');
+const goalsModule = require('./modules/goals');
+const dailyPlanModule = require('./modules/daily-plan');
+const onboardingModule = require('./modules/onboarding');
+const calendarFeedsModule = require('./modules/calendar-feeds');
 const authModule = require('./modules/auth');
 const backupModule = require('./modules/backup');
 const featureFlagsModule = require('./modules/feature-flags');
+const demoModule = require('./modules/demo');
 const habitsModule = require('./modules/habits');
 const inboxModule = require('./modules/inbox');
 const notesModule = require('./modules/notes');
@@ -231,6 +422,7 @@ const searchModule = require('./modules/search');
 const sharesModule = require('./modules/shares');
 const tagsModule = require('./modules/tags');
 const tasksModule = require('./modules/tasks');
+const commentsModule = require('./modules/comments');
 const telegramModule = require('./modules/telegram');
 const matrixModule = require('./modules/matrix');
 const urlModule = require('./modules/url');
@@ -239,6 +431,20 @@ const viewsModule = require('./modules/views');
 const mcpModule = require('./modules/mcp');
 const oidcModule = require('./modules/oidc');
 const cleanupModule = require('./modules/cleanup');
+const aiAssistantModule = require('./modules/ai-assistant');
+const adminAiUsageModule = require('./modules/admin-ai-usage');
+const peopleModule = require('./modules/people');
+const membersModule = require('./modules/members');
+const templatesModule = require('./modules/templates');
+const reportsModule = require('./modules/reports');
+const everyoneModule = require('./modules/everyone');
+const groupsModule = require('./modules/groups');
+const feedbackModule = require('./modules/feedback');
+const pushModule = require('./modules/push');
+const appriseModule = require('./modules/apprise');
+const webhooksModule = require('./modules/webhooks');
+const spreadsheetsModule = require('./modules/spreadsheets');
+const mfaModule = require('./modules/mfa');
 
 // Swagger documentation - enabled by default, protected by authentication
 // Mounted on /api-docs to avoid conflicts with API routes
@@ -267,27 +473,31 @@ if (config.swagger.enabled) {
     );
 }
 
-// Apply rate limiting to API routes
-// Use both limiters: apiLimiter for unauthenticated, authenticatedApiLimiter for authenticated
-// Each has skip logic to handle their specific use case
-const registerRateLimiting = (basePath) => {
-    app.use(basePath, apiLimiter);
-    app.use(basePath, authenticatedApiLimiter);
-};
-
-const rateLimitPath =
-    API_VERSION && API_BASE_PATH !== '/api' ? API_BASE_PATH : '/api';
-registerRateLimiting(rateLimitPath);
-
-// Health check (before auth middleware) - ensure it's completely bypassed
+// Health checks come before auth and before the rate limiters, so an uptime
+// monitor never eats into the unauthenticated request budget.
+// /health is liveness (process is up); /health/ready also checks the
+// database and the migration state and is what a load balancer should use.
+const { readiness } = require('./services/healthService');
 const registerHealthCheck = (basePath) => {
     app.get(`${basePath}/health`, (req, res) => {
-        res.status(200).json({
+        const body = {
             status: 'ok',
             timestamp: new Date().toISOString(),
             uptime: process.uptime(),
-            environment: config.environment,
-            trustProxy: config.trustProxy,
+        };
+        // Deployment details stay internal on a public instance
+        if (!config.hosted?.enabled) {
+            body.environment = config.environment;
+            body.trustProxy = config.trustProxy;
+        }
+        res.status(200).json(body);
+    });
+
+    app.get(`${basePath}/health/ready`, async (req, res) => {
+        const report = await readiness();
+        res.status(report.status === 'error' ? 503 : 200).json({
+            ...report,
+            timestamp: new Date().toISOString(),
         });
     });
 };
@@ -298,18 +508,48 @@ if (API_VERSION && API_BASE_PATH !== '/api') {
 }
 healthPaths.forEach(registerHealthCheck);
 
+// Apply rate limiting to API routes
+// Use both limiters: apiLimiter for unauthenticated, authenticatedApiLimiter for authenticated
+// Each has skip logic to handle their specific use case
+const registerRateLimiting = (basePath) => {
+    app.use(basePath, bearerFailureLimiter);
+    app.use(basePath, apiLimiter);
+    app.use(basePath, authenticatedApiLimiter);
+};
+
+// The web app calls /api while versioned clients call /api/v1, and routes are
+// served under both, so both need the limiters.
+registerRateLimiting('/api');
+if (API_VERSION && API_BASE_PATH !== '/api') {
+    registerRateLimiting(API_BASE_PATH);
+}
+
 const registerApiRoutes = (basePath) => {
     app.use(basePath, authModule.routes);
+    app.use(basePath, mfaModule.publicRoutes);
     app.use(basePath, featureFlagsModule.routes);
+    app.use(basePath, demoModule.routes);
     app.use(`${basePath}/oidc`, oidcModule.routes);
+    // Public note links: reachable without signing in
+    app.use(basePath, notesModule.publicRoutes);
+    app.use(basePath, blogModule.routes);
 
     app.use(basePath, requireAuth);
+    // Instances that sell access close everything past this point until the
+    // account has a subscription; billing, the profile and data export stay
+    // open. A no-op unless TUDUDI_REQUIRE_SUBSCRIPTION is set.
+    app.use(basePath, requireSubscription);
     app.use(basePath, tasksModule.routes);
+    app.use(basePath, commentsModule.routes);
     app.use(basePath, habitsModule.routes);
     app.use(basePath, projectsModule.routes);
     app.use(basePath, adminModule.routes);
     app.use(basePath, sharesModule.routes);
     app.use(basePath, areasModule.routes);
+    app.use(basePath, goalsModule.routes);
+    app.use(basePath, dailyPlanModule.routes);
+    app.use(basePath, onboardingModule.routes);
+    app.use(basePath, calendarFeedsModule.routes);
     app.use(basePath, notesModule.routes);
     app.use(basePath, tagsModule.routes);
     app.use(basePath, usersModule.routes);
@@ -319,11 +559,26 @@ const registerApiRoutes = (basePath) => {
     app.use(basePath, matrixModule.routes);
     app.use(basePath, quotesModule.routes);
     app.use(basePath, backupModule.routes);
+    app.use(basePath, billingModule.routes);
     app.use(basePath, searchModule.routes);
     app.use(basePath, viewsModule.routes);
     app.use(basePath, notificationsModule.routes);
     app.use(basePath, mcpModule.routes);
     app.use(basePath, cleanupModule.routes);
+    app.use(basePath, aiAssistantModule.routes);
+    app.use(basePath, adminAiUsageModule.routes);
+    app.use(basePath, peopleModule.routes);
+    app.use(basePath, membersModule.routes);
+    app.use(basePath, templatesModule.routes);
+    app.use(basePath, reportsModule.routes);
+    app.use(basePath, everyoneModule.routes);
+    app.use(basePath, groupsModule.routes);
+    app.use(basePath, feedbackModule.routes);
+    app.use(basePath, pushModule.routes);
+    app.use(basePath, appriseModule.routes);
+    app.use(basePath, webhooksModule.routes);
+    app.use(basePath, spreadsheetsModule.routes);
+    app.use(basePath, mfaModule.routes);
 };
 
 // Register routes at both /api and /api/v1 (if versioned) to maintain backwards compatibility
@@ -340,7 +595,8 @@ app.get('*', (req, res) => {
         !req.path.startsWith('/api/') &&
         !req.path.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg)$/)
     ) {
-        if (config.production) {
+        if (serveFromDist) {
+            res.setHeader('Cache-Control', 'no-cache');
             res.sendFile(path.join(__dirname, 'dist', 'index.html'));
         } else {
             res.sendFile(path.join(__dirname, '../public', 'index.html'));
@@ -378,9 +634,45 @@ async function startServer() {
         const caldavSyncScheduler = require('./modules/caldav/services/sync-scheduler');
         await caldavSyncScheduler.initialize();
 
+        // Public demo sandbox: make sure it exists, then wipe it on a timer.
+        // withJobLock inside resetDemo keeps one worker doing it.
+        if (demoModule.service.isDemoEnabled()) {
+            await demoModule.service.ensureDemoUser();
+            if (!config.disableScheduler) {
+                const everyMs =
+                    Math.max(5, config.demo.resetMinutes) * 60 * 1000;
+                setInterval(() => {
+                    demoModule.service
+                        .resetDemo()
+                        .catch((error) =>
+                            console.error('Demo reset failed:', error)
+                        );
+                }, everyMs).unref();
+            }
+        }
+
         // Validate authentication configuration
         const { validateAuthConfiguration } = require('./config/authConfig');
-        validateAuthConfiguration();
+        await validateAuthConfiguration();
+
+        // A hosted instance must not come up half-configured
+        const { assertHostedConfig } = require('./config/hostedConfig');
+        assertHostedConfig();
+        billingModule.billingService.validateConfig();
+
+        // A hosted instance puts every customer and its members into an
+        // account (a no-op once done, and on a self-hosted instance).
+        try {
+            const placed =
+                await require('./services/accountsService').backfill();
+            if (placed.users || placed.groups) {
+                console.log(
+                    `Accounts: placed ${placed.users} users and ${placed.groups} groups`
+                );
+            }
+        } catch (error) {
+            console.error('Could not place users into accounts:', error);
+        }
 
         const server = app.listen(config.port, config.host, () => {
             console.log(`Server running on port ${config.port}`);
@@ -394,6 +686,35 @@ async function startServer() {
         server.on('error', (err) => {
             console.error('Server error:', err);
         });
+
+        // Close the database on docker stop / Ctrl-C. SQLite then folds its
+        // -wal file back into the main file, so the next start-up backup
+        // and any copy of the file hold every write.
+        let shuttingDown = false;
+        const shutdown = (signal) => {
+            if (shuttingDown) return;
+            shuttingDown = true;
+            console.log(`${signal} received, shutting down`);
+            let closing = false;
+            const exit = () => {
+                if (closing) return;
+                closing = true;
+                sequelize
+                    .close()
+                    .catch((error) =>
+                        console.error('Error closing the database:', error)
+                    )
+                    .finally(() => process.exit(0));
+            };
+            // Open keep-alive connections (MCP clients) would hold
+            // server.close for minutes; stop waiting well before Docker
+            // kills the process.
+            setTimeout(exit, 5000).unref();
+            server.close(exit);
+            server.closeIdleConnections();
+        };
+        process.once('SIGTERM', () => shutdown('SIGTERM'));
+        process.once('SIGINT', () => shutdown('SIGINT'));
     } catch (error) {
         console.error('Failed to start server:', error);
         process.exit(1);

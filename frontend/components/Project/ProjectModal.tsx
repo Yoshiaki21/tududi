@@ -1,27 +1,33 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { createPortal } from 'react-dom';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Area } from '../../entities/Area';
 import { Project } from '../../entities/Project';
+import { Goal } from '../../entities/Goal';
 import ConfirmDialog from '../Shared/ConfirmDialog';
-import DiscardChangesDialog from '../Shared/DiscardChangesDialog';
 import { useToast } from '../Shared/ToastContext';
 import TagInput from '../Tag/TagInput';
 import PriorityDropdown from '../Shared/PriorityDropdown';
 import AreaDropdown from '../Shared/AreaDropdown';
 import DatePicker from '../Shared/DatePicker';
+import DateTimePicker from '../Shared/DateTimePicker';
+import {
+    fromDueParts,
+    toDueParts,
+    isStartAfterDue,
+} from '../../utils/dueDateTime';
 import ProjectStateDropdown from '../Shared/ProjectStateDropdown';
 import { PriorityType } from '../../entities/Task';
 import { useStore } from '../../store/useStore';
 import { useTranslation } from 'react-i18next';
-import { getApiPath } from '../../config/paths';
+import ColorPicker from '../Shared/ColorPicker';
+import GoalDropdown from '../Shared/GoalDropdown';
+import { fetchGoals } from '../../utils/goalsService';
+import EntitySidePanel from '../SidePanel/EntitySidePanel';
+import { fetchProfile } from '../../utils/profileService';
 import {
-    TagIcon,
-    Squares2X2Icon,
-    TrashIcon,
-    CalendarIcon,
-    ExclamationTriangleIcon,
-    PlayIcon,
-} from '@heroicons/react/24/outline';
+    SidePanelField,
+    SidePanelSection,
+    sidePanelInputClass,
+} from '../SidePanel/SidePanelParts';
 
 interface ProjectModalProps {
     isOpen: boolean;
@@ -30,7 +36,41 @@ interface ProjectModalProps {
     onDelete?: (projectUid: string) => Promise<void>;
     project?: Project;
     areas: Area[];
+    // Pre-selected area for a new project (the Focus area, when one is set)
+    defaultAreaId?: number | null;
 }
+
+const MAX_NAME_LENGTH = 150;
+
+const emptyProject = (): Project => ({
+    name: '',
+    description: '',
+    area_id: null,
+    status: 'not_started',
+    tags: [],
+    priority: null,
+    due_date_at: null,
+    start_date: null,
+    start_time: null,
+    unit_price: null,
+});
+
+// Dates from the API can carry a time part; the date input wants YYYY-MM-DD
+const toFormData = (
+    project?: Project | null,
+    defaultAreaId: number | null = null
+): Project => {
+    if (!project) return { ...emptyProject(), area_id: defaultAreaId };
+    let dueDateValue = project.due_date_at;
+    if (dueDateValue && dueDateValue.includes('T')) {
+        dueDateValue = dueDateValue.split('T')[0];
+    }
+    return {
+        ...project,
+        tags: project.tags || [],
+        due_date_at: dueDateValue || null,
+    };
+};
 
 const ProjectModal: React.FC<ProjectModalProps> = ({
     isOpen,
@@ -39,209 +79,66 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
     onDelete,
     project,
     areas,
+    defaultAreaId = null,
 }) => {
-    const [modalJustOpened, setModalJustOpened] = useState(false);
-    const [formData, setFormData] = useState<Project>(
-        project || {
-            name: '',
-            description: '',
-            area_id: null,
-            status: 'not_started',
-            tags: [],
-            priority: null,
-            due_date_at: null,
-        }
-    );
-
-    const [tags, setTags] = useState<string[]>(
-        project?.tags?.map((tag) => tag.name) || []
-    );
-    const [isSaving, setIsSaving] = useState(false);
-    const [defaultUnitPrice, setDefaultUnitPrice] = useState<number>(25000);
-
+    const { t } = useTranslation();
+    const { showSuccessToast, showErrorToast } = useToast();
     const { tagsStore } = useStore();
     // Avoid calling getTags() during component initialization to prevent remounting
     const availableTags = tagsStore.tags;
     const { addNewTags } = tagsStore;
 
-    const modalRef = useRef<HTMLDivElement>(null);
-    const nameInputRef = useRef<HTMLInputElement>(null);
-    const [isClosing, setIsClosing] = useState(false);
-    const [showConfirmDialog, setShowConfirmDialog] = useState(false);
-    const [showDiscardDialog, setShowDiscardDialog] = useState(false);
+    const [formData, setFormData] = useState<Project>(() =>
+        toFormData(project, defaultAreaId)
+    );
+    const [tags, setTags] = useState<string[]>(
+        project?.tags?.map((tag) => tag.name) || []
+    );
+    const [isSaving, setIsSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+    const [availableGoals, setAvailableGoals] = useState<Goal[]>([]);
+    const [defaultUnitPrice, setDefaultUnitPrice] = useState<number>(25000);
 
-    // Collapsible sections state
-    const [expandedSections, setExpandedSections] = useState({
-        status: false,
-        tags: false,
-        area: false,
-        priority: false,
-        dueDate: true,
-    });
-
-    const { showSuccessToast, showErrorToast } = useToast();
-    const { t } = useTranslation();
-
-    // Auto-focus on the name input when modal opens
+    // Start from the saved project each time the panel opens
     useEffect(() => {
-        if (isOpen) {
-            setTimeout(() => {
-                nameInputRef.current?.focus();
-            }, 200);
-        }
+        if (!isOpen) return;
+        setFormData(toFormData(project, defaultAreaId));
+        setTags(project?.tags?.map((tag) => tag.name) || []);
+        setError(null);
+        setShowConfirmDialog(false);
+    }, [isOpen, project]);
+
+    // 人工単価のプレースホルダー用にユーザーの既定単価を取得
+    useEffect(() => {
+        if (!isOpen) return;
+        fetchProfile()
+            .then((profile) => {
+                if (profile?.default_unit_price != null) {
+                    setDefaultUnitPrice(profile.default_unit_price);
+                }
+            })
+            .catch(() => undefined);
     }, [isOpen]);
 
-    // Load tags only when user actually interacts with tag input to prevent refresh
+    useEffect(() => {
+        fetchGoals()
+            .then(setAvailableGoals)
+            .catch(() => setAvailableGoals([]));
+    }, []);
+
     const handleTagInputFocus = () => {
         if (!tagsStore.hasLoaded && !tagsStore.isLoading) {
             tagsStore.loadTags();
         }
     };
 
-    // Manage body scroll when modal is open
-    useEffect(() => {
-        if (isOpen) {
-            document.body.style.overflow = 'hidden';
-        } else {
-            document.body.style.overflow = 'unset';
-        }
-        return () => {
-            document.body.style.overflow = 'unset';
-        };
-    }, [isOpen]);
-
-    useEffect(() => {
-        if (project) {
-            // Convert ISO date to YYYY-MM-DD format if needed
-            let dueDateValue = project.due_date_at;
-            if (dueDateValue && dueDateValue.includes('T')) {
-                dueDateValue = dueDateValue.split('T')[0];
-            }
-
-            setFormData({
-                ...project,
-                tags: project.tags || [],
-                due_date_at: dueDateValue || null,
-            });
-            setTags(project.tags?.map((tag) => tag.name) || []);
-        } else {
-            setFormData({
-                name: '',
-                description: '',
-                area_id: null,
-                status: 'not_started',
-                tags: [],
-                priority: null,
-                due_date_at: null,
-                unit_price: null,
-            });
-            setTags([]);
-            fetch(getApiPath('profile'), { credentials: 'include' })
-                .then((r) => r.ok ? r.json() : null)
-                .then((profile) => {
-                    if (profile?.default_unit_price != null) {
-                        setDefaultUnitPrice(profile.default_unit_price);
-                    }
-                })
-                .catch(() => undefined);
-        }
-        setError(null);
-    }, [project]);
-
-    useEffect(() => {
-        const handleClickOutside = (event: MouseEvent) => {
-            const target = event.target as Node;
-
-            // Check if click is inside modal
-            if (modalRef.current && modalRef.current.contains(target)) {
-                return;
-            }
-
-            // Check if click is on priority dropdown (which is portaled to document.body)
-            const clickedElement = target as Element;
-            if (
-                clickedElement &&
-                clickedElement.closest &&
-                clickedElement.closest(
-                    '.fixed.z-50.bg-white, .fixed.z-50.bg-gray-700'
-                )
-            ) {
-                return;
-            }
-
-            handleClose();
-        };
-
-        if (isOpen && !modalJustOpened) {
-            document.addEventListener('mousedown', handleClickOutside);
-        }
-        return () => {
-            document.removeEventListener('mousedown', handleClickOutside);
-        };
-    }, [isOpen, modalJustOpened]);
-
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') {
-                // Don't show discard dialog if already showing a dialog
-                if (showConfirmDialog || showDiscardDialog) {
-                    // Let the dialog handle its own Escape
-                    return;
-                }
-
-                event.preventDefault();
-                event.stopPropagation();
-
-                // Check for unsaved changes using ref to get current value
-                if (hasUnsavedChangesRef.current()) {
-                    setShowDiscardDialog(true);
-                } else {
-                    handleClose();
-                }
-            }
-        };
-        if (isOpen) {
-            document.addEventListener('keydown', handleKeyDown);
-        }
-        return () => {
-            document.removeEventListener('keydown', handleKeyDown);
-        };
-    }, [isOpen, showConfirmDialog, showDiscardDialog]);
-
     const handleChange = (
-        e: React.ChangeEvent<
-            HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
-        >
+        e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
     ) => {
-        const target = e.target;
-        const { name, type, value } = target;
-
-        // Clear error when user starts typing in the name field
-        if (name === 'name' && error) {
-            setError(null);
-        }
-
-        if (type === 'checkbox') {
-            if (target instanceof HTMLInputElement) {
-                const checked = target.checked;
-                setFormData((prev) => ({
-                    ...prev,
-                    [name]: checked,
-                }));
-            }
-        } else {
-            // Handle empty date values by converting to null
-            let processedValue: any = value;
-            if (name === 'due_date_at' && value === '') {
-                processedValue = null;
-            }
-
-            setFormData((prev) => ({
-                ...prev,
-                [name]: processedValue,
-            }));
-        }
+        const { name, value } = e.target;
+        setFormData((prev) => ({ ...prev, [name]: value }));
+        if (name === 'name' && error) setError(null);
     };
 
     const handleTagsChange = useCallback((newTags: string[]) => {
@@ -252,17 +149,6 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
         }));
     }, []);
 
-    // Track when modal opens to prevent immediate backdrop clicks
-    useEffect(() => {
-        if (isOpen) {
-            setModalJustOpened(true);
-            const timer = setTimeout(() => {
-                setModalJustOpened(false);
-            }, 200); // Prevent backdrop clicks for 200ms after opening
-            return () => clearTimeout(timer);
-        }
-    }, [isOpen]);
-
     const handleDueDateChange = (value: string) => {
         setFormData((prev) => ({
             ...prev,
@@ -270,21 +156,44 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
         }));
     };
 
+    const handleStartChange = (iso: string) => {
+        const parts = toDueParts(iso);
+        setFormData((prev) => ({
+            ...prev,
+            start_date: parts.date,
+            start_time: parts.date ? parts.time : null,
+        }));
+    };
+
     const handleSubmit = async () => {
-        // Validate required fields
-        if (!formData.name.trim()) {
+        const trimmedName = formData.name.trim();
+        if (!trimmedName) {
             setError(
                 t('errors.projectNameRequired', 'Project name is required')
             );
             return;
         }
-
-        const MAX_LENGTH = 150;
-        if (formData.name.trim().length > MAX_LENGTH) {
+        if (
+            isStartAfterDue(
+                formData.start_date,
+                formData.start_time,
+                formData.due_date_at,
+                null
+            )
+        ) {
+            setError(
+                t(
+                    'task.startAfterDueError',
+                    'Start cannot be after the due date'
+                )
+            );
+            return;
+        }
+        if (trimmedName.length > MAX_NAME_LENGTH) {
             setError(
                 t(
                     'errors.projectNameTooLong',
-                    `Project name must be ${MAX_LENGTH} characters or less`
+                    `Project name must be ${MAX_NAME_LENGTH} characters or less`
                 )
             );
             return;
@@ -301,70 +210,66 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
                 addNewTags(newTagNames);
             }
 
-            const projectData = {
+            await onSave({
                 ...formData,
                 tags: tags.map((name) => ({ name })),
-            };
-
-            // Save the project and wait for it to complete
-            await onSave(projectData);
+            });
 
             showSuccessToast(
                 project
                     ? 'Project updated successfully!'
                     : 'Project created successfully!'
             );
-
-            handleClose();
-        } catch (error) {
-            console.error('Error saving project:', error);
+            onClose();
+        } catch (err) {
+            console.error('Error saving project:', err);
             setError(t('errors.projectSaveFailed', 'Failed to save project'));
         } finally {
             setIsSaving(false);
         }
     };
 
-    const handleDeleteClick = () => {
-        setShowConfirmDialog(true);
-    };
-
     const handleDeleteConfirm = async () => {
-        if (project && project.uid && onDelete) {
+        if (project?.uid && onDelete) {
             try {
                 await onDelete(project.uid);
                 showSuccessToast(t('success.projectDeleted'));
                 setShowConfirmDialog(false);
-                handleClose();
-            } catch (error) {
-                console.error('Error deleting project:', error);
+                onClose();
+            } catch (err) {
+                console.error('Error deleting project:', err);
                 showErrorToast(t('errors.failedToDeleteProject'));
             }
         }
     };
 
-    // Check if there are unsaved changes
     const hasUnsavedChanges = () => {
         if (!project) {
-            // New project - check if any field has been filled
             return (
                 formData.name.trim() !== '' ||
                 formData.area_id !== null ||
                 formData.status !== 'not_started' ||
                 tags.length > 0 ||
                 formData.priority !== null ||
-                formData.due_date_at !== null
+                formData.due_date_at !== null ||
+                !!formData.start_date ||
+                !!formData.color
             );
         }
 
-        // Existing project - compare with original
         const formChanged =
             formData.name !== project.name ||
+            (formData.unit_price ?? null) !== (project.unit_price ?? null) ||
             formData.area_id !== project.area_id ||
             formData.status !== project.status ||
             formData.priority !== project.priority ||
-            formData.due_date_at !== project.due_date_at;
+            formData.due_date_at !== project.due_date_at ||
+            (formData.start_date ?? null) !== (project.start_date ?? null) ||
+            (formData.start_time ?? null) !== (project.start_time ?? null) ||
+            formData.color !== project.color ||
+            formData.goal_id !== project.goal_id ||
+            formData.is_maintenance !== project.is_maintenance;
 
-        // Compare tags
         const originalTags = project.tags?.map((tag) => tag.name) || [];
         const tagsChanged =
             tags.length !== originalTags.length ||
@@ -373,483 +278,197 @@ const ProjectModal: React.FC<ProjectModalProps> = ({
         return formChanged || tagsChanged;
     };
 
-    // Use ref to store hasUnsavedChanges so it's always current in the event handler
-    const hasUnsavedChangesRef = useRef(hasUnsavedChanges);
-    useEffect(() => {
-        hasUnsavedChangesRef.current = hasUnsavedChanges;
-    });
-
-    const handleClose = () => {
-        setIsClosing(true);
-        setTimeout(() => {
-            onClose();
-            setIsClosing(false);
-            setShowDiscardDialog(false);
-        }, 300);
-    };
-
-    const handleDiscardChanges = () => {
-        setShowDiscardDialog(false);
-        handleClose();
-    };
-
-    const handleCancelDiscard = () => {
-        setShowDiscardDialog(false);
-    };
-
-    const toggleSection = useCallback(
-        (section: keyof typeof expandedSections) => {
-            setExpandedSections((prev) => {
-                const newExpanded = {
-                    ...prev,
-                    [section]: !prev[section],
-                };
-
-                // Auto-scroll to show the expanded section
-                if (newExpanded[section]) {
-                    setTimeout(() => {
-                        // Try multiple selectors to find the scroll container
-                        const scrollContainer =
-                            modalRef.current?.querySelector(
-                                '.absolute.inset-0.overflow-y-auto'
-                            ) ||
-                            modalRef.current?.querySelector(
-                                '[style*="overflow-y"]'
-                            ) ||
-                            modalRef.current?.querySelector(
-                                '.overflow-y-auto'
-                            ) ||
-                            document.querySelector(
-                                '.absolute.inset-0.overflow-y-auto'
-                            );
-
-                        if (scrollContainer) {
-                            scrollContainer.scrollTo({
-                                top: scrollContainer.scrollHeight,
-                                behavior: 'smooth',
-                            });
-                        }
-                    }, 250); // Increased delay to ensure DOM is updated
-                }
-
-                return newExpanded;
-            });
-        },
-        []
-    );
-
-    if (!isOpen) return null;
-
     // Don't render if areas aren't loaded yet (prevents race condition)
     if (!areas || !Array.isArray(areas)) return null;
 
-    return createPortal(
+    return (
         <>
-            <div
-                className={`fixed top-16 left-0 right-0 bottom-0 flex items-start sm:items-center justify-center bg-gray-900 bg-opacity-80 z-40 transition-opacity duration-300 ${
-                    isClosing ? 'opacity-0' : 'opacity-100'
-                }`}
-                onMouseDown={(e) => {
-                    // Close modal when clicking on backdrop, but not on the modal content
-                    // Use mousedown instead of onClick to prevent issues with text selection dragging
-                    // Also prevent immediate closes after modal opens
-                    if (e.target === e.currentTarget && !modalJustOpened) {
-                        handleClose();
-                    }
-                }}
+            <EntitySidePanel
+                isOpen={isOpen}
+                onClose={onClose}
+                eyebrow={
+                    project?.id ? t('projects.title', 'Projects') : undefined
+                }
+                title={
+                    project?.id
+                        ? formData.name ||
+                          t('project.name', 'Enter project name')
+                        : t('modals.createProject', 'Create Project')
+                }
+                submitLabel={
+                    project?.uid || project?.id
+                        ? t('modals.updateProject', 'Update Project')
+                        : t('modals.createProject', 'Create Project')
+                }
+                submitTestId="project-save-button"
+                isSubmitting={isSaving}
+                isDirty={hasUnsavedChanges()}
+                error={error}
+                onSubmit={handleSubmit}
+                onDelete={
+                    project?.uid && onDelete
+                        ? () => setShowConfirmDialog(true)
+                        : undefined
+                }
+                closeLocked={showConfirmDialog}
+                testId="project-modal"
             >
-                <div
-                    ref={modalRef}
-                    data-testid="project-modal"
-                    data-state={isSaving ? 'saving' : 'idle'}
-                    className={`bg-white dark:bg-gray-800 border-0 sm:border sm:border-gray-200 sm:dark:border-gray-800 sm:rounded-lg sm:shadow-2xl w-full sm:max-w-2xl transform transition-transform duration-300 ${
-                        isClosing ? 'scale-95' : 'scale-100'
-                    } h-full sm:h-auto sm:my-4`}
+                <SidePanelField
+                    label={t('forms.name', 'Name')}
+                    htmlFor="projectName"
                 >
-                    <div className="flex flex-col h-full sm:min-h-[500px] sm:max-h-[80vh]">
-                        {/* Main Form Section */}
-                        <div className="flex-1 flex flex-col transition-all duration-300 bg-white dark:bg-gray-800 sm:rounded-lg">
-                            <div className="flex-1 relative">
-                                <div
-                                    className="absolute inset-0 overflow-y-auto overflow-x-hidden"
-                                    style={{ WebkitOverflowScrolling: 'touch' }}
-                                >
-                                    <form
-                                        className="h-full"
-                                        onSubmit={(e) => {
-                                            e.preventDefault();
-                                            handleSubmit();
-                                        }}
-                                    >
-                                        <fieldset className="h-full flex flex-col">
-                                            {/* Project Title Section - Always Visible */}
-                                            <div className="pb-4 mb-4 px-4 pt-4">
-                                                <input
-                                                    ref={nameInputRef}
-                                                    type="text"
-                                                    id="projectName"
-                                                    name="name"
-                                                    value={formData.name}
-                                                    onChange={handleChange}
-                                                    onKeyDown={(e) => {
-                                                        if (e.key === 'Enter') {
-                                                            e.preventDefault();
-                                                            handleSubmit();
-                                                        }
-                                                    }}
-                                                    required
-                                                    className={`block w-full text-xl font-semibold bg-transparent text-black dark:text-white border-none focus:outline-none py-2`}
-                                                    placeholder={t(
-                                                        'project.name',
-                                                        'Enter project name'
-                                                    )}
-                                                    data-testid="project-name-input"
-                                                />
-                                                {error && (
-                                                    <div className="mt-2 text-red-500 text-sm font-medium">
-                                                        {error}
-                                                    </div>
-                                                )}
-                                            </div>
+                    <input
+                        id="projectName"
+                        type="text"
+                        name="name"
+                        value={formData.name}
+                        onChange={handleChange}
+                        required
+                        className={sidePanelInputClass}
+                        placeholder={t('project.name', 'Enter project name')}
+                        data-testid="project-name-input"
+                    />
+                </SidePanelField>
 
-                                            {/* Expandable Sections - Only show when expanded */}
-                                            {/* Status Section - First */}
-                                            {expandedSections.status && (
-                                                <div className="border-b border-gray-200 dark:border-gray-700 pb-4 mb-4 px-4">
-                                                    <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                                                        {t(
-                                                            'projects.status',
-                                                            'Project Status'
-                                                        )}
-                                                    </h3>
-                                                    <ProjectStateDropdown
-                                                        value={
-                                                            formData.status ||
-                                                            'not_started'
-                                                        }
-                                                        onChange={(status) =>
-                                                            setFormData(
-                                                                (prev) => ({
-                                                                    ...prev,
-                                                                    status,
-                                                                })
-                                                            )
-                                                        }
-                                                    />
-                                                </div>
-                                            )}
+                <SidePanelSection
+                    title={t('projects.status', 'Project Status')}
+                >
+                    <ProjectStateDropdown
+                        value={formData.status || 'not_started'}
+                        onChange={(status) =>
+                            setFormData((prev) => ({ ...prev, status }))
+                        }
+                    />
+                </SidePanelSection>
 
-                                            {expandedSections.tags && (
-                                                <div className="border-b border-gray-200 dark:border-gray-700 pb-4 mb-4 px-4">
-                                                    <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                                                        {t(
-                                                            'forms.tags',
-                                                            'Tags'
-                                                        )}
-                                                    </h3>
-                                                    <TagInput
-                                                        onTagsChange={
-                                                            handleTagsChange
-                                                        }
-                                                        initialTags={tags}
-                                                        availableTags={
-                                                            availableTags
-                                                        }
-                                                        onFocus={
-                                                            handleTagInputFocus
-                                                        }
-                                                    />
-                                                </div>
-                                            )}
+                <SidePanelSection title={t('forms.tags', 'Tags')}>
+                    <TagInput
+                        onTagsChange={handleTagsChange}
+                        initialTags={tags}
+                        availableTags={availableTags}
+                        onFocus={handleTagInputFocus}
+                    />
+                </SidePanelSection>
 
-                                            {expandedSections.area && (
-                                                <div className="border-b border-gray-200 dark:border-gray-700 pb-4 mb-4 px-4">
-                                                    <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                                                        {t(
-                                                            'common.area',
-                                                            'Area'
-                                                        )}
-                                                    </h3>
-                                                    <div className="overflow-visible">
-                                                        <AreaDropdown
-                                                            value={
-                                                                formData.area_id ||
-                                                                null
-                                                            }
-                                                            onChange={(value) =>
-                                                                setFormData(
-                                                                    (prev) => ({
-                                                                        ...prev,
-                                                                        area_id:
-                                                                            value,
-                                                                    })
-                                                                )
-                                                            }
-                                                            areas={areas}
-                                                        />
-                                                    </div>
-                                                </div>
-                                            )}
+                <SidePanelSection title={t('common.area', 'Area')}>
+                    <AreaDropdown
+                        value={formData.area_id || null}
+                        onChange={(value) =>
+                            setFormData((prev) => ({ ...prev, area_id: value }))
+                        }
+                        areas={areas}
+                    />
+                </SidePanelSection>
 
-                                            {expandedSections.priority && (
-                                                <div className="border-b border-gray-200 dark:border-gray-700 pb-4 mb-4 px-4">
-                                                    <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                                                        {t(
-                                                            'forms.priority',
-                                                            'Priority'
-                                                        )}
-                                                    </h3>
-                                                    <PriorityDropdown
-                                                        value={
-                                                            formData.priority ??
-                                                            null
-                                                        }
-                                                        onChange={(
-                                                            value: PriorityType
-                                                        ) =>
-                                                            setFormData({
-                                                                ...formData,
-                                                                priority: value,
-                                                            })
-                                                        }
-                                                    />
-                                                </div>
-                                            )}
+                <SidePanelSection title={t('projects.goalTitle', 'Goal')}>
+                    <GoalDropdown
+                        goalId={formData.goal_id ?? null}
+                        isMaintenance={!!formData.is_maintenance}
+                        goals={availableGoals}
+                        onChange={(id, maintenance) =>
+                            setFormData((prev) => ({
+                                ...prev,
+                                goal_id: id,
+                                is_maintenance: maintenance,
+                            }))
+                        }
+                    />
+                </SidePanelSection>
 
-                                            {expandedSections.dueDate && (
-                                                <div className="border-b border-gray-200 dark:border-gray-700 pb-4 mb-4 px-4 overflow-visible">
-                                                    <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                                                        {t(
-                                                            'forms.dueDate',
-                                                            'Due Date'
-                                                        )}
-                                                    </h3>
-                                                    <div className="overflow-visible">
-                                                        <DatePicker
-                                                            value={
-                                                                formData.due_date_at ||
-                                                                ''
-                                                            }
-                                                            onChange={
-                                                                handleDueDateChange
-                                                            }
-                                                            placeholder="Select due date"
-                                                        />
-                                                    </div>
-                                                </div>
-                                            )}
+                <SidePanelSection title={t('forms.priority', 'Priority')}>
+                    <PriorityDropdown
+                        value={formData.priority ?? null}
+                        onChange={(value: PriorityType) =>
+                            setFormData((prev) => ({
+                                ...prev,
+                                priority: value,
+                            }))
+                        }
+                    />
+                </SidePanelSection>
 
-                                            {/* Unit Price */}
-                                            <div className="px-4 pb-3">
-                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                                    {t('project.unitPriceLabel', '人工単価 (¥/人工)')}
-                                                </label>
-                                                <div className="flex items-center space-x-2">
-                                                    <span className="text-gray-500 dark:text-gray-400 text-sm">¥</span>
-                                                    <input
-                                                        type="number"
-                                                        min="0"
-                                                        step="1000"
-                                                        value={formData.unit_price ?? ''}
-                                                        placeholder={String(defaultUnitPrice)}
-                                                        onChange={(e) =>
-                                                            setFormData({
-                                                                ...formData,
-                                                                unit_price: e.target.value === '' ? null : parseInt(e.target.value, 10),
-                                                            })
-                                                        }
-                                                        className="w-full border border-gray-300 dark:border-gray-600 rounded px-3 py-1.5 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                                                    />
-                                                    <span className="text-gray-500 dark:text-gray-400 text-xs whitespace-nowrap">/人工</span>
-                                                </div>
-                                                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                                    {t('project.unitPriceHint', '空欄の場合はデフォルト単価 ¥{{price}} を使用', { price: defaultUnitPrice.toLocaleString() })}
-                                                </p>
-                                            </div>
-                                        </fieldset>
-                                    </form>
-                                </div>
-                            </div>
+                <SidePanelSection title={t('forms.startDate', 'Start')}>
+                    <DateTimePicker
+                        value={fromDueParts(
+                            formData.start_date,
+                            formData.start_time
+                        )}
+                        onChange={handleStartChange}
+                        placeholder={t(
+                            'forms.task.startDatePlaceholder',
+                            'Select start date'
+                        )}
+                    />
+                </SidePanelSection>
 
-                            {/* Section Icons - Above border, split layout */}
-                            <div className="flex-shrink-0 bg-white dark:bg-gray-800 px-3 py-2">
-                                <div className="flex items-center justify-between">
-                                    {/* Left side: Section icons */}
-                                    <div className="flex items-center space-x-1">
-                                        {/* Status Toggle - First */}
-                                        <button
-                                            type="button"
-                                            onClick={() =>
-                                                toggleSection('status')
-                                            }
-                                            className={`relative p-2 rounded-full transition-colors ${
-                                                expandedSections.status
-                                                    ? 'bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400'
-                                                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
-                                            }`}
-                                            title={t(
-                                                'projects.status',
-                                                'Project Status'
-                                            )}
-                                        >
-                                            <PlayIcon className="h-5 w-5" />
-                                            {formData.status &&
-                                                formData.status !==
-                                                    'not_started' && (
-                                                    <span className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full"></span>
-                                                )}
-                                        </button>
+                <SidePanelSection title={t('forms.dueDate', 'Due Date')}>
+                    <DatePicker
+                        value={formData.due_date_at || ''}
+                        onChange={handleDueDateChange}
+                        placeholder={t('projects.selectDueDatePlaceholder')}
+                    />
+                </SidePanelSection>
 
-                                        {/* Tags Toggle */}
-                                        <button
-                                            type="button"
-                                            onClick={() =>
-                                                toggleSection('tags')
-                                            }
-                                            className={`relative p-2 rounded-full transition-colors ${
-                                                expandedSections.tags
-                                                    ? 'bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400'
-                                                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
-                                            }`}
-                                            title={t('forms.tags', 'Tags')}
-                                        >
-                                            <TagIcon className="h-5 w-5" />
-                                            {formData.tags &&
-                                                formData.tags.length > 0 && (
-                                                    <span className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full"></span>
-                                                )}
-                                        </button>
-
-                                        {/* Area Toggle */}
-                                        <button
-                                            type="button"
-                                            onClick={() =>
-                                                toggleSection('area')
-                                            }
-                                            className={`relative p-2 rounded-full transition-colors ${
-                                                expandedSections.area
-                                                    ? 'bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400'
-                                                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
-                                            }`}
-                                            title={t('common.area', 'Area')}
-                                        >
-                                            <Squares2X2Icon className="h-5 w-5" />
-                                            {formData.area_id && (
-                                                <span className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full"></span>
-                                            )}
-                                        </button>
-
-                                        {/* Priority Toggle */}
-                                        <button
-                                            type="button"
-                                            onClick={() =>
-                                                toggleSection('priority')
-                                            }
-                                            className={`relative p-2 rounded-full transition-colors ${
-                                                expandedSections.priority
-                                                    ? 'bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400'
-                                                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
-                                            }`}
-                                            title={t(
-                                                'forms.priority',
-                                                'Priority'
-                                            )}
-                                        >
-                                            <ExclamationTriangleIcon className="h-5 w-5" />
-                                            {formData.priority != null && (
-                                                <span className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full"></span>
-                                            )}
-                                        </button>
-
-                                        {/* Due Date Toggle */}
-                                        <button
-                                            type="button"
-                                            onClick={() =>
-                                                toggleSection('dueDate')
-                                            }
-                                            className={`relative p-2 rounded-full transition-colors ${
-                                                expandedSections.dueDate
-                                                    ? 'bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400'
-                                                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
-                                            }`}
-                                            title={t(
-                                                'forms.dueDate',
-                                                'Due Date'
-                                            )}
-                                        >
-                                            <CalendarIcon className="h-5 w-5" />
-                                            {formData.due_date_at && (
-                                                <span className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full"></span>
-                                            )}
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* Action Buttons - Below border with custom layout */}
-                            <div className="flex-shrink-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 px-3 py-2 flex items-center justify-between sm:rounded-b-lg">
-                                {/* Left side: Delete and Cancel */}
-                                <div className="flex items-center space-x-3">
-                                    {project && project.id && onDelete && (
-                                        <button
-                                            type="button"
-                                            onClick={handleDeleteClick}
-                                            className="p-2 border border-red-300 dark:border-red-600 text-red-600 dark:text-red-400 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20 focus:outline-none transition duration-150 ease-in-out"
-                                            title={t('common.delete', 'Delete')}
-                                        >
-                                            <TrashIcon className="h-4 w-4" />
-                                        </button>
-                                    )}
-                                    <button
-                                        type="button"
-                                        onClick={handleClose}
-                                        className="text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 focus:outline-none transition duration-150 ease-in-out text-sm"
-                                    >
-                                        {t('common.cancel', 'Cancel')}
-                                    </button>
-                                </div>
-
-                                {/* Right side: Save */}
-                                <button
-                                    type="button"
-                                    onClick={handleSubmit}
-                                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 focus:outline-none transition duration-150 ease-in-out text-sm"
-                                    data-testid="project-save-button"
-                                >
-                                    {project?.uid || project?.id
-                                        ? t(
-                                              'modals.updateProject',
-                                              'Update Project'
-                                          )
-                                        : t(
-                                              'modals.createProject',
-                                              'Create Project'
-                                          )}
-                                </button>
-                            </div>
-                        </div>
+                <SidePanelSection
+                    title={t('project.unitPriceLabel', '人工単価 (¥/人工)')}
+                >
+                    <div className="flex items-center space-x-2">
+                        <span className="text-gray-500 dark:text-gray-400 text-sm">
+                            ¥
+                        </span>
+                        <input
+                            type="number"
+                            min="0"
+                            step="1000"
+                            value={formData.unit_price ?? ''}
+                            placeholder={String(defaultUnitPrice)}
+                            onChange={(e) =>
+                                setFormData((prev) => ({
+                                    ...prev,
+                                    unit_price:
+                                        e.target.value === ''
+                                            ? null
+                                            : parseInt(e.target.value, 10),
+                                }))
+                            }
+                            className={`${sidePanelInputClass} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`}
+                        />
+                        <span className="text-gray-500 dark:text-gray-400 text-xs whitespace-nowrap">
+                            /人工
+                        </span>
                     </div>
-                </div>
-            </div>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {t(
+                            'project.unitPriceHint',
+                            '空欄の場合はデフォルト単価 ¥{{price}} を使用',
+                            { price: defaultUnitPrice.toLocaleString() }
+                        )}
+                    </p>
+                </SidePanelSection>
+
+                <SidePanelSection title={t('forms.color', 'Color')}>
+                    <ColorPicker
+                        value={formData.color || ''}
+                        onChange={(color) =>
+                            setFormData((prev) => ({ ...prev, color }))
+                        }
+                    />
+                </SidePanelSection>
+            </EntitySidePanel>
+
             {showConfirmDialog && (
                 <ConfirmDialog
                     title={t('modals.deleteProject.title', 'Delete Project')}
                     message={t(
                         'modals.deleteProject.message',
-                        'Deleting this project will remove the project only. All items inside will be retained but will no longer belong to any project. Continue?'
+                        'Deleting this project will remove the project only. All items inside will be retained but will no longer belong to any project. Continue?',
+                        { projectName: project?.name }
                     )}
                     onConfirm={handleDeleteConfirm}
                     onCancel={() => setShowConfirmDialog(false)}
                 />
             )}
-            {showDiscardDialog && (
-                <DiscardChangesDialog
-                    onDiscard={handleDiscardChanges}
-                    onCancel={handleCancelDiscard}
-                />
-            )}
-        </>,
-        document.body
+        </>
     );
 };
 

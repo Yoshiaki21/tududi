@@ -2,21 +2,34 @@
 
 const { User, sequelize } = require('../../models');
 const { isAdmin } = require('../../services/rolesService');
+const { getWorkspaceUserIds } = require('../../services/workspaceMembers');
 const { logError } = require('../../services/logService');
 const { getConfig } = require('../../config/config');
 const { isPasswordAuthEnabled } = require('../../config/authConfig');
 const {
     isRegistrationEnabled,
     createUnverifiedUser,
+    checkSignupEmailDomain,
     sendVerificationEmail,
     verifyUserEmail,
+    resendVerificationEmail,
 } = require('./registrationService');
+const {
+    requestPasswordReset,
+    resetPasswordWithToken,
+} = require('./passwordResetService');
+const { MIN_LENGTH_POLICY_MESSAGE } = require('../users/userService');
+const peopleService = require('../people/service');
+const mfaService = require('../mfa/service');
+const mfaSession = require('../mfa/session');
 const packageJson = require('../../../package.json');
+const { getRoleInfo } = require('../../services/rolesService');
 const {
     ValidationError,
     NotFoundError,
     UnauthorizedError,
     ForbiddenError,
+    ServiceUnavailableError,
 } = require('../../shared/errors');
 
 class AuthService {
@@ -25,34 +38,46 @@ class AuthService {
     }
 
     async getRegistrationStatus() {
-        return { enabled: await isRegistrationEnabled() };
+        // True only while hosted Cloud is shut, so a self-hosted instance
+        // with registration off keeps the generic "closed" message instead
+        // of the Cloud-specific "opening soon" copy and its email capture.
+        const { isEmailEnabled } = require('../../services/emailService');
+        return {
+            enabled: await isRegistrationEnabled(),
+            email_enabled: isEmailEnabled(),
+        };
     }
 
-    async register(email, password) {
+    async register(email, password, language) {
+        if (!isPasswordAuthEnabled()) {
+            throw new ForbiddenError(
+                'Password registration is disabled. Please use SSO to sign in.'
+            );
+        }
+
+        if (!(await isRegistrationEnabled())) {
+            throw new NotFoundError('Registration is not enabled');
+        }
+
+        if (!email || !password) {
+            throw new ValidationError('Email and password are required');
+        }
+
+        // Before the transaction opens: the domain check may wait on DNS,
+        // and nothing should hold a database connection while it does.
+        const rejection = await checkSignupEmailDomain(email);
+        if (rejection) {
+            throw new ValidationError(rejection);
+        }
+
         const transaction = await sequelize.transaction();
 
         try {
-            if (!isPasswordAuthEnabled()) {
-                await transaction.rollback();
-                throw new ForbiddenError(
-                    'Password registration is disabled. Please use SSO to sign in.'
-                );
-            }
-
-            if (!(await isRegistrationEnabled())) {
-                await transaction.rollback();
-                throw new NotFoundError('Registration is not enabled');
-            }
-
-            if (!email || !password) {
-                await transaction.rollback();
-                throw new ValidationError('Email and password are required');
-            }
-
             const { user, verificationToken } = await createUnverifiedUser(
                 email,
                 password,
-                transaction
+                transaction,
+                { language }
             );
 
             const emailResult = await sendVerificationEmail(
@@ -60,18 +85,27 @@ class AuthService {
                 verificationToken
             );
 
+            // Without a verification email the account could never be
+            // used, so the user row is not kept. Say why, and say it as a
+            // temporary condition: the address itself is fine.
             if (!emailResult.success) {
                 await transaction.rollback();
                 logError(
                     new Error(emailResult.reason),
                     'Email sending failed during registration, rolling back user creation'
                 );
-                throw new Error(
-                    'Failed to send verification email. Please try again later.'
+                throw new ServiceUnavailableError(
+                    'Registration is temporarily unavailable because verification emails cannot be sent. Please try again later.'
                 );
             }
 
             await transaction.commit();
+
+            try {
+                await peopleService.createSelfPerson(user);
+            } catch (err) {
+                logError(err, 'Failed to create self-person for new user');
+            }
 
             return {
                 message:
@@ -87,12 +121,32 @@ class AuthService {
             }
             if (
                 error.message === 'Invalid email format' ||
-                error.message === 'Password must be at least 6 characters long'
+                error.message === MIN_LENGTH_POLICY_MESSAGE
             ) {
                 throw new ValidationError(error.message);
             }
             throw error;
         }
+    }
+
+    // Same response whether the address is unknown, already verified, or
+    // just got a new link.
+    async resendVerification(email) {
+        if (!isPasswordAuthEnabled()) {
+            throw new ForbiddenError(
+                'Password registration is disabled. Please use SSO to sign in.'
+            );
+        }
+        if (!email || typeof email !== 'string') {
+            throw new ValidationError('Email is required');
+        }
+
+        await resendVerificationEmail(email);
+
+        return {
+            message:
+                'If that address belongs to an unverified account, a new verification email has been sent.',
+        };
     }
 
     async verifyEmail(token) {
@@ -133,10 +187,41 @@ class AuthService {
                     'appearance',
                     'timezone',
                     'avatar_image',
+                    'features',
+                    'ui_settings',
+                    'sidebar_settings',
+                    'onboarded_at',
+                    'onboarding_starter',
                 ],
             });
             if (user) {
                 const admin = await isAdmin(user.uid);
+                const hasCollaborators =
+                    (await getWorkspaceUserIds(session.userId)).length > 0;
+                let features = user.features;
+                if (features && typeof features === 'string') {
+                    try {
+                        features = JSON.parse(features);
+                    } catch {
+                        features = {};
+                    }
+                }
+                let uiSettings = user.ui_settings;
+                if (uiSettings && typeof uiSettings === 'string') {
+                    try {
+                        uiSettings = JSON.parse(uiSettings);
+                    } catch {
+                        uiSettings = null;
+                    }
+                }
+                let sidebarSettings = user.sidebar_settings;
+                if (sidebarSettings && typeof sidebarSettings === 'string') {
+                    try {
+                        sidebarSettings = JSON.parse(sidebarSettings);
+                    } catch {
+                        sidebarSettings = null;
+                    }
+                }
                 return {
                     user: {
                         uid: user.uid,
@@ -147,34 +232,72 @@ class AuthService {
                         appearance: user.appearance,
                         timezone: user.timezone,
                         avatar_image: user.avatar_image,
+                        features: features || {},
+                        ui_settings: uiSettings || null,
+                        sidebar_settings: sidebarSettings || null,
                         is_admin: admin,
+                        // Hosted superadmin without 2FA: the admin panel is
+                        // closed until it is on (modules/admin/mfaGate.js).
+                        admin_mfa_required:
+                            admin &&
+                            getConfig().hosted?.enabled === true &&
+                            !(await mfaService.isEnabled(session.userId)),
+                        ...(await getRoleInfo(user.uid)),
+                        has_collaborators: hasCollaborators,
+                        onboarded_at: user.onboarded_at || null,
+                        onboarding_starter: user.onboarding_starter || null,
                     },
                 };
             }
         }
 
+        // Half signed in (password or SSO done, code still to come): the
+        // sign-in page picks up at the code prompt after a reload.
+        if (mfaSession.getPendingLogin(session)) {
+            return { user: null, mfa_pending: true };
+        }
+
         return { user: null };
     }
 
-    async login(email, password, session) {
+    // Takes req, not req.session: a sign-in regenerates the session, which
+    // puts a new object on req.session.
+    async login(email, password, req) {
         if (!isPasswordAuthEnabled()) {
             throw new ForbiddenError(
                 'Password login is disabled. Please use SSO to sign in.'
             );
         }
 
-        if (!email || !password) {
+        // Non-string values (arrays, objects) would slip past the per-email
+        // limiter, which only keys on string emails, and make bcrypt throw.
+        if (
+            !email ||
+            !password ||
+            typeof email !== 'string' ||
+            typeof password !== 'string'
+        ) {
             throw new ValidationError('Invalid login parameters.');
         }
 
-        const user = await User.findOne({ where: { email } });
+        // Emails are stored lowercased (see the User beforeValidate hook)
+        const user = await User.findOne({
+            where: { email: email.trim().toLowerCase() },
+        });
         if (!user) {
             throw new UnauthorizedError('Invalid credentials');
         }
 
         if (!user.password_digest) {
+            const oidcEnabled =
+                (process.env.OIDC_ENABLED || '').toLowerCase() === 'true';
+            if (oidcEnabled) {
+                throw new UnauthorizedError(
+                    'This account has no password set. Please sign in with your SSO provider, or contact an administrator to set a password.'
+                );
+            }
             throw new UnauthorizedError(
-                'This account uses SSO. Please sign in with your SSO provider.'
+                'This account has no password set. Use "Forgot password" to create one.'
             );
         }
 
@@ -194,15 +317,22 @@ class AuthService {
             throw error;
         }
 
-        session.userId = user.id;
-
-        await new Promise((resolve, reject) => {
-            session.save((err) => {
-                if (err) reject(err);
-                else resolve();
+        // With two-factor sign-in on, the password only gets the session as
+        // far as the code prompt (POST /api/login/mfa).
+        if (await mfaService.isEnabled(user.id)) {
+            await mfaSession.startPendingLogin(req, user, {
+                method: 'email_password',
             });
-        });
+            return { mfa_required: true };
+        }
 
+        await mfaSession.signIn(req, user);
+
+        return this.buildLoginResult(user);
+    }
+
+    // What the app receives after signing in, however the sign-in happened.
+    async buildLoginResult(user) {
         const admin = await isAdmin(user.uid);
         return {
             user: {
@@ -215,8 +345,43 @@ class AuthService {
                 timezone: user.timezone,
                 avatar_image: user.avatar_image,
                 is_admin: admin,
+                ...(await getRoleInfo(user.uid)),
             },
         };
+    }
+
+    // Always answers the same way: whether an address has an account is not
+    // something an unauthenticated caller gets to learn here.
+    async forgotPassword(email) {
+        if (!isPasswordAuthEnabled()) {
+            throw new ForbiddenError(
+                'Password login is disabled. Please use SSO to sign in.'
+            );
+        }
+        if (!email || typeof email !== 'string') {
+            throw new ValidationError('Email is required');
+        }
+
+        await requestPasswordReset(email);
+
+        return {
+            message:
+                'If an account exists for that email, a password reset link has been sent.',
+        };
+    }
+
+    async resetPassword(token, password) {
+        if (!isPasswordAuthEnabled()) {
+            throw new ForbiddenError(
+                'Password login is disabled. Please use SSO to sign in.'
+            );
+        }
+        if (!token || typeof token !== 'string') {
+            throw new ValidationError('Reset token is required');
+        }
+
+        const user = await resetPasswordWithToken(token, password);
+        return { message: 'Password updated', email: user.email };
     }
 
     logout(session) {

@@ -1,40 +1,234 @@
 'use strict';
 
-const {
-    User,
-    Role,
-    Area,
-    Project,
-    Task,
-    Tag,
-    Note,
-    InboxItem,
-    TaskEvent,
-    Action,
-    Permission,
-    View,
-    ApiToken,
-    Notification,
-    RecurringCompletion,
-    sequelize,
-} = require('../../models');
+const { User, Role } = require('../../models');
+const { eraseUserAccount } = require('../../services/accountErasureService');
 
 class AdminRepository {
     /**
      * Find all users with basic attributes.
      */
-    async findAllUsers() {
+    async findAllUsers(userIds = null) {
         return User.findAll({
-            attributes: ['id', 'email', 'name', 'surname', 'created_at'],
+            where: userIds ? { id: userIds } : {},
+            attributes: [
+                'id',
+                'email',
+                'name',
+                'surname',
+                'created_at',
+                'password_digest',
+                'email_verified',
+                'account_id',
+            ],
+        });
+    }
+
+    // Items each user created, per kind, plus when they last created one.
+    // Recurring instances, system tags and self-people are made by the app,
+    // not the user, so none of them count.
+    // Account emails that went out, per user id.
+    async countSentEmailsByUser() {
+        const { EmailDelivery } = require('../../models');
+        const { fn, col } = require('sequelize');
+        const rows = await EmailDelivery.findAll({
+            where: { status: 'sent' },
+            attributes: ['user_id', [fn('COUNT', col('id')), 'count']],
+            group: ['user_id'],
+            raw: true,
+        });
+        return new Map(rows.map((r) => [r.user_id, Number(r.count)]));
+    }
+
+    async countItemsByUser() {
+        const models = require('../../models');
+        const { Op, fn, col } = require('sequelize');
+        const kinds = [
+            ['tasks', 'Task', { habit_mode: false, recurring_parent_id: null }],
+            ['habits', 'Task', { habit_mode: true, recurring_parent_id: null }],
+            ['projects', 'Project', {}],
+            ['notes', 'Note', {}],
+            ['areas', 'Area', {}],
+            ['goals', 'Goal', {}],
+            ['tags', 'Tag', { tag_type: { [Op.ne]: 'system' } }],
+            [
+                'people',
+                'Person',
+                {
+                    [Op.or]: [
+                        { linked_user_id: null },
+                        {
+                            linked_user_id: {
+                                [Op.ne]: col('Person.user_id'),
+                            },
+                        },
+                    ],
+                },
+            ],
+            ['views', 'View', {}],
+            ['inbox', 'InboxItem', {}],
+        ];
+
+        const results = await Promise.all(
+            kinds.map(([, modelName, where]) =>
+                models[modelName].findAll({
+                    attributes: [
+                        'user_id',
+                        [fn('COUNT', col('id')), 'count'],
+                        [fn('MAX', col('created_at')), 'last'],
+                    ],
+                    where,
+                    group: ['user_id'],
+                    raw: true,
+                })
+            )
+        );
+
+        const byUser = new Map();
+        kinds.forEach(([kind], i) => {
+            for (const row of results[i]) {
+                if (!byUser.has(row.user_id)) {
+                    byUser.set(row.user_id, { counts: {}, last: null });
+                }
+                const entry = byUser.get(row.user_id);
+                entry.counts[kind] = Number(row.count);
+                const last = row.last ? new Date(row.last) : null;
+                if (last && (!entry.last || last > entry.last)) {
+                    entry.last = last;
+                }
+            }
+        });
+        return byUser;
+    }
+
+    // Users who created a task, project, note, area or inbox item since
+    // `since`, optionally only among `userIds`. Signup seeds none of these,
+    // so a row means the person did something. Recurring instances are
+    // made by the scheduler and do not count.
+    async findCreatorIdsSince(since, userIds = null) {
+        const models = require('../../models');
+        const { Op } = require('sequelize');
+        const kinds = [
+            ['Task', { recurring_parent_id: null }],
+            ['Project', {}],
+            ['Note', {}],
+            ['Area', {}],
+            ['InboxItem', {}],
+        ];
+        const scope = userIds ? { user_id: userIds } : {};
+        const results = await Promise.all(
+            kinds.map(([modelName, where]) =>
+                models[modelName].findAll({
+                    attributes: ['user_id'],
+                    where: {
+                        ...where,
+                        ...scope,
+                        created_at: { [Op.gte]: since },
+                    },
+                    group: ['user_id'],
+                    raw: true,
+                })
+            )
+        );
+        return new Set(results.flat().map((row) => row.user_id));
+    }
+
+    // How many tasks each of the given users created, recurring instances
+    // left out, as a Map of user id to count.
+    async countTasksByUser(userIds) {
+        if (!userIds || userIds.length === 0) return new Map();
+        const { Task } = require('../../models');
+        const { fn, col } = require('sequelize');
+        const rows = await Task.findAll({
+            attributes: ['user_id', [fn('COUNT', col('id')), 'tasks']],
+            where: { user_id: userIds, recurring_parent_id: null },
+            group: ['user_id'],
+            raw: true,
+        });
+        return new Map(rows.map((row) => [row.user_id, Number(row.tasks)]));
+    }
+
+    // Every day plan of the given users that holds at least one task, as
+    // `{ user_id, plan_date, items }` rows, so the dashboard can tell who
+    // planned a first day and who kept planning.
+    async findPlanSizes(userIds) {
+        if (!userIds || userIds.length === 0) return [];
+        const { DailyPlan, DailyPlanItem } = require('../../models');
+        const plans = await DailyPlan.findAll({
+            attributes: ['id', 'user_id', 'plan_date'],
+            where: { user_id: userIds },
+            raw: true,
+        });
+        if (plans.length === 0) return [];
+        const items = await DailyPlanItem.findAll({
+            attributes: ['daily_plan_id'],
+            where: { daily_plan_id: plans.map((p) => p.id) },
+            raw: true,
+        });
+        const counts = new Map();
+        for (const item of items) {
+            counts.set(
+                item.daily_plan_id,
+                (counts.get(item.daily_plan_id) || 0) + 1
+            );
+        }
+        return plans
+            .filter((p) => counts.has(p.id))
+            .map((p) => ({
+                user_id: p.user_id,
+                plan_date: String(p.plan_date).slice(0, 10),
+                items: counts.get(p.id),
+            }));
+    }
+
+    async findAccountOwnerIds(accountIds = null) {
+        const { Account } = require('../../models');
+        const rows = await Account.findAll({
+            where: accountIds ? { id: accountIds } : {},
+            attributes: ['owner_user_id'],
+            raw: true,
+        });
+        return new Set(rows.map((row) => row.owner_user_id));
+    }
+
+    async findIdentityUserIds(userIds) {
+        const { OIDCIdentity } = require('../../models');
+        const rows = await OIDCIdentity.findAll({
+            attributes: ['user_id'],
+            where: userIds ? { user_id: userIds } : {},
+            raw: true,
+        });
+        return new Set(rows.map((row) => row.user_id));
+    }
+
+    // Who has two-factor sign-in on, among `userIds` (null: everyone).
+    async findMfaUserIds(userIds) {
+        const { UserMfa } = require('../../models');
+        const rows = await UserMfa.findAll({
+            attributes: ['user_id'],
+            where: userIds ? { user_id: userIds } : {},
+            raw: true,
+        });
+        return new Set(rows.map((row) => row.user_id));
+    }
+
+    // Every single sign-on link with its provider and when it was made, so
+    // the dashboard can tell which accounts were created through one.
+    async findIdentities() {
+        const { OIDCIdentity } = require('../../models');
+        return OIDCIdentity.findAll({
+            attributes: ['user_id', 'provider_slug', 'created_at'],
+            order: [['created_at', 'ASC']],
+            raw: true,
         });
     }
 
     /**
      * Find all roles.
      */
-    async findAllRoles() {
+    async findAllRoles(userIds = null) {
         return Role.findAll({
-            attributes: ['user_id', 'is_admin'],
+            where: userIds ? { user_id: userIds } : {},
+            attributes: ['user_id', 'is_admin', 'role', 'capabilities'],
         });
     }
 
@@ -93,95 +287,27 @@ class AdminRepository {
     /**
      * Delete a user and all associated data in a transaction.
      */
-    async deleteUserWithData(userId, requesterId) {
-        const transaction = await sequelize.transaction();
-
-        try {
-            const user = await User.findByPk(userId, { transaction });
-            if (!user) {
-                await transaction.rollback();
-                return { success: false, error: 'User not found', status: 404 };
-            }
-
-            // Prevent deleting the last remaining admin
-            const targetRole = await Role.findOne({
-                where: { user_id: userId },
-                transaction,
-            });
-            if (targetRole?.is_admin) {
-                const adminCount = await Role.count({
-                    where: { is_admin: true },
-                    transaction,
-                });
-                if (adminCount <= 1) {
-                    await transaction.rollback();
-                    return {
-                        success: false,
-                        error: 'Cannot delete the last remaining admin',
-                        status: 400,
-                    };
-                }
-            }
-
-            // Delete all associated data
-            await TaskEvent.destroy({
-                where: { user_id: userId },
-                transaction,
-            });
-
-            const userTasks = await Task.findAll({
-                where: { user_id: userId },
-                attributes: ['id'],
-                transaction,
-            });
-            const taskIds = userTasks.map((t) => t.id);
-            if (taskIds.length > 0) {
-                await RecurringCompletion.destroy({
-                    where: { task_id: taskIds },
-                    transaction,
-                });
-            }
-
-            await Task.destroy({ where: { user_id: userId }, transaction });
-            await Note.destroy({ where: { user_id: userId }, transaction });
-            await Project.destroy({ where: { user_id: userId }, transaction });
-            await Area.destroy({ where: { user_id: userId }, transaction });
-            await Tag.destroy({ where: { user_id: userId }, transaction });
-            await InboxItem.destroy({
-                where: { user_id: userId },
-                transaction,
-            });
-            await View.destroy({ where: { user_id: userId }, transaction });
-            await Notification.destroy({
-                where: { user_id: userId },
-                transaction,
-            });
-            await ApiToken.destroy({ where: { user_id: userId }, transaction });
-            await Permission.destroy({
-                where: { user_id: userId },
-                transaction,
-            });
-            await Permission.destroy({
-                where: { granted_by_user_id: userId },
-                transaction,
-            });
-            await Action.destroy({
-                where: { actor_user_id: userId },
-                transaction,
-            });
-            await Action.destroy({
-                where: { target_user_id: userId },
-                transaction,
-            });
-            await Role.destroy({ where: { user_id: userId }, transaction });
-            await user.destroy({ transaction });
-
-            await transaction.commit();
-            return { success: true };
-        } catch (error) {
-            await transaction.rollback();
-            throw error;
+    async deleteUserWithData(userId) {
+        const user = await User.findByPk(userId);
+        if (!user) {
+            return { success: false, error: 'User not found', status: 404 };
         }
+
+        // Prevent deleting the last remaining admin
+        const targetRole = await Role.findOne({ where: { user_id: userId } });
+        if (targetRole?.is_admin) {
+            const adminCount = await Role.count({ where: { is_admin: true } });
+            if (adminCount <= 1) {
+                return {
+                    success: false,
+                    error: 'Cannot delete the last remaining admin',
+                    status: 400,
+                };
+            }
+        }
+
+        await eraseUserAccount(userId);
+        return { success: true };
     }
 }
 

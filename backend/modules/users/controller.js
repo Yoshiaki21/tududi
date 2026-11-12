@@ -4,6 +4,7 @@ const usersService = require('./service');
 const { UnauthorizedError } = require('../../shared/errors');
 const { getAuthenticatedUserId } = require('../../utils/request-utils');
 const { logError } = require('../../services/logService');
+const { destroyUserSessions } = require('../../services/sessionService');
 const fs = require('fs').promises;
 const path = require('path');
 const { getConfig } = require('../../config/config');
@@ -43,7 +44,9 @@ const usersController = {
      */
     async list(req, res, next) {
         try {
-            const users = await usersService.listUsers();
+            const users = await usersService.listUsers(
+                getAuthenticatedUserId(req)
+            );
             res.json(users);
         } catch (error) {
             next(error);
@@ -72,6 +75,11 @@ const usersController = {
         try {
             const userId = requireUserId(req);
             const profile = await usersService.updateProfile(userId, req.body);
+            // A new password signs the account out everywhere else, the way
+            // a reset does.
+            if (req.body?.newPassword) {
+                await destroyUserSessions(userId, { exceptSid: req.sessionID });
+            }
             res.json(profile);
         } catch (error) {
             next(error);
@@ -113,6 +121,26 @@ const usersController = {
      * POST /api/profile/change-password
      * Change password.
      */
+    // DELETE /api/profile
+    // Erase the caller's own account. Requires the current password, or the
+    // typed email for accounts that have no password.
+    async deleteAccount(req, res, next) {
+        try {
+            const userId = requireUserId(req);
+            const { password, confirm_email } = req.body || {};
+            await usersService.deleteAccount(userId, {
+                password,
+                confirmEmail: confirm_email,
+            });
+            if (req.session) {
+                req.session.destroy(() => {});
+            }
+            res.status(204).end();
+        } catch (error) {
+            next(error);
+        }
+    },
+
     async changePassword(req, res, next) {
         try {
             const userId = requireUserId(req);
@@ -122,6 +150,7 @@ const usersController = {
                 currentPassword,
                 newPassword
             );
+            await destroyUserSessions(userId, { exceptSid: req.sessionID });
             res.json(result);
         } catch (error) {
             next(error);
@@ -294,6 +323,37 @@ const usersController = {
         try {
             const userId = requireUserId(req);
             const result = await usersService.updateUiSettings(
+                userId,
+                req.body
+            );
+            res.json(result);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * GET /api/profile/ai-settings
+     * Get per-user AI provider settings (API key masked).
+     */
+    async getAiSettings(req, res, next) {
+        try {
+            const userId = requireUserId(req);
+            const result = await usersService.getAiSettings(userId);
+            res.json(result);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * PUT /api/profile/ai-settings
+     * Update per-user AI provider settings.
+     */
+    async updateAiSettings(req, res, next) {
+        try {
+            const userId = requireUserId(req);
+            const result = await usersService.updateAiSettings(
                 userId,
                 req.body
             );

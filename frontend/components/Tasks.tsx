@@ -3,12 +3,18 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import TaskList from './Task/TaskList';
 import GroupedTaskList from './Task/GroupedTaskList';
-import NewTask from './Task/NewTask';
 import { Task } from '../entities/Task';
 import { getTitleAndIcon } from './Task/getTitleAndIcon';
 import { getDescription } from './Task/getDescription';
-import { createTask, GroupedTasks } from '../utils/tasksService';
+import { createTask, GroupedTasks, saveTaskOrder } from '../utils/tasksService';
+import {
+    mergeUpdatedGroupedTasks,
+    mergeUpdatedTaskList,
+} from '../utils/taskUpdateMerge';
+import { mergeVisibleOrder } from './Shared/sortableList';
 import { useStore } from '../store/useStore';
+import { appendFocusParams, focusKey, useFocus } from '../utils/focus';
+import FocusEmptyHint from './Focus/FocusEmptyHint';
 import { useToast } from './Shared/ToastContext';
 import { SortOption } from './Shared/SortFilterButton';
 import IconSortDropdown from './Shared/IconSortDropdown';
@@ -21,6 +27,9 @@ import {
 } from '@heroicons/react/24/outline';
 import { getApiPath } from '../config/paths';
 import { getCsrfToken } from '../utils/csrfService';
+import { isQueuedOfflineResponse } from '../utils/authUtils';
+import { isTaskActive } from '../constants/taskStatus';
+import { openTaskPanel } from '../store/taskPanelStore';
 
 const capitalize = (str: string) => str.charAt(0).toUpperCase() + str.slice(1);
 
@@ -39,9 +48,12 @@ const getSearchPlaceholder = (language: string): string => {
 
 const Tasks: React.FC = () => {
     const { t, i18n } = useTranslation();
-    const { showSuccessToast } = useToast();
+    const activeFocus = useFocus();
+    const focusId = focusKey(activeFocus);
+    const { showSuccessToast, showErrorToast } = useToast();
 
     const [tasks, setTasks] = useState<Task[]>([]);
+    const latestFetchId = useRef(0);
     const projects = useStore((state: any) => state.projectsStore.projects);
     const [groupedTasks, setGroupedTasks] = useState<GroupedTasks | null>(null);
     const [upcomingProjects, setUpcomingProjects] = useState<any[]>([]);
@@ -96,14 +108,9 @@ const Tasks: React.FC = () => {
                 return isCompleted;
             });
         } else if (status === 'active') {
-            filteredTasks = filteredTasks.filter((task: Task) => {
-                const isCompleted =
-                    task.status === 'done' ||
-                    task.status === 'archived' ||
-                    task.status === 2 ||
-                    task.status === 3;
-                return !isCompleted;
-            });
+            filteredTasks = filteredTasks.filter((task: Task) =>
+                isTaskActive(task.status)
+            );
         }
 
         if (taskSearchQuery.trim() && !isUpcomingView) {
@@ -184,6 +191,9 @@ const Tasks: React.FC = () => {
             disablePagination?: boolean;
         }
     ) => {
+        // The first render fetches before order_by is in the URL; a slower
+        // earlier response must not overwrite a newer one.
+        const fetchId = ++latestFetchId.current;
         setLoading(resetPagination);
         setError(null);
         try {
@@ -192,12 +202,18 @@ const Tasks: React.FC = () => {
 
             const allTasksUrl = new URLSearchParams(query.toString());
             allTasksUrl.set('client_side_filtering', 'true');
+            appendFocusParams(allTasksUrl, activeFocus);
 
             if (type === 'upcoming') {
                 allTasksUrl.set('type', 'upcoming');
                 allTasksUrl.set('groupBy', 'day');
                 allTasksUrl.set('maxDays', '7');
                 allTasksUrl.set('isMobile', isMobile.toString());
+                allTasksUrl.set('include_subtasks', 'true');
+            }
+
+            if (type === 'today') {
+                allTasksUrl.set('include_subtasks', 'true');
             }
 
             if (!options?.disablePagination && type !== 'upcoming') {
@@ -222,6 +238,7 @@ const Tasks: React.FC = () => {
 
             if (tasksResponse.ok) {
                 const tasksData = await tasksResponse.json();
+                if (fetchId !== latestFetchId.current) return;
 
                 if (resetPagination) {
                     setTasks(tasksData.tasks || []);
@@ -243,7 +260,10 @@ const Tasks: React.FC = () => {
                         });
                     }
                     if (tasksData.projects) {
-                        setUpcomingProjects((prev) => [...prev, ...(tasksData.projects || [])]);
+                        setUpcomingProjects((prev) => [
+                            ...prev,
+                            ...(tasksData.projects || []),
+                        ]);
                     }
                     if (!options?.disablePagination) {
                         const limitToUse = options?.limitOverride ?? limit;
@@ -269,8 +289,10 @@ const Tasks: React.FC = () => {
         } catch (error) {
             setError((error as Error).message);
         } finally {
-            setLoading(false);
-            setIsLoadingMore(false);
+            if (fetchId === latestFetchId.current) {
+                setLoading(false);
+                setIsLoadingMore(false);
+            }
         }
     };
 
@@ -311,7 +333,7 @@ const Tasks: React.FC = () => {
                   }
                 : undefined
         );
-    }, [location, isMobile, groupBy, isUpcomingView]);
+    }, [location, isMobile, groupBy, isUpcomingView, focusId]);
 
     useEffect(() => {
         const handleResize = () => {
@@ -364,12 +386,15 @@ const Tasks: React.FC = () => {
             const taskLink = (
                 <span>
                     {t('task.created', 'Task')}{' '}
-                    <a
-                        href={`/task/${newTask.uid}`}
+                    <button
+                        type="button"
+                        onClick={() =>
+                            newTask.uid && openTaskPanel(newTask.uid)
+                        }
                         className="text-green-200 underline hover:text-green-100"
                     >
                         {newTask.name}
-                    </a>{' '}
+                    </button>{' '}
                     {t('task.createdSuccessfully', 'created successfully!')}
                 </span>
             );
@@ -395,20 +420,27 @@ const Tasks: React.FC = () => {
                 }
             );
 
+            if (isQueuedOfflineResponse(response)) {
+                // Queued for background sync (see public/sw.js) - the body
+                // is a placeholder, not the updated task, so leave local
+                // state as-is rather than merging it in.
+                return;
+            }
+
             if (response.ok) {
                 const updatedTaskFromServer = await response.json();
                 setTasks((prevTasks) =>
-                    prevTasks.map((task) =>
-                        task.id === updatedTask.id
-                            ? {
-                                  ...task,
-                                  ...updatedTaskFromServer,
-                                  subtasks:
-                                      updatedTaskFromServer.subtasks ||
-                                      task.subtasks ||
-                                      [],
-                              }
-                            : task
+                    mergeUpdatedTaskList(
+                        prevTasks,
+                        updatedTask,
+                        updatedTaskFromServer
+                    )
+                );
+                setGroupedTasks((prevGroupedTasks) =>
+                    mergeUpdatedGroupedTasks(
+                        prevGroupedTasks,
+                        updatedTask,
+                        updatedTaskFromServer
                     )
                 );
             } else {
@@ -489,12 +521,41 @@ const Tasks: React.FC = () => {
         setDropdownOpen(false);
     };
 
+    // Dragging a task saves a manual order and switches the list to it; a
+    // drag under another sort starts from that sort (see saveTaskOrder).
+    const handleReorder = async (orderedUids: string[]) => {
+        const isCustom = orderBy.startsWith('custom:');
+        const prevTasks = tasks;
+        const byUid = new Map(tasks.map((task) => [task.uid, task]));
+        const keys = tasks.map((task) => task.uid ?? `id:${task.id}`);
+        setTasks(
+            mergeVisibleOrder(keys, orderedUids).map(
+                (key, index) => byUid.get(key) ?? tasks[index]
+            )
+        );
+        try {
+            await saveTaskOrder(
+                { scope: 'all' },
+                orderedUids,
+                isCustom ? undefined : orderBy
+            );
+            if (!isCustom) handleSortChange('custom:asc');
+        } catch (error) {
+            console.error('Error saving task order:', error);
+            setTasks(prevTasks);
+            showErrorToast(
+                t('tasks.reorderError', 'Failed to save task order')
+            );
+        }
+    };
+
     const sortOptions: SortOption[] = [
         { value: 'due_date:asc', label: t('sort.due_date', 'Due Date') },
         { value: 'name:asc', label: t('sort.name', 'Name') },
         { value: 'priority:desc', label: t('sort.priority', 'Priority') },
         { value: 'status:desc', label: t('sort.status', 'Status') },
         { value: 'created_at:desc', label: t('sort.created_at', 'Created At') },
+        { value: 'custom:asc', label: t('sort.custom', 'Custom') },
         ...(status === 'done'
             ? [
                   {
@@ -507,18 +568,9 @@ const Tasks: React.FC = () => {
 
     const description = getDescription(query, projects, t, location.pathname);
 
-    const isNewTaskAllowed = () => {
-        const type = query.get('type');
-        return status !== 'done' && type !== 'upcoming';
-    };
-
     return (
-        <div
-            className={`w-full pt-4 pb-8 ${isUpcomingView ? 'pl-4 sm:pl-6 md:pl-8' : 'px-2 sm:px-4 lg:px-6'}`}
-        >
-            <div
-                className={`w-full ${isUpcomingView ? '' : 'max-w-5xl mx-auto'}`}
-            >
+        <div className="w-full pt-4 pb-8 px-4 sm:px-6 lg:px-8">
+            <div className="w-full max-w-7xl mx-auto">
                 {/* Title row with info button and filters dropdown on the right */}
                 <div
                     className={`flex items-center justify-between gap-2 min-w-0 ${
@@ -614,46 +666,40 @@ const Tasks: React.FC = () => {
                                                 {t('tasks.groupBy', 'Group by')}
                                             </div>
                                             <div className="py-1">
-                                                {['none', 'project'].map(
-                                                    (val) => (
-                                                        <button
-                                                            key={val}
-                                                            onClick={() => {
-                                                                setGroupBy(
-                                                                    val as
-                                                                        | 'none'
-                                                                        | 'project'
-                                                                );
-                                                                localStorage.setItem(
-                                                                    'tasks_group_by',
-                                                                    val
-                                                                );
-                                                            }}
-                                                            className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center justify-between ${
-                                                                groupBy === val
-                                                                    ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
-                                                                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                                                            }`}
-                                                        >
-                                                            <span>
-                                                                {val ===
-                                                                'project'
-                                                                    ? t(
-                                                                          'tasks.groupByProject',
-                                                                          'Project'
-                                                                      )
-                                                                    : t(
-                                                                          'tasks.grouping.none',
-                                                                          'None'
-                                                                      )}
-                                                            </span>
-                                                            {groupBy ===
-                                                                val && (
-                                                                <CheckIcon className="h-4 w-4" />
-                                                            )}
-                                                        </button>
-                                                    )
-                                                )}
+                                                {(
+                                                    ['none', 'project'] as const
+                                                ).map((val) => (
+                                                    <button
+                                                        key={val}
+                                                        onClick={() => {
+                                                            setGroupBy(val);
+                                                            localStorage.setItem(
+                                                                'tasks_group_by',
+                                                                val
+                                                            );
+                                                        }}
+                                                        className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center justify-between ${
+                                                            groupBy === val
+                                                                ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+                                                                : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                                                        }`}
+                                                    >
+                                                        <span>
+                                                            {val === 'project'
+                                                                ? t(
+                                                                      'tasks.groupByProject',
+                                                                      'Project'
+                                                                  )
+                                                                : t(
+                                                                      'tasks.grouping.none',
+                                                                      'None'
+                                                                  )}
+                                                        </span>
+                                                        {groupBy === val && (
+                                                            <CheckIcon className="h-4 w-4" />
+                                                        )}
+                                                    </button>
+                                                ))}
                                             </div>
                                         </div>
                                     )}
@@ -890,20 +936,6 @@ const Tasks: React.FC = () => {
                     <p className="text-red-500">{error}</p>
                 ) : (
                     <>
-                        {/* New Task Form */}
-                        {isNewTaskAllowed() && (
-                            <div className="mb-6">
-                                <NewTask
-                                    onTaskCreate={async (taskName: string) =>
-                                        await handleTaskCreate({
-                                            name: taskName,
-                                            status: 'not_started',
-                                        })
-                                    }
-                                />
-                            </div>
-                        )}
-
                         {displayTasks.length > 0 ||
                         (groupedTasks &&
                             Object.keys(groupedTasks).length > 0) ? (
@@ -929,30 +961,57 @@ const Tasks: React.FC = () => {
                                         {upcomingProjects.length > 0 && (
                                             <div className="mt-8">
                                                 <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-4">
-                                                    {t('projects.upcomingProjects', 'Upcoming Projects')}
+                                                    {t(
+                                                        'projects.upcomingProjects',
+                                                        'Upcoming Projects'
+                                                    )}
                                                 </h3>
                                                 <div className="space-y-2">
-                                                    {upcomingProjects.map((project) => (
-                                                        <div
-                                                            key={project.uid}
-                                                            className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md transition-shadow"
-                                                        >
-                                                            <div className="flex items-center justify-between">
-                                                                <a
-                                                                    href={`/project/${project.uid}-${project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`}
-                                                                    className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
-                                                                >
-                                                                    {project.name}
-                                                                </a>
-                                                                <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-                                                                    <span>{t('common.due', 'Due')}: </span>
-                                                                    <span className="font-medium">
-                                                                        {new Date(project.due_date_at).toLocaleDateString()}
-                                                                    </span>
+                                                    {upcomingProjects.map(
+                                                        (project) => (
+                                                            <div
+                                                                key={
+                                                                    project.uid
+                                                                }
+                                                                className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-4 hover:shadow-md transition-shadow"
+                                                            >
+                                                                <div className="flex items-center justify-between">
+                                                                    <a
+                                                                        href={`/project/${project.uid}-${project.name
+                                                                            .toLowerCase()
+                                                                            .replace(
+                                                                                /[^a-z0-9]+/g,
+                                                                                '-'
+                                                                            )
+                                                                            .replace(
+                                                                                /^-|-$/g,
+                                                                                ''
+                                                                            )}`}
+                                                                        className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                                                                    >
+                                                                        {
+                                                                            project.name
+                                                                        }
+                                                                    </a>
+                                                                    <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
+                                                                        <span>
+                                                                            {t(
+                                                                                'common.due',
+                                                                                'Due'
+                                                                            )}
+
+                                                                            :{' '}
+                                                                        </span>
+                                                                        <span className="font-medium">
+                                                                            {new Date(
+                                                                                project.due_date_at
+                                                                            ).toLocaleDateString()}
+                                                                        </span>
+                                                                    </div>
                                                                 </div>
                                                             </div>
-                                                        </div>
-                                                    ))}
+                                                        )
+                                                    )}
                                                 </div>
                                             </div>
                                         )}
@@ -961,7 +1020,8 @@ const Tasks: React.FC = () => {
                                     <GroupedTaskList
                                         tasks={displayTasks}
                                         groupedTasks={null}
-                                        groupBy="project"
+                                        groupBy={groupBy}
+                                        onReorder={handleReorder}
                                         onTaskCreate={handleTaskCreate}
                                         onTaskUpdate={handleTaskUpdate}
                                         onTaskCompletionToggle={
@@ -986,6 +1046,11 @@ const Tasks: React.FC = () => {
                                         projects={projects}
                                         onToggleToday={undefined}
                                         showCompletedTasks={showCompleted}
+                                        onReorder={
+                                            isUpcomingView
+                                                ? undefined
+                                                : handleReorder
+                                        }
                                     />
                                 )}
                                 {/* Load more button - hide in upcoming view */}
@@ -1073,6 +1138,7 @@ const Tasks: React.FC = () => {
                                             'Start by creating a new task or changing your filters.'
                                         )}
                                     </p>
+                                    <FocusEmptyHint className="mt-6" />
                                 </div>
                             </div>
                         )}

@@ -54,6 +54,25 @@ describe('Admin Users Management API', () => {
             expect(found.role).toBe('admin');
             expect(found.created_at).toBeTruthy();
         });
+
+        it('says whether each user has verified their email', async () => {
+            const pending = await createTestUser({
+                email: 'pending@example.com',
+            });
+            await User.update(
+                { email_verified: false },
+                { where: { id: pending.id } }
+            );
+            await User.update(
+                { email_verified: true },
+                { where: { id: adminUser.id } }
+            );
+
+            const res = await adminAgent.get('/api/admin/users');
+            const byEmail = (email) => res.body.find((u) => u.email === email);
+            expect(byEmail('admin@example.com').email_verified).toBe(true);
+            expect(byEmail('pending@example.com').email_verified).toBe(false);
+        });
     });
 
     describe('POST /api/admin/users', () => {
@@ -94,7 +113,7 @@ describe('Admin Users Management API', () => {
                 .send({ email: 'shortpass@example.com', password: '123' });
             expect(res.status).toBe(400);
             expect(res.body.error).toMatch(
-                /Password must be at least 6 characters/i
+                /Password must be at least 8 characters/i
             );
         });
 

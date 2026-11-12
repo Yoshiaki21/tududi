@@ -14,7 +14,7 @@
 - **Styling:** Tailwind CSS 3.4.13 + Heroicons
 - **State Management:** Zustand 5.0.3 (global state), SWR 2.2.5 (server state)
 - **Routing:** React Router DOM 6.26.2
-- **Internationalization:** i18next + react-i18next (24 languages)
+- **Internationalization:** i18next + react-i18next (26 languages)
 - **Charts/Analytics:** Recharts 2.15.4
 - **Drag & Drop:** @dnd-kit (sortable tasks)
 - **Development:** webpack-dev-server with proxy configuration
@@ -23,7 +23,7 @@
 
 - **Framework:** Express.js 4.21.2
 - **ORM:** Sequelize 6.37.7
-- **Database:** SQLite 5.1.7 (WAL mode, memory-mapped I/O for performance)
+- **Database:** SQLite (default; WAL mode, memory-mapped I/O) or PostgreSQL 14+ (opt-in via `DATABASE_URL`, see [database.md](database.md))
 - **Authentication:** bcrypt + express-session + connect-session-sequelize
 - **Security:** Helmet, CORS, express-rate-limit
 - **API Documentation:** Swagger (swagger-jsdoc + swagger-ui-express)
@@ -50,13 +50,13 @@ graph TD
     Browser["Browser<br>http://localhost:8080"] --> WebpackDev["Webpack Dev Server<br>Port: 8080<br>- Hot reload<br>- Proxy /api/*<br>- Proxy /locales/*"]
     WebpackDev -->|Proxies requests| Express["Express Server<br>Port: 3002<br>- API endpoints<br>- Session auth<br>- Rate limiting"]
     Express --> Sequelize["Sequelize ORM<br>- Model layer<br>- Relationships<br>- Migrations"]
-    Sequelize --> SQLite["SQLite Database<br>database.sqlite<br>- WAL mode<br>- Optimized I/O"]
+    Sequelize --> Database["Database<br>SQLite file (default, WAL mode)<br>or PostgreSQL via DATABASE_URL"]
 
     style Browser fill:#1e3a5f,stroke:#4a9eff,color:#fff
     style WebpackDev fill:#5f4a1e,stroke:#ffa94a,color:#fff
     style Express fill:#5f1e4a,stroke:#ff4a9e,color:#fff
     style Sequelize fill:#1e5f1e,stroke:#4aff4a,color:#fff
-    style SQLite fill:#4a1e5f,stroke:#9e4aff,color:#fff
+    style Database fill:#4a1e5f,stroke:#9e4aff,color:#fff
 ```
 
 ### Production Mode
@@ -67,15 +67,17 @@ graph LR
     Express -->|Static files| Dist["/dist<br>compiled React app"]
     Express -->|/api routes| API["API Layer"]
     API --> Sequelize["Sequelize"]
-    Sequelize --> SQLite["SQLite"]
+    Sequelize --> Database["SQLite or PostgreSQL"]
 
     style Browser fill:#1e3a5f,stroke:#4a9eff,color:#fff
     style Express fill:#5f1e4a,stroke:#ff4a9e,color:#fff
     style Dist fill:#5f4a1e,stroke:#ffa94a,color:#fff
     style API fill:#1e5f1e,stroke:#4aff4a,color:#fff
     style Sequelize fill:#1e5f1e,stroke:#4aff4a,color:#fff
-    style SQLite fill:#4a1e5f,stroke:#9e4aff,color:#fff
+    style Database fill:#4a1e5f,stroke:#9e4aff,color:#fff
 ```
+
+The engine is chosen at startup from environment variables (`DATABASE_URL` or `DB_DIALECT`); see [PostgreSQL Deployment](16-postgresql.md) and [database.md](database.md). Application code stays engine-agnostic except for the few helpers in `backend/utils/db-dialect.js`.
 
 ---
 
@@ -197,10 +199,12 @@ graph TD
 1. **Ownership** → Automatic RW access
    - User has RW for resources they created
 
-2. **Project Sharing** → Granted via Permission model
-   - Permission record grants RO/RW/ADMIN to specific user
-   - resource_type: 'project', 'task', 'note'
+2. **Sharing** → Granted via the Permission model (direct shares) and `group_permissions` (group shares)
+   - Shares grant RO or RW; `ADMIN` exists in the access enum but the share API does not hand it out
+   - A share is a pending invitation until the recipient accepts
+   - resource_type: 'project', 'task', 'note', 'area', 'goal'
    - resource_uid: unique identifier
+   - Read shared access through `permissionSources`, never `Permission` alone (see [User Groups](18-user-groups.md))
 
 3. **Inheritance**
    - Tasks inherit access from parent Project
@@ -224,31 +228,48 @@ router.get('/task/:id',
 
 ## Core Modules Overview
 
-### Backend Modules (19 total)
+### Backend Modules (36 total)
 
 Located in `/backend/modules/`, each follows consistent architecture:
 
 | Module | Purpose | Complexity |
 |--------|---------|------------|
-| **tasks** | Task management, subtasks, recurring | High - most complex module |
+| **tasks** | Task management, subtasks, recurring, Today/Upcoming lists | High - most complex module |
 | **projects** | Project CRUD and organization | Medium |
 | **areas** | Area categorization | Low |
-| **notes** | Note-taking system | Medium |
-| **tags** | Tagging system | Low |
-| **users** | User management | Medium |
-| **auth** | Authentication (login/register) | Medium |
-| **shares** | Project sharing & permissions | High |
-| **telegram** | Telegram bot integration | Medium |
-| **inbox** | Quick capture inbox | Low |
+| **goals** | Outcome-level goals between areas and projects | Medium |
+| **notes** | Note-taking system, public note links | Medium |
+| **tags** | Tagging system, `today`/`someday` system tags | Low |
+| **comments** | Task comments, replies, @mentions, reactions | Medium |
+| **templates** | Project templates and the optional marketplace | Medium |
 | **habits** | Habit tracking | Medium |
-| **notifications** | In-app notifications | Medium |
-| **search** | Universal search | Medium |
+| **inbox** | Quick capture inbox | Low |
 | **views** | Saved custom views | Low |
-| **admin** | Admin operations | Low |
+| **search** | Universal search | Medium |
+| **reports** | GTD report (`/api/reports/gtd`) | Low |
+| **everyone** | The Everyone board across members | Medium |
+| **people** | Contacts and assignable people | Medium |
+| **members** | Workspace members, sign-in links for members without an email | Medium |
+| **groups** | Admin-managed user groups | Medium |
+| **shares** | Sharing, invitations and permissions | High |
+| **users** | User profile and settings | Medium |
+| **auth** | Authentication (login/register/password reset) | Medium |
+| **oidc** | OIDC/SSO login, providers configurable in the database | High |
+| **oauth** | OAuth2 protected-resource metadata for JWT bearer tokens | Low |
+| **admin** | Admin operations (users, roles, dashboard) | Medium |
+| **admin-ai-usage** | Admin view of AI token usage (hosted mode) | Low |
+| **ai-assistant** | Daily Brief, task and project insights | Medium |
+| **mcp** | Model Context Protocol server (62 tools) | High |
+| **caldav** | CalDAV server and remote calendar sync | High |
+| **telegram** | Telegram bot integration | Medium |
+| **notifications** | In-app notifications | Medium |
 | **backup** | Backup/restore functionality | High |
+| **billing** | Subscriptions and plan limits (hosted mode) | Medium |
+| **landing** | Marketing pages served for `TUDUDI_LANDING_HOSTS` | Low |
+| **demo** | Public demo sandbox | Low |
 | **feature-flags** | Feature flag management | Low |
 | **quotes** | Daily quotes | Low |
-| **url** | URL handling | Low |
+| **url** | URL title extraction (with SSRF guard) | Low |
 
 ---
 
@@ -321,6 +342,28 @@ Located in `/backend/modules/`, each follows consistent architecture:
 - API services in `/frontend/utils/[resource]Service.ts`
 - Custom hooks in `/frontend/hooks/`
 - Context providers in `/frontend/contexts/`
+
+---
+
+## PWA / Offline Architecture
+
+Tududi ships as an installable Progressive Web App. See [docs/15-pwa.md](15-pwa.md) for the full specification; the key points for architecture purposes:
+
+- **`public/sw.js`** is the service worker. It is copied to `dist/` by `CopyWebpackPlugin` unchanged and served from the root scope.
+- **`public/manifest.json`** declares the app shell (name, icons, display mode). The `<link rel="manifest">` tag is in `public/index.html`.
+- The SW is registered in **production only** (`NODE_ENV === 'production'`) from `frontend/index.tsx`. Dev builds actively unregister any lingering SWs to prevent cache confusion.
+- `frontend/utils/swUtils.ts` provides `notifySwSession(userId)` and `notifySwClearCache()` — called at login and logout respectively to maintain session-scoped caches.
+
+**Cache strategy by request type:**
+
+| Request | Strategy |
+|---------|----------|
+| Static assets (JS, CSS, fonts, images) | Cache-first, populate on first network hit |
+| API `GET` requests | Network-first, stale cache fallback when offline |
+| API `POST / PUT / DELETE` | Network; if offline, queue to IndexedDB and replay via Background Sync |
+| Navigation (`mode: navigate`) | Network-first, fall back to cached `/` shell |
+
+**Session security:** API cache entries are cleared on 401/403, explicit logout, or `CLEAR_CACHE` postMessage. Queued mutations are tagged with the user's numeric ID; on replay a session-ID mismatch causes the entry to be dropped rather than executed under a different principal.
 
 ---
 

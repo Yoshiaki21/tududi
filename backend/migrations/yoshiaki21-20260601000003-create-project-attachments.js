@@ -64,9 +64,14 @@ module.exports = {
             },
         });
 
-        await safeAddIndex(queryInterface, 'project_attachments', ['project_id'], {
-            name: 'project_attachments_project_id',
-        });
+        await safeAddIndex(
+            queryInterface,
+            'project_attachments',
+            ['project_id'],
+            {
+                name: 'project_attachments_project_id',
+            }
+        );
         await safeAddIndex(queryInterface, 'project_attachments', ['user_id'], {
             name: 'project_attachments_user_id',
         });

@@ -1,14 +1,31 @@
-const { Tag, Project, Task } = require('../../../models');
+const { Tag, Project, Area, Task, Person, Goal } = require('../../../models');
 
 const TASK_INCLUDES = [
     {
         model: Tag,
-        attributes: ['id', 'name', 'uid'],
+        attributes: ['id', 'name', 'uid', 'color'],
         through: { attributes: [] },
     },
     {
         model: Project,
-        attributes: ['id', 'name', 'uid', 'image_url'],
+        attributes: ['id', 'name', 'uid', 'image_url', 'color'],
+        required: false,
+    },
+    {
+        model: Area,
+        attributes: ['id', 'name', 'uid', 'color'],
+        required: false,
+    },
+    {
+        model: Person,
+        as: 'AssignedTo',
+        attributes: ['uid', 'name', 'color', 'relationship_type'],
+        required: false,
+    },
+    {
+        model: Goal,
+        as: 'Goal',
+        attributes: ['id', 'uid', 'title', 'status'],
         required: false,
     },
 ];
@@ -22,13 +39,13 @@ const TASK_INCLUDES_WITH_SUBTASKS = [
         include: [
             {
                 model: Tag,
-                attributes: ['id', 'name', 'uid'],
+                attributes: ['id', 'name', 'uid', 'color'],
                 through: { attributes: [] },
             },
         ],
         separate: true, // Required for order to work with associations
         order: [
-            ['order', 'ASC'],
+            ['order', 'ASC NULLS FIRST'],
             ['created_at', 'ASC'],
         ],
     },

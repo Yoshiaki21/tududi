@@ -117,6 +117,35 @@ function isOverdue(utcDate, userTimezone) {
 }
 
 /**
+ * Convert a local date and time (YYYY-MM-DD + HH:mm) in the user's timezone to UTC
+ * @param {string} dateString - Date in YYYY-MM-DD format
+ * @param {string} timeString - Time in HH:mm (24-hour) format
+ * @param {string} userTimezone - User's timezone
+ * @returns {Date|null} UTC Date object, or null when either part is missing or invalid
+ */
+function dueDateTimeToUTC(dateString, timeString, userTimezone) {
+    if (!dateString || !timeString) return null;
+
+    const parsed = moment.tz(
+        `${dateString} ${timeString}`,
+        'YYYY-MM-DD HH:mm',
+        true,
+        userTimezone
+    );
+    return parsed.isValid() ? parsed.utc().toDate() : null;
+}
+
+/**
+ * Convert a UTC instant to the user's local HH:mm time
+ * @param {Date} utcDate - UTC Date object
+ * @param {string} userTimezone - User's timezone
+ * @returns {string} Time in HH:mm format
+ */
+function utcToUserTimeString(utcDate, userTimezone) {
+    return moment.utc(utcDate).tz(userTimezone).format('HH:mm');
+}
+
+/**
  * Convert due_date from request body to UTC Date for database storage
  * @param {string} dueDateString - Due date from frontend (YYYY-MM-DD)
  * @param {string} userTimezone - User's timezone
@@ -175,6 +204,21 @@ function processDeferUntilForResponse(utcDeferUntil, userTimezone) {
 }
 
 /**
+ * Get the day of week (0=Sunday..6=Saturday) for a UTC instant, as observed
+ * in the user's timezone. Use this instead of `date.getUTCDay()` whenever
+ * `date` may represent "local midnight" converted to a UTC instant, since
+ * for positive-UTC-offset timezones that instant's UTC calendar day is the
+ * previous local day, and `getUTCDay()` would return the wrong weekday.
+ * @param {Date} date - UTC Date instant
+ * @param {string} userTimezone - User's timezone
+ * @returns {number|null} Day of week local to userTimezone, or null
+ */
+function getWeekdayInTimezone(date, userTimezone) {
+    if (!date) return null;
+    return moment.tz(date, userTimezone || 'UTC').day();
+}
+
+/**
  * Validate timezone string
  * @param {string} timezone - Timezone to validate
  * @returns {boolean} True if timezone is valid
@@ -190,6 +234,47 @@ function isValidTimezone(timezone) {
     } catch (error) {
         return false;
     }
+}
+
+const START_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+const START_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+// Converts a start date (YYYY-MM-DD) and optional time (HH:mm) in the
+// user's timezone to the stored UTC instant. Without a time the start is
+// the beginning of that day.
+function startDateTimeToUTC(dateString, timeString, userTimezone) {
+    const date = dateString ? String(dateString).trim().slice(0, 10) : '';
+    if (!date) return { value: null, hasTime: false };
+    if (
+        !START_DATE_PATTERN.test(date) ||
+        !moment(date, 'YYYY-MM-DD', true).isValid()
+    ) {
+        throw new Error('start date must be in YYYY-MM-DD format');
+    }
+
+    const time = timeString ? String(timeString).trim() : '';
+    if (!time) {
+        return {
+            value: dateStringToUTC(date, userTimezone, 'start'),
+            hasTime: false,
+        };
+    }
+    if (!START_TIME_PATTERN.test(time)) {
+        throw new Error('start_time must be in HH:mm format');
+    }
+    return {
+        value: dueDateTimeToUTC(date, time, userTimezone),
+        hasTime: true,
+    };
+}
+
+// Splits a stored start instant into the user's local date and time.
+function startForResponse(utcStart, hasTime, userTimezone) {
+    if (!utcStart) return { date: null, time: null };
+    return {
+        date: utcToUserDateString(utcStart, userTimezone),
+        time: hasTime ? utcToUserTimeString(utcStart, userTimezone) : null,
+    };
 }
 
 /**
@@ -212,8 +297,13 @@ module.exports = {
     isOverdue,
     processDueDateForStorage,
     processDueDateForResponse,
+    dueDateTimeToUTC,
+    utcToUserTimeString,
     processDeferUntilForStorage,
     processDeferUntilForResponse,
+    startDateTimeToUTC,
+    startForResponse,
     isValidTimezone,
     getSafeTimezone,
+    getWeekdayInTimezone,
 };

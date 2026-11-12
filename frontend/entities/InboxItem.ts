@@ -1,10 +1,13 @@
+import { InboxAttachment } from './Attachment';
+
 export interface InboxItem {
     id?: number;
     uid?: string;
     content: string;
     title?: string | null;
-    status?: string; // 'added' | 'processed' | 'deleted'
+    status?: string; // 'added' | 'processed' | 'deleted' | 'trashed'
     source?: string; // 'telegram'
     created_at?: string;
     updated_at?: string;
+    attachments?: InboxAttachment[];
 }

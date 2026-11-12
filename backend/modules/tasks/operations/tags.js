@@ -1,13 +1,35 @@
 const { Tag } = require('../../../models');
 const { validateTagName } = require('../../tags/tagsService');
 
+// Tags live in a join table, so changing them alone leaves the task row (and
+// its updated_at) untouched. CalDAV ETags, the collection CTag and the outbound
+// sync all key off updated_at, so touch it when the set of tags really changed
+// (#1822).
+async function setTagsAndTouch(task, tags) {
+    const before = (await task.getTags({ attributes: ['id'] }))
+        .map((tag) => tag.id)
+        .sort((a, b) => a - b);
+    const after = tags.map((tag) => tag.id).sort((a, b) => a - b);
+
+    await task.setTags(tags);
+
+    if (before.join(',') !== after.join(',')) {
+        task.changed('updated_at', true);
+        await task.save();
+    }
+}
+
 async function updateTaskTags(task, tagsData, userId) {
     if (!tagsData) return;
+
+    const normalizedTags = tagsData.map((tag) =>
+        typeof tag === 'string' ? { name: tag } : tag
+    );
 
     const validTagNames = [];
     const invalidTags = [];
 
-    for (const tag of tagsData) {
+    for (const tag of normalizedTags) {
         const validation = validateTagName(tag.name);
         if (validation.valid) {
             if (!validTagNames.includes(validation.name)) {
@@ -25,7 +47,7 @@ async function updateTaskTags(task, tagsData, userId) {
     }
 
     if (validTagNames.length === 0) {
-        await task.setTags([]);
+        await setTagsAndTouch(task, []);
         return;
     }
 
@@ -43,7 +65,7 @@ async function updateTaskTags(task, tagsData, userId) {
     );
 
     const allTags = [...existingTags, ...createdTags];
-    await task.setTags(allTags);
+    await setTagsAndTouch(task, allTags);
 }
 
 module.exports = {

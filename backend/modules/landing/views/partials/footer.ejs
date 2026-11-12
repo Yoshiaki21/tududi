@@ -1,0 +1,67 @@
+<%# `t` is declared in the page that includes this; an include compiles
+    into its own function, so it is re-bound here from the shared locals. %>
+<% const t = i18n.t; %>
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-brand">
+                    <img src="/landing-assets/wide-logo-dark.png" alt="tududi">
+                    <p><%= t('footer.tagline') %></p>
+                </div>
+                <div>
+                    <h3><%= t('footer.colProduct') %></h3>
+                    <div class="footer-col">
+                        <a href="#features"><%= t('nav.features') %></a>
+                        <a href="#ai"><%= t('nav.ai') %></a>
+                        <a href="#pricing"><%= t('nav.pricing') %></a>
+                        <a href="<%= localePath(i18n.locale, '/cloud') %>"><%= t('pricing.plans.cloud.name') %></a>
+                        <% if (typeof blogUrl !== 'undefined' && blogUrl) { %>
+                        <a href="<%= blogUrl %>"><%= t('nav.blog') %></a>
+                        <% } %>
+                    </div>
+                </div>
+                <div>
+                    <h3><%= t('footer.colCommunity') %></h3>
+                    <div class="footer-col">
+                        <a href="https://discord.gg/fkbeJ9CmcH"><i class="fab fa-discord"></i> Discord</a>
+                        <a href="https://www.reddit.com/r/tududi/"><i class="fab fa-reddit"></i> Reddit</a>
+                        <a href="/contact"><i class="fas fa-envelope"></i> <%= t('footer.linkContact') %></a>
+                    </div>
+                </div>
+                <%# Donations moved down here from the dark band that used to sit
+                    just before the pricing pitch. A small donation is a fine thing
+                    to offer on the way out, not on the way in. %>
+                <div>
+                    <h3><%= t('footer.colSupport') %></h3>
+                    <div class="footer-col">
+                        <a href="https://github.com/sponsors/chrisvel">GitHub Sponsors</a>
+                        <a href="https://www.patreon.com/ChrisVeleris">Patreon</a>
+                        <a href="https://coff.ee/chrisveleris"><%= t('footer.linkCoffee') %></a>
+                        <a href="https://www.paypal.com/donate/?hosted_button_id=QEQCKLXPB6XAE">PayPal</a>
+                    </div>
+                </div>
+                <div class="footer-sub">
+                    <h3><%= t('footer.subTitle') %></h3>
+                    <p><%= t('footer.subBody') %></p>
+                    <form action="/waitlist" method="post">
+                        <input type="text" name="company" value="" autocomplete="off" tabindex="-1" aria-hidden="true" class="hp-field">
+                        <input type="email" name="email" placeholder="<%= t('waitlist.placeholder') %>" aria-label="<%= t('waitlist.inputLabel') %>" required>
+                        <input type="hidden" name="source" value="footer">
+                        <input type="hidden" name="locale" value="<%= i18n.locale %>">
+                        <button type="submit"><%= t('footer.subSubmit') %></button>
+                    </form>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 <strong>tududi</strong>. <%= t('footer.rights') %></p>
+                <p class="footer-legal">
+                    <a href="/terms"><%= t('footer.linkTerms') %></a>
+                    <a href="/privacy"><%= t('footer.linkPrivacy') %></a>
+                    <a href="/refunds"><%= t('footer.linkRefunds') %></a>
+                    <button type="button" data-consent-open><%= t('footer.linkCookies') %></button>
+                </p>
+            </div>
+        </div>
+    </footer>
+    <%- include('consent') %>

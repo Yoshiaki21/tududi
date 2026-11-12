@@ -34,10 +34,11 @@ This document explains how Views work in tududi from a user behavior perspective
    - Enter search text
    - Select entity types (Tasks, Notes, Projects)
    - Set priority filter (High, Medium, Low)
+   - Set status filter (e.g. In Progress)
    - Set due date filter (Today, This Week, Overdue, etc.)
    - Set defer filter (Deferred, Not Deferred, etc.)
    - Add tags
-   - Add extras (Recurring, Subtasks, etc.)
+   - Add extras (Recurring, Has Content, Deferred, Has Tags, Assigned to Project, Overdue, No Due Date). Most come in pairs with an opposite (is not Recurring, has no Content, is not Deferred, has no Tags, has no Project); picking one side drops the other
 
 3. **Click "Save as View"**
 4. **Enter a name** for your view
@@ -49,6 +50,7 @@ When you save a view, it stores:
 - **Search query** - The text you searched for
 - **Filters** - Entity types (Tasks, Notes, Projects)
 - **Priority** - Priority filter setting
+- **Status** - One task status (Not Started, Planned, In Progress, Waiting, Done, Cancelled)
 - **Due** - Due date filter setting
 - **Defer** - Defer filter setting
 - **Tags** - Selected tags
@@ -57,7 +59,7 @@ When you save a view, it stores:
 The view does **NOT** save:
 - Sort order (set per-session when viewing)
 - Group by setting (set per-session when viewing)
-- Show status (active/completed/all) (set per-session when viewing)
+- Show status (active/completed/all) (set per-session when viewing). A view saved with a Status filter shows only that status and hides this toggle.
 
 ---
 
@@ -195,7 +197,7 @@ When you open a view, it displays:
 | `due` | String | Due date filter: "today", "this_week", "overdue", etc. (nullable) |
 | `defer` | String | Defer filter: "deferred", "not_deferred", etc. (nullable) |
 | `tags` | JSON Array | Tag names to filter by |
-| `extras` | JSON Array | Extra filters: "recurring", "subtasks", etc. |
+| `extras` | JSON Array | Extra filters: "recurring", "not_recurring", "overdue", "has_content", "no_content", "deferred", "not_deferred", "has_tags", "no_tags", "no_due_date", "assigned_to_project", "no_project" |
 | `is_pinned` | Boolean | Whether view is pinned to sidebar |
 | `created_at` | DateTime | When view was created |
 | `updated_at` | DateTime | Last modified time |
@@ -279,7 +281,7 @@ When viewing a view at `/views/:uid`, you can use URL parameters to control disp
 |-----------|--------|---------|-------------|
 | `order_by` | `due_date:asc`, `name:asc`, `priority:desc`, `status:desc`, `created_at:desc` | `created_at:desc` | Task sort order |
 | `group_by` | `none`, `project` | `none` | Task grouping |
-| `status` | `active`, `all`, `completed` | `active` | Task status filter |
+| `status` | `active`, `all`, `completed` | `active` | Task status filter (ignored when the view has a saved Status) |
 | `search` | Any text | Empty | Search within view results |
 
 **Example:**
@@ -413,7 +415,7 @@ Changes are reflected immediately in the view results.
 - Frontend views list: `/frontend/components/Views.tsx`
 - Frontend view detail: `/frontend/components/ViewDetail.tsx`
 - Sidebar views: `/frontend/components/Sidebar/SidebarViews.tsx`
-- Save view modal: `/frontend/components/UniversalSearch/SaveViewModal.tsx`
+- Save view: `/frontend/components/UniversalSearch/SearchMenu.tsx`
 
 ---
 

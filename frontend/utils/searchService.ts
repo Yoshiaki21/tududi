@@ -11,6 +11,10 @@ interface SearchParams {
     limit?: number;
     offset?: number;
     excludeSubtasks?: boolean;
+    status?: 'active' | 'completed' | 'all';
+    taskStatus?: string;
+    // Focus scope for live search; saved Views never pass it
+    scope?: { area_uid?: string; project_uid?: string };
 }
 
 interface SearchResult {
@@ -36,6 +40,14 @@ interface SearchResponse {
     pagination?: Pagination;
 }
 
+// A View with no entity-type filter configured must search Tasks only.
+// Passing an empty array through to searchUniversal omits the `filters`
+// query param entirely, which makes the backend default to searching (and
+// summing the counts of) every entity type: Task, Project, Area, Note, Tag.
+export const resolveViewFilters = (
+    filters: string[] | null | undefined
+): string[] => (filters && filters.length > 0 ? filters : ['Task']);
+
 export const searchUniversal = async (
     params: SearchParams
 ): Promise<SearchResponse> => {
@@ -54,6 +66,10 @@ export const searchUniversal = async (
             queryParams.append('priority', params.priority);
         }
 
+        if (params.taskStatus) {
+            queryParams.append('task_status', params.taskStatus);
+        }
+
         if (params.due) {
             queryParams.append('due', params.due);
         }
@@ -70,6 +86,14 @@ export const searchUniversal = async (
             queryParams.append('extras', params.extras.join(','));
         }
 
+        if (params.scope?.area_uid) {
+            queryParams.append('area_uid', params.scope.area_uid);
+        }
+
+        if (params.scope?.project_uid) {
+            queryParams.append('project_uid', params.scope.project_uid);
+        }
+
         if (params.limit !== undefined) {
             queryParams.append('limit', params.limit.toString());
         }
@@ -80,6 +104,10 @@ export const searchUniversal = async (
 
         if (params.excludeSubtasks) {
             queryParams.append('excludeSubtasks', 'true');
+        }
+
+        if (params.status) {
+            queryParams.append('status', params.status);
         }
 
         const response = await fetch(

@@ -1,6 +1,11 @@
 'use strict';
 
-const { InboxItem } = require('../../models');
+const { Op, fn, col, where } = require('sequelize');
+const { Area, InboxItem, Project } = require('../../models');
+const {
+    getAccess,
+    ownershipOrPermissionWhere,
+} = require('../../services/permissionsService');
 const BaseRepository = require('../../shared/database/BaseRepository');
 
 const PUBLIC_ATTRIBUTES = [
@@ -18,14 +23,11 @@ class InboxRepository extends BaseRepository {
         super(InboxItem);
     }
 
-    /**
-     * Find all active inbox items for a user (status = 'added').
-     */
     async findAllActive(userId, { limit, offset } = {}) {
         const options = {
             where: {
                 user_id: userId,
-                status: 'added',
+                status: { [Op.notIn]: ['deleted', 'trashed', 'processed'] },
             },
             order: [['created_at', 'DESC']],
         };
@@ -38,22 +40,16 @@ class InboxRepository extends BaseRepository {
         return this.model.findAll(options);
     }
 
-    /**
-     * Count active inbox items for a user.
-     */
     async countActive(userId) {
         return this.model.count({
             where: {
                 user_id: userId,
-                status: 'added',
+                status: { [Op.notIn]: ['deleted', 'trashed', 'processed'] },
             },
             raw: true,
         });
     }
 
-    /**
-     * Find an inbox item by UID for a specific user.
-     */
     async findByUid(userId, uid) {
         return this.model.findOne({
             where: {
@@ -63,22 +59,6 @@ class InboxRepository extends BaseRepository {
         });
     }
 
-    /**
-     * Find an inbox item by UID with limited public attributes.
-     */
-    async findByUidPublic(userId, uid) {
-        return this.model.findOne({
-            where: {
-                uid,
-                user_id: userId,
-            },
-            attributes: PUBLIC_ATTRIBUTES,
-        });
-    }
-
-    /**
-     * Create a new inbox item for a user.
-     */
     async createForUser(userId, { content, title, source }) {
         return this.model.create({
             content,
@@ -88,28 +68,59 @@ class InboxRepository extends BaseRepository {
         });
     }
 
-    /**
-     * Update an inbox item.
-     */
     async updateItem(item, data) {
         await item.update(data);
         return item;
     }
 
-    /**
-     * Soft delete an inbox item (mark as 'deleted').
-     */
     async softDelete(item) {
         await item.update({ status: 'deleted' });
         return item;
     }
 
-    /**
-     * Mark an inbox item as processed.
-     */
     async markProcessed(item) {
         await item.update({ status: 'processed' });
         return item;
+    }
+
+    // A project the user owns or has been shared, matched by name the way
+    // the +project token matches it (case-insensitive).
+    async findAccessibleProjectUidByName(userId, name) {
+        const accessWhere = await ownershipOrPermissionWhere('project', userId);
+        const project = await Project.findOne({
+            where: {
+                [Op.and]: [
+                    accessWhere,
+                    where(fn('lower', col('name')), name.toLowerCase()),
+                ],
+            },
+            attributes: ['uid'],
+            raw: true,
+        });
+        return project ? project.uid : null;
+    }
+
+    // An area the user can add tasks to (own or shared read-write), matched
+    // by name the way the ~area token matches it (case-insensitive).
+    async findWritableAreaByName(userId, name) {
+        const accessWhere = await ownershipOrPermissionWhere('area', userId);
+        const areas = await Area.findAll({
+            where: {
+                [Op.and]: [
+                    accessWhere,
+                    where(fn('lower', col('name')), name.toLowerCase()),
+                ],
+            },
+            attributes: ['uid', 'name'],
+            raw: true,
+        });
+        for (const area of areas) {
+            const access = await getAccess(userId, 'area', area.uid);
+            if (access === 'rw' || access === 'admin') {
+                return { uid: area.uid, name: area.name };
+            }
+        }
+        return null;
     }
 }
 

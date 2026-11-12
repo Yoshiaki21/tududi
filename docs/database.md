@@ -13,21 +13,51 @@ All Sequelize models are defined in `/backend/models/` and associations are conf
 | Model | File | Purpose | Key Fields |
 |-------|------|---------|------------|
 | **User** | `user.js` | User accounts | email, password (bcrypt), settings, preferences, timezone |
+| **Role** | `role.js` | Role per user | user_id, role (admin/user/guest), is_admin, capabilities |
 | **Task** | `task.js` | Tasks with recurrence | name, due_date, priority, status, recurrence_type, parent_task_id |
-| **Project** | `project.js` | Project grouping | name, area_id, user_id |
-| **Area** | `area.js` | Area categorization | name, user_id |
-| **Note** | `note.js` | Notes | text, project_id, user_id |
-| **Tag** | `tag.js` | Tags | name, color, user_id |
-| **Permission** | `permission.js` | Sharing/permissions | user_id, resource_type, resource_uid, access_level |
-| **ApiToken** | `apiToken.js` | API tokens | user_id, token_hash, expires_at |
+| **Project** | `project.js` | Project grouping | name, area_id, goal_id, status, is_maintenance, is_template, user_id |
+| **Area** | `area.js` | Area categorization | name, color, user_id |
+| **Goal** | `goal.js` | Outcome-level goals | title, why, horizon, target_date, status, color, area_id |
+| **Note** | `note.js` | Notes | title, content, project_id, color, public_token, user_id |
+| **Tag** | `tag.js` | Tags | name, tag_type (user/system), pinned, color, user_id |
+| **Permission** | `permission.js` | Direct shares | user_id, resource_type, resource_uid, access_level, status (pending/accepted) |
+| **ApiToken** | `api_token.js` | API tokens | user_id, name, token_hash, token_prefix, expires_at, revoked_at |
 | **RecurringCompletion** | `recurringCompletion.js` | Recurring task history | task_id, completed_at, due_date |
-| **TaskEvent** | `taskEvent.js` | Task audit log | task_id, user_id, action, changes |
-| **TaskAttachment** | `taskAttachment.js` | File attachments | task_id, filename, path |
-| **InboxItem** | `inboxItem.js` | Inbox entries | name, user_id |
-| **Notification** | `notification.js` | User notifications | user_id, type, read, linked_resource |
-| **Role** | `role.js` | User roles | name, is_admin |
-| **View** | `view.js` | Saved views | name, filters, user_id |
-| **Backup** | `backup.js` | Backup records | user_id, filename, created_at |
+| **TaskEvent** | `task_event.js` | Task audit log | task_id, user_id, event_type, field_name, old_value, new_value |
+| **TaskAttachment** | `task_attachment.js` | File attachments | task_id, original_filename, stored_filename, mime_type, file_size |
+| **Comment** | `comment.js` | Task comments | task_id, user_id, body, parent_comment_id, mentioned_person_uids, deleted_at |
+| **CommentReaction** | `comment_reaction.js` | Comment reactions | comment_id, user_id, reaction_type (like/dislike) |
+| **InboxItem** | `inbox_item.js` | Inbox entries | content, title, status, source, user_id |
+| **Notification** | `notification.js` | User notifications | user_id, type, level, title, data, read_at, dismissed_at |
+| **View** | `view.js` | Saved views | name, search_query, filters, is_pinned, user_id |
+| **Backup** | `backup.js` | Backup records | user_id, file_path, file_size, item_counts, version |
+
+### Sharing, People and Groups
+
+| Model | File | Purpose | Key Fields |
+|-------|------|---------|------------|
+| **UserGroup** | `userGroup.js` | Admin-managed group | name, description, created_by_user_id |
+| **UserGroupMember** | `userGroupMember.js` | Group membership | group_id, user_id |
+| **GroupShare** | `groupShare.js` | An item shared with a group | group_id, resource_type, resource_uid, access_level |
+| **GroupPermission** | `groupPermission.js` | Per-member grant from a group share | group_share_id, user_id, resource_uid, access_level, status |
+| **Person** | `person.js` | Contact or member card | name, linked_user_id, relationship_type, email |
+| **MemberSignInLink** | `memberSignInLink.js` | Sign-in link for members without an email | user_id, token_hash, expires_at, used_at |
+| **UserProjectArea** | `user_project_area.js` | Per-user area placement of a shared project | user_id, project_id, area_id |
+
+Read shared access through `permissionSources`, never `Permission` alone: group grants live in `group_permissions` (see [User Groups](18-user-groups.md)).
+
+### Auth, Integrations and Hosted Mode
+
+| Model | File | Purpose |
+|-------|------|---------|
+| **OIDCIdentity**, **OIDCStateNonce** | `oidc_identity.js`, `oidc_state_nonce.js` | Linked SSO identities and login state |
+| **AuthAuditLog** | `auth_audit_log.js` | Sign-in and auth events |
+| **CalDAVCalendar**, **CalDAVRemoteCalendar**, **CalDAVSyncState**, **CalDAVOccurrenceOverride** | `caldav_*.js` | CalDAV server and sync (see [CalDAV](11-caldav-sync.md)) |
+| **CalendarToken** | `calendar_token.js` | External calendar OAuth tokens |
+| **BillingAccount**, **BillingEvent**, **UsageCounter** | `billing_account.js`, `billing_event.js`, `usage_counter.js` | Subscriptions, webhook events and metered usage (see [Hosted Mode](17-hosted-mode.md)) |
+| **WaitlistSubscriber** | `waitlist_subscriber.js` | Release-notes signups from the marketing page (formerly the Cloud waitlist) |
+| **RateLimit** | `rate_limit.js` | Shared rate-limit store |
+| **Setting**, **Action** | `setting.js`, `action.js` | Instance key-value settings; audit trail of share actions (actor, verb, resource, target) |
 
 ---
 
@@ -557,9 +587,69 @@ await queryInterface.addConstraint('Tasks', {
 
 ## Database Configuration
 
+### Choosing a database
+
+Tududi runs on **SQLite** (default, zero configuration) or **PostgreSQL**. The engine is picked from environment variables in `/backend/config/database-settings.js` and every consumer (the app in `models/index.js`, sequelize-cli via `config/database.js`, and the scripts) builds its connection from the same `buildSequelizeOptions()` in `/backend/config/db.js`.
+
+| Variable | Purpose |
+|----------|---------|
+| `DB_FILE` | SQLite file path (default `backend/db/{NODE_ENV}.sqlite3`) |
+| `DATABASE_URL` | `postgres://user:pass@host:5432/dbname`; setting it selects PostgreSQL |
+| `DB_DIALECT` | `sqlite` (default) or `postgres`, for use with the discrete variables below |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | PostgreSQL connection parts; each overrides the matching part of `DATABASE_URL` |
+| `DB_SSL` | `true` to connect over TLS (`?sslmode=require` in the URL also enables it) |
+| `DB_SSL_REJECT_UNAUTHORIZED` | `false` to accept self-signed server certificates (default `true`, verified) |
+| `DB_POOL_MAX` | PostgreSQL connections per app process (default 10) |
+
+A ready-made compose setup lives in `docs/examples/docker-compose.postgres.yml`; deployment, backup and tuning notes are in [16-postgresql.md](16-postgresql.md).
+
+### How the schema is created
+
+`backend/scripts/db-prepare.js` runs on every start (from `cmd/start.sh`), before migrations:
+
+- **Existing database:** nothing to do; pending migrations run afterwards as usual.
+- **Empty SQLite database:** `sequelize.sync()` creates the tables from the models, then all migrations run (they are written to be idempotent over a synced schema).
+- **Empty PostgreSQL database:** `sequelize.sync()` creates the tables, then every existing migration file is recorded in `SequelizeMeta` as already applied (a *baseline*). The historical migrations contain SQLite-only SQL and never replay on PostgreSQL. Only migrations added after the baseline run there, so they must be dialect-safe (next section).
+
+There is no SQLite-to-PostgreSQL data transfer tooling; PostgreSQL deployments start empty.
+
+### Upgrade safety tests
+
+Because a fresh install gets its schema from the models while existing installs only ever see migrations, the two can drift apart without any unit test noticing. Two suites guard against that (details in [testing.md](testing.md#upgrade-suite)):
+
+- `npm run backend:test:upgrade` runs the real bootstrap against databases produced by older releases (`backend/tests/fixtures/legacy`) and compares the resulting schema with the models (`backend/tests/upgrade/schema-parity.test.js`). Run it after adding a migration; if it reports a column or unique index the models define but no migration creates, add the migration. Known, accepted differences are listed in `backend/tests/upgrade/known-schema-drift.json`.
+- `npm run test:upgrade:docker` upgrades a volume from the previous release image with the current Docker build.
+
+`backend/scripts/schema-snapshot.js` prints the normalised schema of whatever database the environment points at and can be used to compare deployments by hand.
+
+### Writing dialect-safe migrations
+
+Every new migration runs on both engines. Checklist:
+
+- Use the `safe*` helpers from `backend/utils/migration-utils.js` (`safeAddColumns`, `safeCreateTable`, `safeAddIndex`, `safeRemoveColumn`, `safeChangeColumn`); they already branch on dialect where needed.
+- Never use `PRAGMA`, `sqlite_master`, `AUTOINCREMENT`, backtick identifiers, or hand-rolled table rebuilds.
+- Compare and write booleans as `true`/`false`, never `0`/`1`.
+- JSON columns return strings on SQLite and objects on PostgreSQL: guard reads with `typeof value === 'string'`, and on PostgreSQL bind objects (or cast `::json`) rather than pre-stringified text.
+- Quote table aliases in raw SQL (`"Task"."id"`), as PostgreSQL lowercases unquoted identifiers.
+- Branch with `queryInterface.sequelize.getDialect()` only when unavoidable; `20251228000001-update-project-state-enum.js` shows the pattern.
+- Application code that must differ per engine goes through `backend/utils/db-dialect.js` (`isPostgres()`, `ciLike()`, `withForeignKeyChecksDisabled()`), nowhere else.
+
+### Changing a column SQLite cannot alter (rebuilding a table)
+
+SQLite cannot drop `NOT NULL` or change a column in place, so a few migrations rebuild the table. Avoid it when you can. When you cannot, `20260920000002-make-user-email-nullable.js` is the pattern to copy. It rebuilds `users`, the table every other table points at, and it is the one place the checklist above is deliberately broken:
+
+- **Never write the columns out by hand.** Read the stored `CREATE TABLE` from `sqlite_master`, change only what has to change, and copy every column that `PRAGMA table_info` reports. An earlier rebuild that hard-coded the columns lost data on installs that had extra ones.
+- **Use SQLite's documented order:** create the new table under a temporary name, copy the rows, drop the old table, rename the new one, then recreate the indexes and triggers you saved beforehand. Never rename the old table out of the way, because that rewrites the foreign keys of every table that points at it.
+- **Switch foreign keys off before the transaction and back on afterwards.** The switch does nothing inside a transaction. Run it on the default connection: a Sequelize `{ transaction }` option gets its own connection, so the switch would not apply.
+- **Do the whole rebuild in one transaction** and roll back if the copied row count differs or `PRAGMA foreign_key_check` reports more problems than it did before.
+- **Keep the id counter.** Copying rows resets the `sqlite_sequence` value of an `AUTOINCREMENT` table to the highest id in use, so restore the old value or the id of a deleted row can be handed out again.
+- **Snapshot first** with `VACUUM INTO` (see [Backups](backups.md#migration-snapshots)), and make the migration a no-op when the change is already there.
+- **Test it on the real legacy fixtures**, not a hand-made table: `backend/tests/unit/migrations/make-user-email-nullable.test.js` runs the migration on a copy of every fixture in `backend/tests/fixtures/legacy/` and checks every row, column, index, foreign key and the id counter, plus a failure part way.
+- Do not use `safeChangeColumn` on a table with foreign keys or indexes: it rebuilds from column info alone and drops both.
+
 ### Location
 
-`/backend/config/database.js`
+`/backend/config/database.js` (sequelize-cli), `/backend/config/db.js` (shared options)
 
 ### SQLite Performance Optimizations
 
@@ -579,11 +669,11 @@ await sequelize.query('PRAGMA temp_store=MEMORY'); // Memory-based temp storage
 - Memory-mapped I/O: Faster random access
 - Memory temp storage: Faster temp operations
 
-### Database File Location
+### Database File Location (SQLite)
 
-- **Development:** `/backend/database.sqlite`
-- **Docker:** Mounted volume at `/app/backend/db/`
-- **Test:** Separate test database (auto-created)
+- **Development:** `/backend/db/development.sqlite3`
+- **Docker:** Mounted volume at `/app/db/production.sqlite3`
+- **Test:** One temporary file per test file under `/tmp` (see [Testing](testing.md))
 
 ---
 

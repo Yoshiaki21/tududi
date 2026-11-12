@@ -1,47 +1,115 @@
-// This file is run once per each Jest worker,
-// so changing the DB in the beginning of this file
-// works.
+// Runs once per test file (Jest resets the module registry between files),
+// so pointing the models at a database here gives every file its own
+// isolated database.
+//
+// SQLite (default): a throwaway file per test file under /tmp.
+// PostgreSQL (DATABASE_URL or DB_DIALECT=postgres set): one database per
+// Jest worker, created by globalSetup.js, with tables recreated per file.
 
-const testId = require('crypto').randomBytes(4).toString('hex');
-process.env.DB_FILE = `/tmp/test-${testId}.sqlite3`;
+const { testDatabaseName } = require('./test-db');
+
+// Telegram is off by default; the suite covers it switched on.
+if (process.env.TELEGRAM_ENABLED === undefined) {
+    process.env.TELEGRAM_ENABLED = 'true';
+}
+
+if (process.env.DATABASE_URL || process.env.DB_DIALECT) {
+    const workerDb = testDatabaseName(process.env.JEST_WORKER_ID || '1');
+    if (process.env.DATABASE_URL) {
+        const url = new URL(process.env.DATABASE_URL);
+        url.pathname = `/${workerDb}`;
+        process.env.DATABASE_URL = url.toString();
+    } else {
+        process.env.DB_NAME = workerDb;
+    }
+} else {
+    const testId = require('crypto').randomBytes(4).toString('hex');
+    process.env.DB_FILE = `/tmp/test-${testId}.sqlite3`;
+}
+
 const { sequelize } = require('../../models');
+const { isSqlite, truncateTables } = require('../../utils/db-dialect');
+
+// Children before parents: PostgreSQL deletes these with constraints on.
+const CLEANUP_TABLES = [
+    'tasks_tags',
+    'notes_tags',
+    'projects_tags',
+    'task_events',
+    'task_relations',
+    'user_task_orders',
+    'task_attachments',
+    'inbox_item_attachments',
+    'project_attachments',
+    'note_attachments',
+    'daily_plan_items',
+    'daily_plans',
+    'calendar_feeds',
+    'comments',
+    'recurring_completions',
+    'caldav_occurrence_overrides',
+    'caldav_sync_state',
+    'caldav_remote_calendars',
+    'caldav_calendars',
+    'calendar_tokens',
+    'rate_limits',
+    'usage_counters',
+    'email_deliveries',
+    'user_recovery_codes',
+    'user_mfa',
+    'waitlist_subscribers',
+    'feedback',
+    'push_subscriptions',
+    'import_jobs',
+    'webhook_deliveries',
+    'webhooks',
+    'billing_events',
+    'billing_accounts',
+    'accounts',
+    'notifications',
+    'member_sign_in_links',
+    'group_permissions',
+    'group_shares',
+    'user_group_members',
+    'user_groups',
+    'permissions',
+    // actions and the audit/identity tables reference users; on PostgreSQL
+    // the FK blocks DELETE FROM users when they are left out, and the
+    // cleanup loop stops at the first failure.
+    'actions',
+    'auth_audit_log',
+    'oidc_identities',
+    'views',
+    'api_tokens',
+    'backups',
+    'inbox_items',
+    'tasks',
+    'notes',
+    'tags',
+    'user_project_areas',
+    'user_project_orders',
+    'projects',
+    'goals',
+    'areas',
+    'people',
+    'roles',
+    'users',
+];
 
 beforeAll(async () => {
     // Ensure test database is clean and created with proper schema
     await sequelize.sync({ force: true });
 
-    // Disable foreign key constraints for tests to avoid issues with test data creation
-    // Note: In SQLite, foreign keys are disabled by default, but we explicitly disable them here
-    await sequelize.query('PRAGMA foreign_keys = OFF');
-}, 30000);
+    if (isSqlite()) {
+        // Disable foreign key constraints for tests to avoid issues with test data creation
+        await sequelize.query('PRAGMA foreign_keys = OFF');
+    }
+}, 60000);
 
 beforeEach(async () => {
     // Clean all tables except Sessions to avoid conflicts
     try {
-        // Use raw SQL for faster cleanup
-        const tableNames = [
-            'users',
-            'areas',
-            'projects',
-            'tasks',
-            'tags',
-            'notes',
-            'inbox_items',
-            'task_events',
-            'tasks_tags',
-            'notes_tags',
-            'projects_tags',
-            'caldav_calendars',
-            'caldav_sync_state',
-            'caldav_occurrence_overrides',
-            'caldav_remote_calendars',
-        ];
-
-        await sequelize.query('PRAGMA foreign_keys = OFF');
-        for (const tableName of tableNames) {
-            await sequelize.query(`DELETE FROM ${tableName}`);
-        }
-        await sequelize.query('PRAGMA foreign_keys = ON');
+        await truncateTables(sequelize, CLEANUP_TABLES);
     } catch (error) {
         // Ignore errors during cleanup
     }
@@ -52,7 +120,7 @@ afterEach(async () => {
     try {
         const Session = sequelize.models.Session;
         if (Session) {
-            await Session.destroy({ truncate: true });
+            await Session.destroy({ where: {} });
         }
     } catch (error) {
         // Ignore errors during session cleanup

@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { getAssetPath } from '../config/paths';
+import { getApiPath, getAssetPath } from '../config/paths';
+import { PASSWORD_MIN_LENGTH } from '../utils/passwordPolicy';
+import CaptchaWidget from './Auth/CaptchaWidget';
+import OIDCProviderButtons from './Auth/OIDCProviderButtons';
+import { fetchCaptchaConfig, CaptchaConfig } from '../utils/captcha';
 
 const Register: React.FC = () => {
     const [email, setEmail] = useState('');
@@ -10,8 +14,28 @@ const Register: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState(false);
     const [passwordAuthEnabled, setPasswordAuthEnabled] = useState(true);
+    const [registrationEnabled, setRegistrationEnabled] = useState(true);
     const [loading, setLoading] = useState(true);
-    const { t } = useTranslation();
+    const [captcha, setCaptcha] = useState<CaptchaConfig | null>(null);
+    const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+    const [captchaReset, setCaptchaReset] = useState(0);
+    const [oidcProviders, setOidcProviders] = useState<
+        { slug: string; name: string }[]
+    >([]);
+
+    useEffect(() => {
+        fetchCaptchaConfig().then(setCaptcha);
+    }, []);
+
+    useEffect(() => {
+        fetch(getApiPath('oidc/providers'), { credentials: 'include' })
+            .then((response) => (response.ok ? response.json() : null))
+            .then((data) => setOidcProviders(data?.providers || []))
+            .catch((err) =>
+                console.error('Error fetching OIDC providers:', err)
+            );
+    }, []);
+    const { t, i18n } = useTranslation();
     const [isDarkMode] = useState<boolean>(() => {
         const storedPreference = localStorage.getItem('isDarkMode');
         return storedPreference !== null
@@ -24,22 +48,31 @@ const Register: React.FC = () => {
     }, [isDarkMode]);
 
     useEffect(() => {
-        const checkPasswordAuth = async () => {
+        const checkStatus = async () => {
             try {
-                const response = await fetch('/api/password-auth-status', {
-                    credentials: 'include',
-                });
-                if (response.ok) {
-                    const data = await response.json();
+                const [passwordAuthRes, registrationRes] = await Promise.all([
+                    fetch('/api/password-auth-status', {
+                        credentials: 'include',
+                    }),
+                    fetch('/api/registration-status', {
+                        credentials: 'include',
+                    }),
+                ]);
+                if (passwordAuthRes.ok) {
+                    const data = await passwordAuthRes.json();
                     setPasswordAuthEnabled(data.enabled);
                 }
+                if (registrationRes.ok) {
+                    const data = await registrationRes.json();
+                    setRegistrationEnabled(data.enabled);
+                }
             } catch (err) {
-                console.error('Error checking password auth status:', err);
+                console.error('Error checking registration status:', err);
             } finally {
                 setLoading(false);
             }
         };
-        checkPasswordAuth();
+        checkStatus();
     }, []);
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -51,11 +84,22 @@ const Register: React.FC = () => {
             return;
         }
 
-        if (password.length < 6) {
+        if (password.length < PASSWORD_MIN_LENGTH) {
+            setError(
+                t('auth.password_too_short', {
+                    defaultValue:
+                        'Password must be at least {{count}} characters long',
+                    count: PASSWORD_MIN_LENGTH,
+                })
+            );
+            return;
+        }
+
+        if (captcha && !captchaToken) {
             setError(
                 t(
-                    'auth.password_too_short',
-                    'Password must be at least 6 characters long'
+                    'auth.captcha_required',
+                    'Please complete the verification and try again.'
                 )
             );
             return;
@@ -67,7 +111,13 @@ const Register: React.FC = () => {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ email, password }),
+                body: JSON.stringify({
+                    email,
+                    password,
+                    // The first emails go out in the language of this form.
+                    language: i18n.language,
+                    ...(captchaToken ? { captcha_token: captchaToken } : {}),
+                }),
                 credentials: 'include',
             });
 
@@ -76,6 +126,7 @@ const Register: React.FC = () => {
             if (response.ok) {
                 setSuccess(true);
             } else {
+                setCaptchaReset((k) => k + 1);
                 setError(
                     data.error ||
                         t(
@@ -146,6 +197,50 @@ const Register: React.FC = () => {
         );
     }
 
+    if (!registrationEnabled) {
+        return (
+            <>
+                {/* Navbar */}
+                <nav className="fixed top-0 left-0 right-0 z-50 text-gray-900 dark:text-white">
+                    <div className="h-16 flex items-center px-4 sm:px-6 lg:px-8">
+                        <img
+                            src={getAssetPath(
+                                isDarkMode
+                                    ? 'wide-logo-light.png'
+                                    : 'wide-logo-dark.png'
+                            )}
+                            alt="tududi"
+                            className="h-9 w-auto"
+                        />
+                    </div>
+                </nav>
+
+                <div className="bg-gray-100 dark:bg-gray-900 min-h-screen px-4 pt-16 flex items-center justify-center">
+                    <div className="w-full max-w-md text-center">
+                        <h2 className="text-2xl font-semibold text-gray-700 dark:text-gray-200 mb-4">
+                            {t(
+                                'auth.registration_closed_title',
+                                'Registration Closed'
+                            )}
+                        </h2>
+                        <p className="text-gray-600 dark:text-gray-400 mb-6">
+                            {t(
+                                'auth.registration_closed_message',
+                                'New account registration is currently disabled. Contact your administrator for access.'
+                            )}
+                        </p>
+                        <Link
+                            to="/login"
+                            className="text-blue-500 hover:text-blue-600"
+                        >
+                            {t('auth.back_to_login', 'Back to Login')}
+                        </Link>
+                    </div>
+                </div>
+            </>
+        );
+    }
+
     if (success) {
         return (
             <>
@@ -180,7 +275,7 @@ const Register: React.FC = () => {
                                     >
                                         {t(
                                             'auth.registration_successful',
-                                            'Check Your Email'
+                                            'Verify your email address'
                                         )}
                                     </h2>
                                     <p
@@ -189,7 +284,7 @@ const Register: React.FC = () => {
                                     >
                                         {t(
                                             'auth.registration_email_sent',
-                                            'We have sent a verification link to your email address. Please check your inbox and click the link to verify your account.'
+                                            'Verify your email address to activate your account. We have sent you a link, check your inbox.'
                                         )}
                                     </p>
                                     <Link
@@ -255,6 +350,25 @@ const Register: React.FC = () => {
                                     data-testid="register-error"
                                 >
                                     {error}
+                                </div>
+                            )}
+                            <OIDCProviderButtons
+                                providers={oidcProviders}
+                                mode="signUp"
+                            />
+                            {oidcProviders.length > 0 && (
+                                <div className="relative mb-6">
+                                    <div className="absolute inset-0 flex items-center">
+                                        <div className="w-full border-t border-gray-300 dark:border-gray-600"></div>
+                                    </div>
+                                    <div className="relative flex justify-center text-sm">
+                                        <span className="px-2 bg-gray-100 dark:bg-gray-900 text-gray-500 dark:text-gray-400">
+                                            {t(
+                                                'auth.or_continue_with_email',
+                                                'Or continue with email'
+                                            )}
+                                        </span>
+                                    </div>
                                 </div>
                             )}
                             <form onSubmit={handleSubmit}>
@@ -323,9 +437,17 @@ const Register: React.FC = () => {
                                         minLength={6}
                                     />
                                 </div>
+                                {captcha && (
+                                    <CaptchaWidget
+                                        siteKey={captcha.site_key}
+                                        onToken={setCaptchaToken}
+                                        resetKey={captchaReset}
+                                    />
+                                )}
                                 <button
                                     type="submit"
-                                    className="w-full bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 transition-colors"
+                                    disabled={!!captcha && !captchaToken}
+                                    className="w-full bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-60"
                                     data-testid="register-submit"
                                 >
                                     {t('auth.sign_up', 'Sign Up')}

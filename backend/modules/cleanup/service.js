@@ -2,7 +2,11 @@
 
 const path = require('path');
 const { Op, literal } = require('sequelize');
-const { TaskAttachment, ProjectAttachment, NoteAttachment } = require('../../models');
+const {
+    TaskAttachment,
+    ProjectAttachment,
+    NoteAttachment,
+} = require('../../models');
 const { deleteFileFromDisk } = require('../../utils/attachment-utils');
 const { getConfig } = require('../../config/config');
 const { logError } = require('../../services/logService');

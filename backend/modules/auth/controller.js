@@ -5,6 +5,8 @@ const { logError } = require('../../services/logService');
 const { generateToken } = require('../../middleware/csrf');
 const { isPasswordAuthEnabled } = require('../../config/authConfig');
 const { getConfig } = require('../../config/config');
+const auditService = require('../oidc/auditService');
+const signInLinkService = require('../members/signInLinkService');
 
 const authController = {
     getVersion(req, res) {
@@ -13,8 +15,10 @@ const authController = {
 
     getPublicConfig(req, res) {
         const config = getConfig();
+        const { publicCaptchaConfig } = require('../../middleware/captcha');
         res.json({
             fileUploadLimitMB: config.fileUploadLimitMB,
+            captcha: publicCaptchaConfig(),
         });
     },
 
@@ -37,8 +41,12 @@ const authController = {
 
     async register(req, res, next) {
         try {
-            const { email, password } = req.body;
-            const result = await authService.register(email, password);
+            const { email, password, language } = req.body;
+            const result = await authService.register(
+                email,
+                password,
+                language
+            );
             res.status(201).json(result);
         } catch (error) {
             // Handle specific error messages for compatibility
@@ -51,11 +59,9 @@ const authController = {
             if (error.statusCode === 403) {
                 return res.status(403).json({ error: error.message });
             }
-            if (
-                error.message ===
-                'Failed to send verification email. Please try again later.'
-            ) {
-                return res.status(500).json({ error: error.message });
+            if (error.statusCode === 503) {
+                logError('Registration email failure:', error);
+                return res.status(503).json({ error: error.message });
             }
             logError('Registration error:', error);
             res.status(500).json({
@@ -84,13 +90,51 @@ const authController = {
         }
     },
 
-    async login(req, res, next) {
+    async peekSignInLink(req, res, next) {
         try {
-            const { email, password } = req.body;
-            const result = await authService.login(
-                email,
-                password,
-                req.session
+            const result = await signInLinkService.peek(req.body?.token);
+            res.json(result);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async redeemSignInLink(req, res, next) {
+        try {
+            const { member, issuedByUserId } = await signInLinkService.consume(
+                req.body?.token
+            );
+
+            // A fresh session, so whoever was signed in on this browser is
+            // signed out and no earlier session id carries over.
+            await new Promise((resolve, reject) =>
+                req.session.regenerate((err) => (err ? reject(err) : resolve()))
+            );
+            req.session.userId = member.id;
+            await new Promise((resolve, reject) =>
+                req.session.save((err) => (err ? reject(err) : resolve()))
+            );
+
+            await auditService.logSignInLinkUsed(
+                member.id,
+                issuedByUserId,
+                req
+            );
+            res.json(await authService.buildLoginResult(member));
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async login(req, res, next) {
+        const { email, password } = req.body;
+        try {
+            const result = await authService.login(email, password, req);
+            if (result.mfa_required) return res.json(result);
+            await auditService.logLoginSuccess(
+                req.session.userId,
+                auditService.AUTH_METHODS.EMAIL_PASSWORD,
+                req
             );
             res.json(result);
         } catch (error) {
@@ -98,6 +142,15 @@ const authController = {
                 return res.status(400).json({ error: error.message });
             }
             if (error.statusCode === 401) {
+                await auditService.logLoginFailed(
+                    typeof email === 'string'
+                        ? email.trim().toLowerCase()
+                        : null,
+                    auditService.AUTH_METHODS.EMAIL_PASSWORD,
+                    req,
+                    null,
+                    'invalid_credentials'
+                );
                 return res.status(401).json({ errors: [error.message] });
             }
             if (error.statusCode === 403) {
@@ -108,6 +161,42 @@ const authController = {
             }
             logError('Login error:', error);
             res.status(500).json({ error: 'Internal server error' });
+        }
+    },
+
+    async resendVerification(req, res, next) {
+        try {
+            const result = await authService.resendVerification(req.body.email);
+            res.json(result);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async forgotPassword(req, res, next) {
+        try {
+            const result = await authService.forgotPassword(req.body.email);
+            res.json(result);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async resetPassword(req, res, next) {
+        try {
+            const { token, password } = req.body;
+            const result = await authService.resetPassword(token, password);
+            await auditService.logEvent({
+                userId: null,
+                eventType: auditService.EVENT_TYPES.PASSWORD_RESET,
+                authMethod: auditService.AUTH_METHODS.EMAIL_PASSWORD,
+                ipAddress: req.ip,
+                userAgent: req.get('user-agent'),
+                metadata: { email: result.email },
+            });
+            res.json({ message: result.message });
+        } catch (error) {
+            next(error);
         }
     },
 

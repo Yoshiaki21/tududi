@@ -1,0 +1,539 @@
+{
+  "meta": {
+    "langSwitcherLabel": "Zamenjaj jezik",
+    "langSwitcherCurrent": "Jezik: {{name}}",
+    "description": "Zapišite vse, z UI načrtujte dan okoli koledarja in imejte področja, cilje, projekte, zapiske in navade v enem sistemu. Strežnik MCP z {{tools}} orodji omogoča agentom UI, da delajo z vašim seznamom. Račun tududi Cloud je pripravljen v minuti.",
+    "title": "tududi: upravljalnik nalog in sistem za upravljanje življenja, z MCP za agente AI"
+  },
+  "nav": {
+    "demo": "Demo v živo",
+    "features": "Funkcije",
+    "ai": "UI in MCP",
+    "pricing": "Cene",
+    "faq": "Pogosta vprašanja",
+    "blog": "Blog",
+    "signIn": "Prijava",
+    "toggle": "Odpri meni",
+    "plan": "Načrtuj dan"
+  },
+  "hero": {
+    "ctaDemo": "Preizkusite demo v živo",
+    "demoNote": "Prava gostovana instanca z vzorčnimi podatki, deljena in redno ponastavljena",
+    "screenshotAlt": "Vmesnik tududi s pogledom Danes in načrtovanimi opravili",
+    "cloudNote": "Brez strežnika za namestitev. Mesečno ali letno, in lahko prekličete kadarkoli.",
+    "ctaPrimary": "Začnite zdaj",
+    "lede": "Zapišite vse, z UI načrtujte dan okoli koledarja in imejte področja, cilje, projekte, zapiske in navade v enem sistemu. Račun Cloud ustvarite v minuti.",
+    "titleLine1": "Produktivnost, preprosto narejena",
+    "titleLine2": "",
+    "ctaTrial": "Začnite brezplačni {{days}}-dnevni preizkus",
+    "cloudNoteTrial": "Brezplačno {{days}} dni, brez kartice. Nato mesečno ali letno, odpoved kadar koli.",
+    "badge": "Za zaposlene ljudi, nič za namestitev"
+  },
+  "proof": {
+    "stars": "zvezdic na GitHubu",
+    "languages": "{{count}} jezikov",
+    "dockerPulls": "prenosov z Dockerja",
+    "discord": "članov na Discordu",
+    "minute": "Nastavljeno v minuti",
+    "guarantee": "14-dnevna garancija vračila denarja"
+  },
+  "press": {
+    "featuredIn": "Pisali so o nas",
+    "eyebrow": "Mediji",
+    "title": "Ne verjemite le nam",
+    "sub": "Kaj so napisali ocenjevalci, potem ko so tududi preizkusili sami.",
+    "readLink": "Preberite oceno"
+  },
+  "ai": {
+    "kicker": "UI in MCP",
+    "cards": {
+      "capture": {
+        "title": "Zajemajte in iščite iz klepeta",
+        "body": "Dodajajte, najdite in dokončajte opravila, ne da bi zapustili pogovor."
+      },
+      "dataStays": {
+        "body": "Povezava MCP gre neposredno v vašo lastno instanco tududi, v Cloudu ali na vašem lastnem strežniku. Nič ne poteka preko tretje strani.",
+        "title": "Pogovarja se z vašo instanco"
+      },
+      "openProtocol": {
+        "title": "Odprt protokol, brez vezanosti",
+        "body": "Zgrajeno na odprtem Model Context Protocol. Deluje s Claudom in drugimi odjemalci MCP."
+      }
+    },
+    "footnoteClients": "Enako deluje s Cursorjem, Windsurfom, Clineom in katerim koli drugim odjemalcem MCP.",
+    "footnoteDocsLink": "Preberite dokumentacijo MCP →",
+    "assistantTitle": "Pomočnik UI",
+    "assistantLede": "Ločena, izbirna plast, ki prebere vaše podatke in vrne povzetke v razumljivem jeziku. Deluje s katerim koli ponudnikom, združljivim z OpenAI, tudi z lastnim, kot je Ollama.",
+    "assistantCards": {
+      "task": {
+        "title": "Vpogled v opravilo",
+        "body": "Predlagani naslednji koraki za določeno opravilo, ustvarjeni na zahtevo."
+      },
+      "project": {
+        "title": "Vpogled v projekt",
+        "body": "Hitra ocena stanja projekta: kaj se premika in kaj obtiči."
+      },
+      "plan": {
+        "title": "Načrtuj dan",
+        "body": "Razporedi vaš dan v prosti čas okoli sestankov in utemelji vsak blok."
+      },
+      "wrapUp": {
+        "title": "Povzetek dneva",
+        "body": "Ob koncu dneva: kaj je opravljeno, vzorec, vreden pozornosti, in kaj prenesti na jutri."
+      }
+    },
+    "demo": {
+      "answer1Html": "Začnite z <strong>Objavo migracije zaračunavanja</strong>. Rok je danes, in tri naloge v <strong>Plačilih</strong> čakajo za njo.",
+      "answer2Html": "Opravljeno. <strong>Preglej osnutek redizajna</strong> je zdaj rok petek, in <strong>Odblokiraj čakalno vrsto Plačila</strong> je v projektu Plačila, rok danes.",
+      "ask1": "Na kaj naj se osredotočim danes, in ali kaj zamuja?",
+      "ask2": "Premakni pregled redizajna na petek in dodaj nalogo za odblokiranje Plačil.",
+      "badge": "tududi MCP",
+      "caption": "Primer seje. Vaš agent se poveže neposredno z vašo lastno instanco prek MCP.",
+      "composer": "Odgovori Claude…",
+      "groupTitle": "Vredno vedeti",
+      "rows": {
+        "habit": {
+          "label": "Niz v nevarnosti",
+          "text": "Jutranji pregled, 12 dni zapored, danes še ni zapisan"
+        },
+        "overdue": {
+          "label": "Zamuja",
+          "text": "2 nalogi v Domu, najstarejša že 6 dni"
+        },
+        "stalled": {
+          "label": "Obstalo",
+          "text": "Redizajn spletne strani, brez aktivnosti 11 dni"
+        }
+      },
+      "toolLabel": "Uporabil tududi",
+      "windowTitle": "Claude Desktop"
+    },
+    "footnoteIncluded": "MCP je vključen v tududi Cloud in v vsako samostojno gostovano instanco.",
+    "ledeHtml": "tududi vključuje strežnik MCP, ki izpostavlja <strong>{{tools}} orodij</strong>, ki pokrivajo naloge, projekte, področja, cilje, navade, opombe, osebe, oznake, prikaze, prejeto pošto, iskanje in metrike. Povežite Claude ali kateregakoli agenta, združljivega z MCP, neposredno z vašo lastno instanco, naj bo to vaš račun Cloud ali strežnik, ki ga upravljate sami. Povezava gre v vašo instanco namesto preko vmesnega releja, strukturna razlika, ki je Todoist in Notion ne moreta ponuditi, ne glede na to, kaj obljubljata.",
+    "titleLine1": "Resničen sistem",
+    "titleLine2": "ki ga lahko vaš agent AI dejansko uporablja"
+  },
+  "features": {
+    "eyebrow": "Funkcije",
+    "title": "Celovit sistem za urejeno življenje",
+    "showAll": "Pokaži vseh {{count}} funkcij",
+    "preview": "Predogled",
+    "closePreview": "Zapri predogled",
+    "groups": {
+      "planDay": "Zapiši in načrtuj",
+      "planFocus": "Načrtovanje in osredotočenost",
+      "tasksProjects": "Opravila in projekti",
+      "accessAnywhere": "Dostop od koder koli",
+      "privacyCollab": "Zasebnost in sodelovanje"
+    },
+    "cards": {
+      "capture": {
+        "title": "Eno polje za vse",
+        "body": "Dodajajte prejeto, opravila, zapiske ali projekte od koder koli, z datotekami. Prilepljen posnetek zaslona postane element."
+      },
+      "nlpDates": {
+        "title": "Datumi z običajnimi besedami",
+        "body": "»tomorrow«, »next fri«, »every weekday«: datumi in ponavljanja se preberejo med tipkanjem, skupaj z #oznakami, +Projektom in @osebo."
+      },
+      "planMyDay": {
+        "title": "Načrtuj dan",
+        "body": "Načrtovalnik, ki opravila postavi v prosti čas okoli sestankov, s trajanjem, razvrščenimi predlogi in nasveti."
+      },
+      "todayCalendar": {
+        "title": "Danes s koledarjem",
+        "body": "Povežite koledarje Google, Apple ali Outlook in vidite sestanke ob opravilih, trenutni blok na vrhu."
+      },
+      "aiPlanning": {
+        "title": "Načrtovanje dneva z UI",
+        "body": "Osnutek dneva z UI, ocene trajanja opravil in povzetek dneva, ki prenese nedokončano."
+      },
+      "goals": {
+        "title": "Cilji",
+        "body": "Določite rezultate za sezono ali leto in poglejte, katera Področja in Projekti jih dejansko premikajo naprej."
+      },
+      "hierarchy": {
+        "title": "Hierarhična ureditev",
+        "body": "Cilji in Področja stojijo drug ob drugem na vrhu: dolgoročni rezultati in stalna področja življenja. Oboje vsebuje Projekte, ti pa Opravila."
+      },
+      "lifeAreas": {
+        "title": "Upravljanje življenjskih področij",
+        "body": "Urejajte projekte po življenjskih področjih - Delo, Osebno, Zdravje, Učenje."
+      },
+      "views": {
+        "title": "Pogledi",
+        "body": "Pametna shranjena iskanja, kot so »Danes«, »Zamujeno« ali »Nekoč«. En klik, brez sestavljanja filtra vsakič znova."
+      },
+      "matrixKanban": {
+        "title": "Eisenhowerjeva matrika in Kanban",
+        "body": "Preklopite na Eisenhowerjevo matriko ali tablo Kanban, ko je vprašanje preprosto: kaj naj naredim zdaj."
+      },
+      "insights": {
+        "title": "Vpogledi v produktivnost",
+        "body": "Spremljajte trende dokončanja in obremenitev po projektih, da veste, kam dejansko gre vaš čas."
+      },
+      "people": {
+        "title": "Osebe",
+        "body": "Dodelite opravila osebam in na prvi pogled vidite, kdo sodeluje pri projektu."
+      },
+      "habits": {
+        "title": "Spremljanje navad",
+        "body": "Spremljajte ponavljajoče se navade ob opravilih in projektih, s preprostimi nizi in zgodovino."
+      },
+      "recurring": {
+        "title": "Pametna ponavljajoča se opravila",
+        "body": "Dnevni, tedenski in mesečni vzorci, s ponavljanjem glede na dokončanje in razmerji nadrejeno-podrejeno."
+      },
+      "richTasks": {
+        "title": "Bogata ureditev opravil",
+        "body": "Prioritete, roki, oznake in pametno razvrščanje. Zmogljivi filtri, da najdete tisto, kar šteje."
+      },
+      "subtasks": {
+        "title": "Podopravila in razčlenitev",
+        "body": "Razdelite zapletena opravila na obvladljiva podopravila s spremljanjem napredka."
+      },
+      "notes": {
+        "title": "Dokumentacija projekta",
+        "body": "Oblikovani zapiski za projekte, s celotnim iskanjem in urejenostjo."
+      },
+      "tags": {
+        "title": "Prilagodljiv sistem oznak",
+        "body": "Lastne oznake za opravila in zapiske, s takojšnjim filtriranjem in urejenostjo prek projektov."
+      },
+      "search": {
+        "title": "Pametno filtriranje in iskanje",
+        "body": "Celotno besedilno iskanje ter filtri po projektu, oznaki, prioriteti ali roku. Poiščite katero koli opravilo v nekaj sekundah."
+      },
+      "pwa": {
+        "title": "Namestite kot aplikacijo",
+        "body": "Dodajte tududi na začetni zaslon ali namizje kot PWA. Deluje brez povezave in se sinhronizira, ko ste spet na spletu."
+      },
+      "oidc": {
+        "title": "Prijava OIDC / SSO",
+        "body": "Prijavite se z obstoječim ponudnikom identitete: Authentik, Keycloak, Google Workspace ali katerim koli združljivim z OIDC."
+      },
+      "i18n": {
+        "title": "Podpora za več jezikov",
+        "body": "Na voljo v {{count}} jezikih s celovito lokalizacijo."
+      },
+      "caldav": {
+        "title": "Sinhronizacija CalDAV",
+        "body": "Dvosmerna sinhronizacija opravil z Apple Opomniki, tasks.org, Thunderbirdom in vsako aplikacijo, združljivo s CalDAV."
+      },
+      "api": {
+        "title": "Dostop do API in Swagger",
+        "body": "Različicam prilagojena dokumentacija Swagger in osebni žetoni za dostop za lastne povezave."
+      },
+      "privacy": {
+        "title": "Zasebnost in nadzor",
+        "body": "Obdržite podatke zase. Gostujte sami za popoln nadzor ali izberite Upravljano namestitev s šifriranimi varnostnimi kopijami."
+      },
+      "collab": {
+        "title": "Sodelovanje pri projektih",
+        "body": "Delite projekte z natančnimi pravicami - samo branje ali branje in pisanje."
+      }
+    },
+    "sub": "tududi združuje cilje, projekte, naloge, opombe in pametne prikaze v en umirjen, osredotočen sistem. Prepustite upravljanje nam, ali upravljajte sami, če to raje."
+  },
+  "pricing": {
+    "eyebrow": "Cene",
+    "title": "Plačajte zase ali za svojo ekipo",
+    "mostPopular": "NAJPOGOSTEJŠA",
+    "earlyBird": "UVAJALNA CENA",
+    "perYear": "/leto na osebo",
+    "plans": {
+      "cloud": {
+        "name": "Cloud",
+        "soloName": "Pro",
+        "or": "ali",
+        "launchNote": "Letna cena early bird, vaša, dokler ostanete naročeni.",
+        "action": "Začni →",
+        "features": [
+          "Deluje v minuti, brez strežnika za namestitev",
+          "Neomejene naloge, projekti in opombe, plus priloge",
+          "Za eno osebo. Želite dodati druge? Izberite paket Ekipa",
+          "Načrtovanje dneva z UI, MCP, koledarski viri, CalDAV in Telegram bot",
+          "Posodobitve in dnevne varnostne kopije, poskrbljene za vas, z {{proStorageGb}} GB prostora",
+          "Izvozite vse kadarkoli, izbrišite svoj račun sami"
+        ],
+        "priceNote": "Vse vključeno. Prekličite kadarkoli.",
+        "actionTrial": "Preizkusite brezplačno →",
+        "priceNoteTrial": "{{days}} dni brezplačno, brez kartice. Odpoved kadar koli.",
+        "trialNote": "Preizkus vključuje pomočnika AI z manjšo količino uporabe in enega člana, ki ga lahko dodate. Javne povezave do zapiskov se odprejo, ko se naročite."
+      },
+      "team": {
+        "name": "Ekipa",
+        "perPersonMonth": "/mesec na osebo",
+        "perPersonYear": "/leto na osebo",
+        "sizes": "Na voljo v velikostih {{sizes}} mest, vključno z vami. Ekipa 5 oseb stane {{example}} na mesec.",
+        "moreThan": "Več kot {{max}} oseb?",
+        "contact": "Pišite nam",
+        "action": "Ustvarite ekipo →",
+        "features": [
+          "Vse iz paketa Pro, za vsako osebo v ekipi",
+          "Dodajajte osebe do svoje velikosti in kadar koli preidite na večjo",
+          "Skupni projekti, skupine in tabla Vsi s pregledom, kdo kaj dela",
+          "Vsak obdrži svoja zasebna opravila in zapiske",
+          "Ena naročnina, ki jo plača lastnik računa"
+        ]
+      },
+      "picker": {
+        "label": "Za koga?",
+        "solo": "Samo zame",
+        "team": "Ekipa z {{n}} osebami",
+        "perMonth": "/mesec",
+        "perYear": "/leto"
+      }
+    },
+    "fineprint": "Prekličite kadar koli in izvozite vse. Če bi se tududi Cloud kdaj zaprl, dobite svoje podatke in vodnik za selitev na lastni strežnik. Za prostor in obseg API velja poštena uporaba. 14-dnevna garancija vračila denarja, brez vprašanj.",
+    "perMonth": "/mesec na osebo",
+    "nextPrice": "Od {{date}} bo cena na osebo {{monthly}} na mesec ali {{annual}} na leto. Naročite se prej, da ohranite današnjo ceno, dokler ostanete naročeni.",
+    "sub": "Vsak paket ima vse funkcije. Pro je za eno osebo, paket Ekipa pa ima stalno velikost, do katere dodajate osebe."
+  },
+  "compare": {
+    "title": "Hitra primerjava",
+    "sub": "Kako se tududi Cloud primerja z aplikacijami, s katerimi ga najpogosteje primerjajo, pri osebnih paketih.",
+    "footnote": "Todoist Pro, TickTick Premium in Notion Plus po njihovih javnih ceniki septembra 2026. Aktualne cene preverite na njihovih straneh. Njihove cene so ameriške cene v dolarjih.",
+    "rows": {
+      "price": "Cena, letno plačilo",
+      "aiIncluded": "UI vključena",
+      "dayPlanner": "Načrtovanje dneva okoli koledarja",
+      "habits": "Sledenje navadam",
+      "goals": "Cilji, področja in projekti",
+      "notes": "Zapiski ob opravilih",
+      "matrix": "Eisenhowerjeva matrika",
+      "kanban": "Kanban table",
+      "views": "Shranjeni pametni pogledi",
+      "people": "Dodeljevanje opravil osebam",
+      "caldav": "Sinhronizacija opravil prek CalDAV",
+      "mcp": "Strežnik MCP za agente UI"
+    },
+    "values": {
+      "perYear": "{{price}}/leto",
+      "businessOnly": "Samo paket Business",
+      "separateApp": "Ločena aplikacija",
+      "diy": "Naredite sami"
+    }
+  },
+  "waitlist": {
+    "placeholder": "vi@email.com",
+    "inputLabel": "E-poštni naslov"
+  },
+  "signup": {
+    "note": "Vaš naslov in datum, ko ste ga podali, hranimo le za pošiljanje novic in posodobitev. Nikoli ga ne delimo.",
+    "joined": "Naročeni ste. Novice in posodobitve bodo prispele po e-pošti."
+  },
+  "langs": {
+    "heading": "Na voljo v {{count}} jezikih po vsem svetu"
+  },
+  "community": {
+    "title": "Pridružite se skupnosti tududi",
+    "sub": "Povežite se z drugimi uporabniki tududi, poiščite pomoč in ostanite na tekočem"
+  },
+  "footer": {
+    "colProduct": "Izdelek",
+    "colCommunity": "Skupnost in podpora",
+    "colSupport": "Podprite",
+    "linkCoffee": "Kupite nam kavo",
+    "subTitle": "Novice in posodobitve po e-pošti",
+    "subBody": "Občasne novice in posodobitve izdelka. Brez neželene pošte, odjava kadar koli.",
+    "subSubmit": "Prijavi me",
+    "rights": "Vse pravice pridržane.",
+    "tagline": "Miren, celovit sistem za organizacijo življenja in dela.",
+    "linkTerms": "Pogoji",
+    "linkPrivacy": "Zasebnost",
+    "linkRefunds": "Vračila",
+    "linkContact": "Kontakt",
+    "linkCookies": "Nastavitve piškotkov"
+  },
+  "consent": {
+    "label": "Izbira piškotkov",
+    "body": "Piškotke uporabljamo za boljšo izkušnjo na tem spletnem mestu. Nastavijo se le, če jih sprejmete.",
+    "accept": "Sprejmi",
+    "decline": "Zavrni"
+  },
+  "js": {
+    "showFewer": "Pokaži manj",
+    "copy": "Kopiraj",
+    "copied": "Kopirano"
+  },
+  "faq": {
+    "items": {
+      "freePlan": {
+        "a": "Ne. Pro stane {{monthly}} na mesec ali {{price}} na leto za eno osebo, paketi Ekipa pa stanejo enako na osebo v stalnih velikostih. Ni brezplačne ravni, ni odštevanja preizkusa in ni kartice, ki bi jo pozneje potiho začeli bremeniti. Na voljo je 14-dnevno jamstvo vračila denarja, če se izkaže, da vam ne ustreza, na tej strani pa je demo v živo, če si želite najprej ogledati.",
+        "q": "Ali obstaja brezplačen paket ali preizkusna doba na tududi Cloud?",
+        "aTrial": "Brezplačnega paketa ni, vsak nov račun pa dobi brezplačen {{days}}-dnevni preizkus, brez kartice. Preizkus vključuje pomočnika AI z manjšo količino uporabe in enega člana, ki ga lahko dodate. Javne povezave do zapiskov se odprejo, ko se naročite. Če se ne naročite, je račun 30 dni samo za branje, da lahko izvozite podatke, nato pa se izbriše. Po preizkusu Pro stane {{monthly}} na mesec ali {{price}} na leto, paketi Ekipa pa stanejo enako na osebo. Brezplačen način uporabe tududi je, da ga poganjate na svojem strežniku, gre za isto aplikacijo."
+      },
+      "leaving": {
+        "q": "Lahko odidem in kaj se zgodi z mojimi podatki?",
+        "a": "Da, kadar koli. Iz profila izvozite vse v eno datoteko in jo uvozite v samostojno gostovan tududi, ki bere isto obliko. Izbris računa odstrani vaše podatke, priloge in varnostne kopije z naših strežnikov ter prekliče vsako naročnino."
+      },
+      "aiOptional": {
+        "a": "Ne. Oba sloja AI sta izklopljena, dokler jih ne omogočite, in tududi je popoln sistem tudi brez njih. Če jih nikoli ne omogočite, nič ne manjka in nič vas ne opozarja.",
+        "q": "Moram uporabljati funkcije AI?"
+      },
+      "aiPrivacy": {
+        "a": "To je odvisno, na katerega od dveh slojev mislite, in razlika je pomembna. Strežnik MCP teče znotraj vaše lastne instance: agent, kot je Claude Desktop, se poveže neposredno s to instanco, tako da je pogovor med vašim agentom in vašim lastnim tududi, ne posrednikom. AI asistent je drugačen. Kliče ponudnika, združljivega z OpenAI, tako da če ga usmerite na gostovanega ponudnika, vsebina teh zahtev gre k temu ponudniku. Namesto tega ga usmerite na lokalni model, kot je Ollama ali LM Studio, in nič ne zapusti vašega stroja. Ostane izklopljen, dokler ne navedete ključa, tako da je to vedno vaša izbira, ne privzeta nastavitev.",
+        "q": "Se moji podatki pošiljajo podjetju AI?"
+      },
+      "commercialUse": {
+        "a": "Da, in vam ni treba ničesar kupiti vnaprej. Licenca MIT dovoljuje komercialno uporabo, tudi znotraj podjetja in v komercialnem izdelku, brez mejnega prihodka in brez česarkoli za poročanje. Če vaš finančni oddelek potrebuje račun, se naročnina Cloud zaračuna preko našega ponudnika plačil in ustvari enega. Nič na tej strani ne prodaja dovoljenja, ker je to dovoljenje že vaše.",
+        "q": "Lahko uporabljam tududi na delu, ali v svojem podjetju?"
+      },
+      "maintained": {
+        "a": "Da. Razvija ga predvsem en vzdrževalec, s prispevki skupnosti, in pogosto izdaja različice. Vsaka različica je navedena na strani izdaj GitHub, povezani iz dnevnika sprememb v meniju zgoraj, tako da lahko sami presodite tempo, namesto da nam verjamete na besedo. Razvoj poteka javno: težave, javni časovni načrt, in Discord, kjer se odgovarja na vprašanja.",
+        "linkLabel": "Poglej vse izdaje",
+        "q": "Se tududi aktivno vzdržuje?"
+      },
+      "mcp": {
+        "a": "MCP je Model Context Protocol, odprt standard za povezovanje agentov AI s resničnimi sistemi. tududi vključuje strežnik MCP, ki izpostavlja {{tools}} orodij za naloge, projekte, področja, cilje, navade, opombe, osebe, oznake, prikaze, prejeto pošto, iskanje in metrike, tako da lahko agent zajame, najde, posodobi in dokonča delo, namesto da le govori o njem. Je opcijski, vključen je v Cloud in v vsako samostojno gostovano instanco, in deluje s Claude Desktop, Cursor, Windsurf, Cline, ali katerimkoli drugim odjemalcem MCP.",
+        "q": "Kaj je MCP, in kaj lahko agent dejansko naredi?"
+      },
+      "shutdown": {
+        "a": "Aplikacija je z licenco MIT, in izvorna koda je javna, tako da vam je ni mogoče odvzeti. Kdorkoli jo lahko še naprej zaganja, in lahko jo forkate. V tududi Cloud vaši podatki živijo v standardni podatkovni bazi tududi namesto v lastniškem formatu, tako da če bi storitev kdaj zaprli, bi prejeli svoje podatke in vodnik za premikanje na vaš lastni strežnik.",
+        "q": "Kaj se zgodi z mojimi podatki, če tududi izgine?"
+      },
+      "trust": {
+        "q": "Vam lahko zaupam svoje podatke?",
+        "a": "Ni nam treba verjeti na besedo. tududi je odprtokoden, zato lahko vsakdo prebere, kako natanko ravna s tvojimi podatki. V Cloudu ostane vse, kar vneseš, tvoje: kadar koli izvozi kot eno datoteko, sam izbriši svoj račun, in če se izkaže, da ti ne ustreza, velja 14-dnevna garancija vračila denarja."
+      }
+    },
+    "eyebrow": "FAQ",
+    "groups": {
+      "managed": "AI, MCP in Cloud",
+      "project": "Licenca in projekt"
+    },
+    "permalink": "Povezava do tega odgovora",
+    "sub": "Licenca, AI, in kaj se zgodi z vašimi podatki. Če kaj manjka, vprašajte na Discordu.",
+    "title": "Vprašanja, na katera se je vredno odgovoriti, preden se zavežete"
+  },
+  "cloud": {
+    "ctaPricing": "Poglej ceno",
+    "ctaPrimary": "Začni",
+    "includes": [
+      "Neomejene naloge, projekti in opombe",
+      "Za eno osebo. Paketi Ekipa dodajajo osebe v stalnih velikostih",
+      "Priloge in nalaganje datotek",
+      "Načrtovanje dneva z UI, MCP, koledarski viri, CalDAV in Telegram bot",
+      "Dnevne varnostne kopije in upravljane posodobitve",
+      "Podpora po e-pošti",
+      "Izvozite vse, kadarkoli"
+    ],
+    "lede": "Enak sistem v obeh primerih. Razlika je, kdo ga vzdržuje delujočega, popravljenega in varnostno kopiranega ob treh zjutraj.",
+    "metaDescription": "tududi Cloud je isti odprtokodni sistem, ki teče na naših strežnikih, posodobitve, varnostne kopije in e-pošto pa uredimo namesto vas. Pro za eno osebo ali paket Ekipa za skupino, mesečno ali letno, prekličete kadar koli.",
+    "metaTitle": "tududi Cloud: gostovani tududi, upravljan za vas",
+    "note": "Enaka aplikacija z licenco MIT. Izvozite vse, kadarkoli.",
+    "orAnnual": "ali",
+    "priceNote": "Zaračuna naš ponudnik plačil. Cene ne vključujejo veljavnih davkov.",
+    "pricingSub": "Vse vključeno. Prekličite, kadar želite.",
+    "pricingTitle": "Pro za vas, Ekipa za vse",
+    "reasons": {
+      "backups": {
+        "body": "Podatkovna baza se izvozi vsako noč in hrani ločeno od stroja, ki vas streže. Vse lahko tudi sami izvozite kadarkoli.",
+        "title": "Varnostne kopije, na katere ni treba pomisliti"
+      },
+      "email": {
+        "body": "Preverjanja, ponastavitve gesel in opomniki se pošiljajo prek ogrete domene za pošiljanje, kar je zapleteno in dolgočasno samostojno nastaviti.",
+        "title": "E-pošta, ki pride"
+      },
+      "noOps": {
+        "body": "Brez VPS-ja za najem, brez Dockerja za posodobitev, brez reverse proxya ali certifikata za podaljšanje. Prijavite se, in je tam.",
+        "title": "Brez strežnika za upravljanje"
+      },
+      "sameApp": {
+        "body": "Brez funkcij, izključno za cloud, in brez okrnjene samostojno gostovane različice. Če bi kdaj zaprli storitev, prejmete svoje podatke in vodnik za migracijo.",
+        "title": "Popolnoma enaka aplikacija"
+      },
+      "support": {
+        "body": "Odgovori oseba, ki pozna kodo. Pri samostojnem gostovanju imate skupnost, kar je dobro, vendar nihče ni dolžan odgovoriti.",
+        "title": "Nekdo, komu pisati"
+      },
+      "updates": {
+        "body": "Nove izdaje pridejo do vašega računa brez pull-a, ponovnega zagona ali migracije, ki jo morate spremljati.",
+        "title": "Posodobitve izvedene za vas"
+      }
+    },
+    "title": "Zakaj uporabljati tududi Cloud?",
+    "whyEyebrow": "Cloud",
+    "whySub": "Ne funkcije. Vsaka funkcija je tudi v samostojno gostovani različici.",
+    "whyTitle": "Za kaj dejansko plačujete",
+    "ctaTrial": "Preizkusite brezplačno",
+    "pricingSubTrial": "Preizkusite brezplačno {{days}} dni, brez kartice. Nato je vse vključeno, odpoved kadar želite."
+  },
+  "finalCta": {
+    "primary": "Začni",
+    "secondary": "Poglej cene",
+    "sub": "Mi upravljamo strežnik, posodobitve in varnostne kopije. Vi dobite sistem, in 14-dnevno garancijo vračila denarja, če ni za vas.",
+    "title": "Organizirajte se v minuti",
+    "subTrial": "Mi skrbimo za strežnik, posodobitve in varnostne kopije. Preizkusite brezplačno {{days}} dni, brez kartice.",
+    "primaryTrial": "Preizkusite brezplačno"
+  },
+  "contact": {
+    "title": "Pišite nam",
+    "lede": "Vprašanja o tududi Cloud, plačilih ali vašem računu? Pošljite nam sporočilo in odgovorili bomo po e-pošti.",
+    "name": "Ime",
+    "email": "E-pošta",
+    "message": "Sporočilo",
+    "submit": "Pošlji sporočilo",
+    "sent": "Hvala, vaše sporočilo je na poti. Odgovorili bomo po e-pošti.",
+    "invalid": "Vpišite ime, veljaven e-poštni naslov in sporočilo.",
+    "failed": "Sporočila trenutno ni bilo mogoče poslati. Pišite nam na"
+  },
+  "plan": {
+    "eyebrow": "Načrtuj dan",
+    "title": "Od bežne misli do zaključenega dneva",
+    "sub": "Zapišite stvari takoj, ko se pojavijo, z UI načrtujte dan okoli sestankov in ga opravite blok za blokom.",
+    "stepLabel": "Korak {{n}}",
+    "steps": {
+      "capture": {
+        "title": "Zapišite vse, z običajnimi besedami",
+        "body": "Eno polje za dodajanje za prejeto, opravila, zapiske in projekte, povsod v aplikaciji. Pišite, kot razmišljate, tududi dopolni ostalo.",
+        "points": [
+          "»next fri«, »in 3 days« ali »every first monday« nastavi datum ali ponavljanje",
+          "#oznake, +Projekt in @oseba se prepoznajo med tipkanjem",
+          "Prilepite posnetek zaslona ali spustite datoteke in gredo zraven"
+        ],
+        "alt": "Polje za dodajanje spremeni stavek v ponavljajoče se opravilo z oznako in projektom"
+      },
+      "plan": {
+        "title": "Načrtuj dan z UI (ali brez)",
+        "body": "Načrtovalnik pokaže, kaj gre danes, v vrstnem redu, ki ga izberete. Opravilom določite trajanje in jih postavite v prosti čas med sestanki ali pa naj UI pripravi osnutek celega dne.",
+        "points": [
+          "Razvrščeni predlogi: zamujeno, danes, v teku, nato ostalo",
+          "Osnutek z UI zapolni prosti čas okoli sestankov, Razveljavi pa ga povrne",
+          "Nasveti opozorijo na prezaseden dan in vrzeli, kamor gre opravilo"
+        ],
+        "alt": "Dnevni načrtovalnik z opravili in sestanki na eni časovnici"
+      },
+      "today": {
+        "title": "Danes, z vašim koledarjem",
+        "body": "Začnite dan in Danes pokaže le to, kar ste si zadali: trenutni blok, nato dnevni red, vmes pa sestanke iz Googla, Appla ali Outlooka.",
+        "points": [
+          "Označite kot opravljeno ali preložite s kartice Zdaj",
+          "Koledarski viri samo za branje, shranjeni šifrirano",
+          "UI povzetek ob koncu dneva prenese nedokončano na jutri"
+        ],
+        "alt": "Danes z naslednjim opravilom, dnevnim redom in sestanki iz dveh koledarjev"
+      }
+    }
+  },
+  "pains": {
+    "eyebrow": "Miselna obremenitev",
+    "title": "Organizirati se ni težko. Spomniti se je.",
+    "sub": "Večina aplikacij ti da še en prostor, kamor tipkaš stvari. Težava nikoli ni bila v tipkanju. Težava je, da vse nosiš v glavi.",
+    "items": {
+      "oneHead": {
+        "title": "Vse živi v tvoji glavi",
+        "body": "Zobozdravnik, avtomobilsko zavarovanje, darilo, obrazec, ki bi moral biti oddan v petek. Vse je tam notri in nič se nikoli ne odloži."
+      },
+      "notesApp": {
+        "title": "Aplikacija za zapiske ni sistem",
+        "body": "Vrstice, natipkane ob polnoči, ne prebere nihče, tudi ti ne. Zdrsne navzdol in skrb se vrne teden pozneje."
+      },
+      "tooManyApps": {
+        "title": "Aplikacija za vsak kotiček",
+        "body": "Koledar tukaj, seznam tam, opomniki na telefonu, preglednica za selitev. Pet mest za pogled, in tisto, ki ga potrebuješ, ni nikoli odprto."
+      }
+    },
+    "turn": "Zapiši enkrat. Daj temu mesto. Pusti, da zapusti tvojo glavo."
+  }
+}

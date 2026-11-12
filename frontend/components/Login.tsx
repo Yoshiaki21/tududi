@@ -4,6 +4,10 @@ import i18n from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { getApiPath, getAssetPath } from '../config/paths';
 import OIDCProviderButtons from './Auth/OIDCProviderButtons';
+import CaptchaWidget from './Auth/CaptchaWidget';
+import { fetchCaptchaConfig, CaptchaConfig } from '../utils/captcha';
+import { clearCsrfToken } from '../utils/csrfService';
+import MfaCodeForm from './Auth/MfaCodeForm';
 
 const Login: React.FC = () => {
     const [email, setEmail] = useState('');
@@ -11,7 +15,13 @@ const Login: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
     const [registrationEnabled, setRegistrationEnabled] = useState(false);
+    const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
+    const [resendState, setResendState] = useState<'idle' | 'sent'>('idle');
+    const [captcha, setCaptcha] = useState<CaptchaConfig | null>(null);
+    const [captchaToken, setCaptchaToken] = useState<string | null>(null);
     const [passwordAuthEnabled, setPasswordAuthEnabled] = useState(true);
+    // Password (or SSO) accepted, the 2FA code still to come.
+    const [mfaStep, setMfaStep] = useState(false);
     const [oidcProviders, setOidcProviders] = useState<
         Array<{ slug: string; name: string }>
     >([]);
@@ -69,6 +79,21 @@ const Login: React.FC = () => {
             }
         }
     }, [searchParams, t]);
+
+    // Back from SSO on an account with 2FA (?mfa=1), or a reload halfway
+    // through a sign-in: pick up at the code prompt.
+    useEffect(() => {
+        if (searchParams.get('mfa') === '1') {
+            setMfaStep(true);
+            return;
+        }
+        fetch(getApiPath('current_user'), { credentials: 'include' })
+            .then((response) => (response.ok ? response.json() : null))
+            .then((data) => {
+                if (data?.mfa_pending) setMfaStep(true);
+            })
+            .catch(() => {});
+    }, [searchParams]);
 
     // Check if registration is enabled
     useEffect(() => {
@@ -130,8 +155,57 @@ const Login: React.FC = () => {
         checkPasswordAuth();
     }, []);
 
+    useEffect(() => {
+        fetchCaptchaConfig().then(setCaptcha);
+    }, []);
+
+    const handleResendVerification = async () => {
+        if (!unverifiedEmail) return;
+        if (captcha && !captchaToken) return;
+        try {
+            await fetch(getApiPath('resend-verification'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    email: unverifiedEmail,
+                    ...(captchaToken ? { captcha_token: captchaToken } : {}),
+                }),
+                credentials: 'include',
+            });
+        } catch (err) {
+            console.error('Error resending verification email:', err);
+        }
+        setResendState('sent');
+    };
+
+    const completeSignIn = async (data: any) => {
+        // A token fetched before signing in belongs to another session.
+        clearCsrfToken();
+        if (data.user && data.user.language) {
+            await i18n.changeLanguage(data.user.language);
+        }
+
+        window.dispatchEvent(
+            new CustomEvent('userLoggedIn', { detail: data.user })
+        );
+
+        navigate('/today');
+    };
+
+    const handleMfaExpired = () => {
+        setMfaStep(false);
+        setError(
+            t(
+                'mfa.expired',
+                'Sign-in timed out or had too many wrong codes. Please sign in again.'
+            )
+        );
+    };
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        setUnverifiedEmail(null);
+        setResendState('idle');
 
         try {
             const response = await fetch(getApiPath('login'), {
@@ -145,18 +219,15 @@ const Login: React.FC = () => {
 
             const data = await response.json();
 
-            if (response.ok) {
-                if (data.user && data.user.language) {
-                    await i18n.changeLanguage(data.user.language);
-                }
-
-                window.dispatchEvent(
-                    new CustomEvent('userLoggedIn', { detail: data.user })
-                );
-
-                navigate('/today');
+            if (response.ok && data.mfa_required) {
+                setError(null);
+                setPassword('');
+                setMfaStep(true);
+            } else if (response.ok) {
+                await completeSignIn(data);
             } else {
                 if (data.email_not_verified) {
+                    setUnverifiedEmail(email);
                     setError(
                         t(
                             'auth.email_not_verified',
@@ -167,12 +238,12 @@ const Login: React.FC = () => {
                     setError(
                         data.error ||
                             data.errors?.[0] ||
-                            'Login failed. Please try again.'
+                            t('errors.loginFailed')
                     );
                 }
             }
         } catch (err) {
-            setError('An error occurred. Please try again.');
+            setError(t('errors.generalError'));
             console.error('Error during login:', err);
         }
     };
@@ -182,15 +253,21 @@ const Login: React.FC = () => {
             {/* Navbar */}
             <nav className="fixed top-0 left-0 right-0 z-50 text-gray-900 dark:text-white">
                 <div className="h-16 flex items-center px-4 sm:px-6 lg:px-8">
-                    <img
-                        src={getAssetPath(
-                            isDarkMode
-                                ? 'wide-logo-light.png'
-                                : 'wide-logo-dark.png'
-                        )}
-                        alt="tududi"
-                        className="h-9 w-auto"
-                    />
+                    <a
+                        href="https://tududi.com"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        <img
+                            src={getAssetPath(
+                                isDarkMode
+                                    ? 'wide-logo-light.png'
+                                    : 'wide-logo-dark.png'
+                            )}
+                            alt="tududi"
+                            className="h-9 w-auto"
+                        />
+                    </a>
                 </div>
             </nav>
 
@@ -213,100 +290,165 @@ const Login: React.FC = () => {
                                     {error}
                                 </div>
                             )}
-
-                            <OIDCProviderButtons providers={oidcProviders} />
-
-                            {oidcProviders.length > 0 && passwordAuthEnabled && (
-                                <div className="relative mb-6">
-                                    <div className="absolute inset-0 flex items-center">
-                                        <div className="w-full border-t border-gray-300 dark:border-gray-600"></div>
-                                    </div>
-                                    <div className="relative flex justify-center text-sm">
-                                        <span className="px-2 bg-gray-100 dark:bg-gray-900 text-gray-500 dark:text-gray-400">
+                            {unverifiedEmail && (
+                                <div className="mb-4 text-center text-sm">
+                                    {resendState === 'sent' ? (
+                                        <span className="text-gray-600 dark:text-gray-400">
                                             {t(
-                                                'auth.or_continue_with_email',
-                                                'Or continue with email'
+                                                'auth.verification_resent',
+                                                'If that address belongs to an unverified account, a new verification email is on its way.'
                                             )}
                                         </span>
-                                    </div>
-                                </div>
-                            )}
-
-                            {passwordAuthEnabled && (
-                                <form onSubmit={handleSubmit}>
-                                <div className="mb-4">
-                                    <label
-                                        htmlFor="email"
-                                        className="block text-gray-600 dark:text-gray-300 mb-1"
-                                    >
-                                        {t('auth.email', 'Email')}
-                                    </label>
-                                    <input
-                                        type="email"
-                                        id="email"
-                                        name="email"
-                                        value={email}
-                                        onChange={(e) =>
-                                            setEmail(e.target.value)
-                                        }
-                                        className="w-full px-4 py-2 border dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                                        data-testid="login-email"
-                                        required
-                                    />
-                                </div>
-                                <div className="mb-4">
-                                    <label
-                                        htmlFor="password"
-                                        className="block text-gray-600 dark:text-gray-300 mb-1"
-                                    >
-                                        {t('auth.password', 'Password')}
-                                    </label>
-                                    <input
-                                        type="password"
-                                        id="password"
-                                        name="password"
-                                        value={password}
-                                        onChange={(e) =>
-                                            setPassword(e.target.value)
-                                        }
-                                        className="w-full px-4 py-2 border dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                                        data-testid="login-password"
-                                        required
-                                    />
-                                </div>
-                                <button
-                                    type="submit"
-                                    className="w-full bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 transition-colors"
-                                    data-testid="login-submit"
-                                >
-                                    {t('auth.login', 'Login')}
-                                </button>
-                            </form>
-                            )}
-
-                            {!passwordAuthEnabled && oidcProviders.length === 0 && (
-                                <div className="text-center text-gray-600 dark:text-gray-400">
-                                    {t(
-                                        'auth.no_auth_methods',
-                                        'No authentication methods available. Please contact your administrator.'
+                                    ) : (
+                                        <>
+                                            {captcha && (
+                                                <CaptchaWidget
+                                                    siteKey={captcha.site_key}
+                                                    onToken={setCaptchaToken}
+                                                />
+                                            )}
+                                            <button
+                                                type="button"
+                                                onClick={
+                                                    handleResendVerification
+                                                }
+                                                disabled={
+                                                    !!captcha && !captchaToken
+                                                }
+                                                className="text-blue-500 hover:text-blue-600 disabled:opacity-60"
+                                                data-testid="login-resend-verification"
+                                            >
+                                                {t(
+                                                    'auth.resend_verification',
+                                                    'Resend verification email'
+                                                )}
+                                            </button>
+                                        </>
                                     )}
                                 </div>
                             )}
 
-                            {registrationEnabled && passwordAuthEnabled && (
-                                <div className="mt-6 text-center text-gray-600 dark:text-gray-400">
-                                    {t(
-                                        'auth.no_account',
-                                        "Don't have an account?"
-                                    )}{' '}
-                                    <Link
-                                        to="/register"
-                                        className="text-blue-500 hover:text-blue-600"
-                                    >
-                                        {t('auth.sign_up', 'Sign Up')}
-                                    </Link>
-                                </div>
+                            {mfaStep && (
+                                <MfaCodeForm
+                                    onSuccess={completeSignIn}
+                                    onExpired={handleMfaExpired}
+                                />
                             )}
+
+                            {!mfaStep && (
+                                <OIDCProviderButtons
+                                    providers={oidcProviders}
+                                />
+                            )}
+
+                            {!mfaStep &&
+                                oidcProviders.length > 0 &&
+                                passwordAuthEnabled && (
+                                    <div className="relative mb-6">
+                                        <div className="absolute inset-0 flex items-center">
+                                            <div className="w-full border-t border-gray-300 dark:border-gray-600"></div>
+                                        </div>
+                                        <div className="relative flex justify-center text-sm">
+                                            <span className="px-2 bg-gray-100 dark:bg-gray-900 text-gray-500 dark:text-gray-400">
+                                                {t(
+                                                    'auth.or_continue_with_email',
+                                                    'Or continue with email'
+                                                )}
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
+
+                            {!mfaStep && passwordAuthEnabled && (
+                                <form onSubmit={handleSubmit}>
+                                    <div className="mb-4">
+                                        <label
+                                            htmlFor="email"
+                                            className="block text-gray-600 dark:text-gray-300 mb-1"
+                                        >
+                                            {t('auth.email', 'Email')}
+                                        </label>
+                                        <input
+                                            type="email"
+                                            id="email"
+                                            name="email"
+                                            value={email}
+                                            onChange={(e) =>
+                                                setEmail(e.target.value)
+                                            }
+                                            className="w-full px-4 py-2 border dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                            data-testid="login-email"
+                                            required
+                                        />
+                                    </div>
+                                    <div className="mb-4">
+                                        <label
+                                            htmlFor="password"
+                                            className="block text-gray-600 dark:text-gray-300 mb-1"
+                                        >
+                                            {t('auth.password', 'Password')}
+                                        </label>
+                                        <input
+                                            type="password"
+                                            id="password"
+                                            name="password"
+                                            value={password}
+                                            onChange={(e) =>
+                                                setPassword(e.target.value)
+                                            }
+                                            className="w-full px-4 py-2 border dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
+                                            data-testid="login-password"
+                                            required
+                                        />
+                                    </div>
+                                    <button
+                                        type="submit"
+                                        className="w-full bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 transition-colors"
+                                        data-testid="login-submit"
+                                    >
+                                        {t('auth.login', 'Login')}
+                                    </button>
+                                    <div className="mt-4 text-center">
+                                        <Link
+                                            to="/forgot-password"
+                                            className="text-sm text-blue-500 hover:text-blue-600"
+                                            data-testid="login-forgot-link"
+                                        >
+                                            {t(
+                                                'auth.forgot_password_link',
+                                                'Forgot your password?'
+                                            )}
+                                        </Link>
+                                    </div>
+                                </form>
+                            )}
+
+                            {!passwordAuthEnabled &&
+                                oidcProviders.length === 0 && (
+                                    <div className="text-center text-gray-600 dark:text-gray-400">
+                                        {t(
+                                            'auth.no_auth_methods',
+                                            'No authentication methods available. Please contact your administrator.'
+                                        )}
+                                    </div>
+                                )}
+
+                            {!mfaStep &&
+                                registrationEnabled &&
+                                passwordAuthEnabled && (
+                                    <div className="mt-6 text-center text-gray-600 dark:text-gray-400">
+                                        {t(
+                                            'auth.no_account',
+                                            "Don't have an account?"
+                                        )}{' '}
+                                        <Link
+                                            to="/register"
+                                            className="text-blue-500 hover:text-blue-600"
+                                        >
+                                            {t('auth.sign_up', 'Sign Up')}
+                                        </Link>
+                                    </div>
+                                )}
                         </div>
                     </div>
 

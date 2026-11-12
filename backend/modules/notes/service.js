@@ -1,22 +1,21 @@
 'use strict';
 
+const entitlements = require('../../services/entitlementsService');
 const _ = require('lodash');
 const notesRepository = require('./repository');
-const { validateUid } = require('./validation');
+const { validateUid, validateBackground } = require('./validation');
 const {
     NotFoundError,
     ValidationError,
     ForbiddenError,
 } = require('../../shared/errors');
-const { Tag, Project, NoteAttachment } = require('../../models');
-const { deleteFileFromDisk } = require('../../utils/attachment-utils');
-const path = require('path');
-const { getConfig } = require('../../config/config');
-const notesServiceConfig = getConfig();
+const { Tag, Project } = require('../../models');
 const { validateTagName } = require('../tags/tagsService');
 const permissionsService = require('../../services/permissionsService');
+const scopeService = require('../../services/scopeService');
 const { sortTags } = require('../tasks/core/serializers');
 const { logError } = require('../../services/logService');
+const { noteAttachments } = require('../../services/entityAttachments');
 
 /**
  * Serialize a note with sorted tags.
@@ -130,12 +129,16 @@ class NotesService {
      * Get all notes for a user with optional filtering.
      */
     async getAll(userId, options = {}) {
-        const { orderBy = 'title:asc', tagFilter } = options;
+        const { orderBy = 'title:asc', tagFilter, scopeQuery } = options;
         const [orderColumn, orderDirection] = orderBy.split(':');
 
-        const whereClause = await permissionsService.ownershipOrPermissionWhere(
-            'note',
-            userId
+        // area_uid / project_uid / tags narrow the list to a Focus scope
+        const scope = scopeQuery
+            ? await scopeService.resolveScope(scopeQuery, userId)
+            : null;
+        const whereClause = scopeService.withScope(
+            await permissionsService.ownershipOrPermissionWhere('note', userId),
+            await scopeService.noteScopeWhere(scope)
         );
 
         const notes = await notesRepository.findAllWithIncludes(whereClause, {
@@ -175,12 +178,16 @@ class NotesService {
      */
     async create(
         userId,
-        { title, content, project_uid, project_id, tags, color }
+        { title, content, project_uid, project_id, tags, color, background }
     ) {
+        await entitlements.assertCanCreate(userId, 'note');
         const noteAttributes = { title, content };
 
         if (color !== undefined) {
             noteAttributes.color = color;
+        }
+        if (background !== undefined) {
+            noteAttributes.background = validateBackground(background);
         }
 
         // Handle project assignment with permission check
@@ -220,7 +227,16 @@ class NotesService {
     async update(
         userId,
         uid,
-        { title, content, project_uid, project_id, tags, color }
+        {
+            title,
+            content,
+            project_uid,
+            project_id,
+            tags,
+            color,
+            background,
+            pin_to_sidebar,
+        }
     ) {
         const validatedUid = validateUid(uid);
         const note = await notesRepository.findOne({ uid: validatedUid });
@@ -233,6 +249,10 @@ class NotesService {
         if (title !== undefined) updateData.title = title;
         if (content !== undefined) updateData.content = content;
         if (color !== undefined) updateData.color = color;
+        if (background !== undefined)
+            updateData.background = validateBackground(background);
+        if (pin_to_sidebar !== undefined)
+            updateData.pin_to_sidebar = pin_to_sidebar;
 
         // Handle project assignment
         const projectIdentifier =
@@ -294,6 +314,24 @@ class NotesService {
     }
 
     /**
+     * Get all notes that contain [[noteTitle]] in their content (backlinks).
+     */
+    async getBacklinks(userId, uid) {
+        const validatedUid = validateUid(uid);
+        const note = await notesRepository.findByUid(validatedUid);
+        if (!note) {
+            throw new NotFoundError('Note not found.');
+        }
+
+        const { title } =
+            await notesRepository.findByUidWithIncludes(validatedUid);
+        const backlinks = await notesRepository.findBacklinks(userId, title);
+        return backlinks
+            .filter((b) => b.uid !== validatedUid)
+            .map((b) => ({ uid: b.uid, title: b.title }));
+    }
+
+    /**
      * Delete a note.
      */
     async delete(uid) {
@@ -304,13 +342,7 @@ class NotesService {
             throw new NotFoundError('Note not found.');
         }
 
-        const attachments = await NoteAttachment.findAll({ where: { note_id: note.id } });
-        for (const attachment of attachments) {
-            const filePath = path.join(notesServiceConfig.uploadPath, attachment.file_path);
-            await deleteFileFromDisk(filePath);
-            await attachment.destroy();
-        }
-
+        await noteAttachments.removeAll(note.id);
         await notesRepository.destroy(note);
         return { message: 'Note deleted successfully.' };
     }

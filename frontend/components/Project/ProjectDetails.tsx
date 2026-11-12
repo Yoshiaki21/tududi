@@ -1,21 +1,25 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { getCsrfToken } from '../../utils/csrfService';
 import {
     MagnifyingGlassIcon,
-    EllipsisHorizontalCircleIcon,
-    ClipboardDocumentListIcon,
-    PlayIcon,
-    ClockIcon,
-    CheckCircleIcon,
-    XCircleIcon,
-    ChartBarIcon,
     CheckIcon,
+    SparklesIcon,
 } from '@heroicons/react/24/outline';
 import { useToast } from '../Shared/ToastContext';
-import ProjectModal from './ProjectModal';
+import ProjectAIInsights, {
+    ProjectAIInsightsHandle,
+} from '../AI/ProjectAIInsights';
 import ConfirmDialog from '../Shared/ConfirmDialog';
-import NoteModal from '../Note/NoteModal';
+import NoteSidePanel from '../Note/NoteSidePanel';
+import { deleteNote as apiDeleteNote } from '../../utils/notesService';
 import { useStore } from '../../store/useStore';
 import { Project } from '../../entities/Project';
 import { Task } from '../../entities/Task';
@@ -26,86 +30,108 @@ import {
     deleteProject,
     fetchProjects,
 } from '../../utils/projectsService';
-import { createTask, deleteTask } from '../../utils/tasksService';
 import {
-    updateNote,
-    deleteNote as apiDeleteNote,
-} from '../../utils/notesService';
-import { createNote } from '../../utils/notesService';
-import { getAutoSuggestNextActionsEnabled } from '../../utils/profileService';
+    deleteTask,
+    fetchTaskOrder,
+    saveTaskOrder,
+    updateTask,
+} from '../../utils/tasksService';
+import { mergeVisibleOrder } from '../Shared/sortableList';
 import IconSortDropdown from '../Shared/IconSortDropdown';
 import LoadingSpinner from '../Shared/LoadingSpinner';
-import { usePersistedModal } from '../../hooks/usePersistedModal';
 import { getApiPath } from '../../config/paths';
-import { getCsrfToken } from '../../utils/csrfService';
-import ProjectInsightsPanel from './ProjectInsightsPanel';
-import ProjectBanner from './ProjectBanner';
+import { fetchProfile } from '../../utils/profileService';
+import ProjectHero from './ProjectHero';
+import ImportWizard from '../Spreadsheet/ImportWizard';
+import { exportTasks } from '../../utils/spreadsheetService';
+import { spreadsheetErrorText } from '../Spreadsheet/errorText';
+import NewItemButton from '../Shared/NewItemButton';
+import { onCaptureSaved, openCapture } from '../../utils/captureUi';
 import BannerEditModal from './BannerEditModal';
+import ProjectShareModal from './ProjectShareModal';
+import ProjectModal from './ProjectModal';
 import ProjectTasksSection from './ProjectTasksSection';
-import ProjectNotesSection from './ProjectNotesSection';
+import ProjectTimeline from './Timeline/ProjectTimeline';
+import ProjectOverviewRail from './ProjectOverviewRail';
+import ProjectAttachmentsWidget from './ProjectAttachmentsWidget';
+import { ownerAttachmentsApi } from '../../utils/attachmentsService';
+import { useProjectMetrics } from './useProjectMetrics';
 import WorkSummaryCard from './WorkSummaryCard';
 import MarkdownRenderer from '../Shared/MarkdownRenderer';
 import MarkdownEditor from '../Shared/MarkdownEditor';
-import { useProjectMetrics } from './useProjectMetrics';
-import { ProjectAttachment } from '../../entities/Attachment';
+import useCompleteProject from './useCompleteProject';
 import {
-    fetchProjectAttachments,
-    uploadProjectAttachment,
-    deleteProjectAttachment,
-    getAttachmentType,
-} from '../../utils/projectAttachmentsService';
-import AttachmentCard from '../Shared/AttachmentCard';
-import AttachmentPreview from '../Shared/AttachmentPreview';
-import { CloudArrowUpIcon, PaperClipIcon } from '@heroicons/react/24/outline';
+    matchesTaskStatusFilter,
+    TaskStatusFilter,
+} from '../../constants/taskStatus';
+import { saveProjectAsTemplate } from '../../utils/templatesService';
+import TaskModal from '../Task/TaskModal';
 
 const ProjectDetails: React.FC = () => {
-    const UI_OPTIONS_KEY = 'ui_app_options';
-
     const { uidSlug } = useParams<{ uidSlug: string }>();
     const navigate = useNavigate();
     const { t } = useTranslation();
-    const { showSuccessToast } = useToast();
-    const { areasStore, projectsStore } = useStore();
+    const { showSuccessToast, showErrorToast } = useToast();
+    const { areasStore, projectsStore, userSettingsStore } = useStore();
     const areas = areasStore.areas;
+    const templatesEnabled = userSettingsStore.templatesEnabled;
     const [allProjects, setAllProjects] = useState<Project[]>([]);
     const [project, setProject] = useState<Project | null>(null);
     const [tasks, setTasks] = useState<Task[]>([]);
+    const [panelTask, setPanelTask] = useState<Task | null>(null);
     const [notes, setNotes] = useState<Note[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(false);
     const [isConfirmDialogOpen, setIsConfirmDialogOpen] = useState(false);
     const [noteToDelete, setNoteToDelete] = useState<Note | null>(null);
-    const [selectedNote, setSelectedNote] = useState<Note | null>(null);
-    const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
-    const [isBannerEditModalOpen, setIsBannerEditModalOpen] = useState(false);
-    const [activeTab, setActiveTab] = useState<'description' | 'tasks' | 'notes' | 'attachments'>('tasks');
-    const [projectAttachments, setProjectAttachments] = useState<ProjectAttachment[]>([]);
-    const [attachmentsLoading, setAttachmentsLoading] = useState(false);
-    const [attachmentUploading, setAttachmentUploading] = useState(false);
-    const [previewAttachment, setPreviewAttachment] = useState<ProjectAttachment | null>(null);
-    const projectAttachmentFileRef = React.useRef<HTMLInputElement>(null);
-    const [taskStatusFilter, setTaskStatusFilter] = useState<
-        'all' | 'active' | 'completed'
-    >(() => {
-        const saved = localStorage.getItem('project_task_status_filter');
-        return (saved as 'all' | 'active' | 'completed') || 'active';
-    });
-    const [showMetrics, setShowMetrics] = useState(true);
-    const [showAutoSuggestForm, setShowAutoSuggestForm] = useState(false);
-    const [autoSuggestEnabled, setAutoSuggestEnabled] = useState(false);
-    const hasCheckedAutoSuggest = useRef(false);
-    const [orderBy, setOrderBy] = useState<string>('status:inProgressFirst');
-    const [taskSearchQuery, setTaskSearchQuery] = useState('');
-    const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+    const [isTemplateConfirmOpen, setIsTemplateConfirmOpen] = useState(false);
+    const [previewNote, setPreviewNote] = useState<Note | null>(null);
+    // 'description' は独自追加: Markdown 概要タブ
+    const [view, setView] = useState<'description' | 'tasks' | 'timeline'>(
+        () => {
+            try {
+                const stored = localStorage.getItem('project_view');
+                return stored === 'timeline' || stored === 'description'
+                    ? stored
+                    : 'tasks';
+            } catch {
+                return 'tasks';
+            }
+        }
+    );
     const [defaultUnitPrice, setDefaultUnitPrice] = useState<number>(25000);
     const [isEditingDescription, setIsEditingDescription] = useState(false);
     const [editedDescription, setEditedDescription] = useState<string>('');
-    const {
-        isOpen: isModalOpen,
-        openModal,
-        closeModal,
-    } = usePersistedModal(project?.id);
-    const editButtonRef = useRef<HTMLButtonElement>(null);
+    const changeView = (next: 'description' | 'tasks' | 'timeline') => {
+        setView(next);
+        try {
+            localStorage.setItem('project_view', next);
+        } catch {
+            // The chosen view is only a convenience
+        }
+    };
+    const [isBannerEditModalOpen, setIsBannerEditModalOpen] = useState(false);
+    const attachmentsApi = useMemo(
+        () =>
+            project?.uid ? ownerAttachmentsApi('project', project.uid) : null,
+        [project?.uid]
+    );
+
+    const [taskStatusFilter, setTaskStatusFilter] = useState<TaskStatusFilter>(
+        () => {
+            const saved = localStorage.getItem('project_task_status_filter');
+            return (saved as TaskStatusFilter) || 'active';
+        }
+    );
+    const [orderBy, setOrderBy] = useState<string>('status:inProgressFirst');
+    // Task uids in the user's manual order for this project.
+    const [taskOrder, setTaskOrder] = useState<string[]>([]);
+    const [taskSearchQuery, setTaskSearchQuery] = useState('');
+    const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+    const [aiInsightsActive, setAiInsightsActive] = useState(false);
+    const aiInsightsRef = useRef<ProjectAIInsightsHandle>(null);
+    const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+    const [isEditPanelOpen, setIsEditPanelOpen] = useState(false);
     const sortOptions = useMemo(
         () => [
             {
@@ -118,6 +144,7 @@ const ProjectDetails: React.FC = () => {
             },
             { value: 'due_date:asc', label: t('sort.due_date', 'Due Date') },
             { value: 'priority:desc', label: t('sort.priority', 'Priority') },
+            { value: 'custom:asc', label: t('sort.custom', 'Custom') },
         ],
         [t]
     );
@@ -129,120 +156,12 @@ const ProjectDetails: React.FC = () => {
     }, [areasStore]);
 
     useEffect(() => {
-        if (!hasCheckedAutoSuggest.current) {
-            hasCheckedAutoSuggest.current = true;
-            getAutoSuggestNextActionsEnabled().then(setAutoSuggestEnabled);
-        }
-    }, []);
-
-    useEffect(() => {
-        // Load persisted UI options (local or remote)
-        const load = async () => {
-            let localShow: boolean | undefined;
-            try {
-                const stored = localStorage.getItem(UI_OPTIONS_KEY);
-                if (stored) {
-                    const parsed = JSON.parse(stored);
-                    if (typeof parsed.showMetrics === 'boolean') {
-                        localShow = parsed.showMetrics;
-                        setShowMetrics(parsed.showMetrics);
-                    }
-                }
-            } catch {
-                // ignore parse errors
-            }
-
-            try {
-                const response = await fetch(getApiPath('profile'), {
-                    credentials: 'include',
-                });
-                if (response.ok) {
-                    const profile = await response.json();
-                    if (
-                        profile.ui_settings &&
-                        typeof profile.ui_settings.project?.details
-                            ?.showMetrics === 'boolean'
-                    ) {
-                        setShowMetrics(
-                            profile.ui_settings.project.details.showMetrics
-                        );
-                        localStorage.setItem(
-                            UI_OPTIONS_KEY,
-                            JSON.stringify({
-                                showMetrics:
-                                    profile.ui_settings.project.details
-                                        .showMetrics,
-                            })
-                        );
-                    } else if (localShow === undefined) {
-                        setShowMetrics(true);
-                    }
-                } else if (localShow === undefined) {
-                    setShowMetrics(true);
-                }
-            } catch {
-                if (localShow === undefined) setShowMetrics(true);
-            }
-        };
-        load();
-    }, [getApiPath]);
-
-    const persistUiSettings = async (nextShowMetrics: boolean) => {
-        try {
-            localStorage.setItem(
-                UI_OPTIONS_KEY,
-                JSON.stringify({ showMetrics: nextShowMetrics })
-            );
-        } catch {
-            // ignore storage errors
-        }
-
-        try {
-            await fetch(getApiPath('profile/ui-settings'), {
-                method: 'PUT',
-                credentials: 'include',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    project: {
-                        details: {
-                            showMetrics: nextShowMetrics,
-                        },
-                    },
-                }),
-            });
-        } catch {
-            // ignore network errors
-        }
-    };
-
-    const toggleMetrics = () => {
-        setShowMetrics((prev) => {
-            const next = !prev;
-            persistUiSettings(next);
-            return next;
-        });
-    };
-
-    useEffect(() => {
         if (allProjects.length === 0) {
             fetchProjects()
                 .then(setAllProjects)
                 .catch(() => undefined);
         }
     }, [allProjects.length]);
-
-    useEffect(() => {
-        fetch(getApiPath('profile'), { credentials: 'include' })
-            .then((r) => r.ok ? r.json() : null)
-            .then((profile) => {
-                if (profile?.default_unit_price != null) {
-                    setDefaultUnitPrice(profile.default_unit_price);
-                }
-            })
-            .catch(() => undefined);
-    }, [getApiPath]);
 
     useEffect(() => {
         const storedSort = localStorage.getItem('project_order_by');
@@ -255,6 +174,18 @@ const ProjectDetails: React.FC = () => {
         }
     }, []);
 
+    // Bumped after something is captured, so new tasks and notes show up
+    const [reloadKey, setReloadKey] = useState(0);
+    const [isImportOpen, setIsImportOpen] = useState(false);
+    const { requestComplete, completeDialog } = useCompleteProject();
+    useEffect(
+        () =>
+            onCaptureSaved(() => {
+                setReloadKey((key) => key + 1);
+            }),
+        []
+    );
+
     useEffect(() => {
         if (!uidSlug) return;
         const loadProjectData = async () => {
@@ -264,6 +195,14 @@ const ProjectDetails: React.FC = () => {
                 const projectData = await fetchProjectBySlug(uidSlug);
                 setProject(projectData);
                 setTasks(projectData.tasks || projectData.Tasks || []);
+                if (projectData.uid) {
+                    fetchTaskOrder({
+                        scope: 'project',
+                        project_uid: projectData.uid,
+                    })
+                        .then(setTaskOrder)
+                        .catch(() => setTaskOrder([]));
+                }
                 const savedSort = localStorage.getItem('project_order_by');
                 if (!savedSort && projectData.task_sort_order) {
                     setOrderBy(projectData.task_sort_order);
@@ -283,56 +222,41 @@ const ProjectDetails: React.FC = () => {
             }
         };
         loadProjectData();
-    }, [uidSlug]);
+    }, [uidSlug, reloadKey]);
 
-    useEffect(() => {
-        const button = editButtonRef.current;
-        if (!button) return;
-        const handleClick = (e: Event) => {
-            e.preventDefault();
-            e.stopPropagation();
-            openModal();
-        };
-        button.addEventListener('click', handleClick);
-        return () => button.removeEventListener('click', handleClick);
-    }, [openModal]);
-
-    useEffect(() => {
-        if (
-            project &&
-            tasks.length === 0 &&
-            !loading &&
-            taskStatusFilter === 'active' &&
-            autoSuggestEnabled
-        ) {
-            setShowAutoSuggestForm(true);
-        } else {
-            setShowAutoSuggestForm(false);
+    // Moving a bar on the timeline. Times of day are kept: sending a date
+    // alone would turn a timed start or due into a whole-day one.
+    const handleTaskDatesChange = async (
+        task: Task,
+        dates: { start_date?: string; due_date?: string }
+    ) => {
+        if (!task.uid) return;
+        const payload: Partial<Task> = { ...dates };
+        if (dates.start_date && task.start_time)
+            payload.start_time = task.start_time;
+        if (dates.due_date && task.due_has_time && task.due_time)
+            payload.due_time = task.due_time;
+        try {
+            const saved = await updateTask(task.uid, payload);
+            setTasks((prev) =>
+                prev.map((item) =>
+                    item.uid === task.uid
+                        ? {
+                              ...item,
+                              start_date: saved.start_date ?? null,
+                              start_time: saved.start_time ?? null,
+                              due_date: saved.due_date,
+                              due_time: saved.due_time ?? null,
+                              due_has_time: saved.due_has_time,
+                          }
+                        : item
+                )
+            );
+        } catch {
+            showErrorToast(
+                t('projectTimeline.saveError', 'Could not move the task')
+            );
         }
-    }, [project, tasks.length, loading, taskStatusFilter, autoSuggestEnabled]);
-
-    const handleTaskCreate = async (taskName: string) => {
-        if (!project) throw new Error('Cannot create task: Project is missing');
-        const newTask = await createTask({
-            name: taskName,
-            status: 0,
-            project_id: project.id,
-            completed_at: null,
-        });
-        setTasks([...tasks, newTask]);
-        const taskLink = (
-            <span>
-                {t('task.created', 'Task')}{' '}
-                <a
-                    href={`/task/${newTask.uid}`}
-                    className="text-green-200 underline hover:text-green-100"
-                >
-                    {newTask.name}
-                </a>{' '}
-                {t('task.createdSuccessfully', 'created successfully!')}
-            </span>
-        );
-        showSuccessToast(taskLink);
     };
 
     const handleTaskUpdate = async (updatedTask: Task) => {
@@ -412,29 +336,119 @@ const ProjectDetails: React.FC = () => {
         );
     };
 
-    const handleSaveProject = async (updatedProject: Project) => {
-        if (!updatedProject.uid) return;
-        const savedProject = await updateProject(
-            updatedProject.uid,
-            updatedProject
-        );
-        setProject((prev) => ({
-            ...savedProject,
-            area: savedProject.area || prev?.area,
-            Area: (savedProject as any).Area || (prev as any)?.Area,
-        }));
+    // Each field on the page saves on its own, so the page only patches what
+    // changed and keeps the associations the response does not carry.
+    const handleUpdateProject = async (patch: Partial<Project>) => {
+        if (!project?.uid) return;
+        try {
+            const savedProject = await updateProject(project.uid, patch);
+            setProject((prev) => ({
+                ...prev,
+                ...savedProject,
+                area: savedProject.area || prev?.area,
+                Area: (savedProject as any).Area || (prev as any)?.Area,
+            }));
+            projectsStore.setProjects(
+                projectsStore.projects.map((p) =>
+                    p.uid === savedProject.uid ? { ...p, ...savedProject } : p
+                )
+            );
+        } catch (err) {
+            showErrorToast(
+                t('errors.projectSaveFailed', 'Failed to save project')
+            );
+            throw err;
+        }
+    };
 
-        const currentProjects = projectsStore.projects;
-        const updatedProjects = currentProjects.map((p) =>
-            p.id === savedProject.id ? savedProject : p
-        );
-        projectsStore.setProjects(updatedProjects);
+    // 人工単価の既定値（ユーザー設定）
+    useEffect(() => {
+        fetchProfile()
+            .then((profile) => {
+                if (profile?.default_unit_price != null) {
+                    setDefaultUnitPrice(profile.default_unit_price);
+                }
+            })
+            .catch(() => undefined);
+    }, []);
 
-        closeModal();
+    const handleUnitPriceChange = async (price: number) => {
+        await handleUpdateProject({ unit_price: price });
+    };
+
+    const handleStartDescriptionEdit = () => {
+        setEditedDescription(project?.description || '');
+        setIsEditingDescription(true);
+    };
+
+    const handleSaveDescription = async () => {
+        await handleUpdateProject({ description: editedDescription });
+        setIsEditingDescription(false);
+    };
+
+    const handleCancelDescriptionEdit = () => {
+        setIsEditingDescription(false);
+        setEditedDescription(project?.description || '');
+    };
+
+    // チェックボックス操作は Toast なしで即保存
+    const handleDescriptionCheckboxChange = async (newContent: string) => {
+        await handleUpdateProject({ description: newContent });
+    };
+
+    // After a completion the tasks may have changed too, so reload the page
+    const handleProjectCompleted = (savedProject: Project) => {
+        projectsStore.setProjects(
+            projectsStore.projects.map((p) =>
+                p.uid === savedProject.uid ? { ...p, ...savedProject } : p
+            )
+        );
+        setReloadKey((key) => key + 1);
     };
 
     const handleEditBannerClick = () => {
         setIsBannerEditModalOpen(true);
+    };
+
+    const handleSaveAsTemplate = () => {
+        setIsTemplateConfirmOpen(true);
+    };
+
+    const handleConfirmSaveAsTemplate = async () => {
+        if (!project?.uid) return;
+        try {
+            await saveProjectAsTemplate(project.uid, { name: project.name });
+            showSuccessToast(
+                t('projects.savedAsTemplate', '"{{name}}" saved as template.', {
+                    name: project.name,
+                })
+            );
+        } catch {
+            showErrorToast(
+                t(
+                    'projects.saveAsTemplateError',
+                    'Failed to save project as template.'
+                )
+            );
+        } finally {
+            setIsTemplateConfirmOpen(false);
+        }
+    };
+
+    const handleTogglePin = async () => {
+        if (!project?.uid) return;
+        const newValue = !project.pin_to_sidebar;
+        const updatedProject = await updateProject(project.uid, {
+            ...project,
+            pin_to_sidebar: newValue,
+        });
+        setProject((prev) => ({ ...prev, ...updatedProject }));
+        const currentProjects = projectsStore.projects;
+        projectsStore.setProjects(
+            currentProjects.map((p) =>
+                p.uid === project.uid ? { ...p, pin_to_sidebar: newValue } : p
+            )
+        );
     };
 
     const handleSaveBanner = async (imageUrl: string) => {
@@ -463,39 +477,7 @@ const ProjectDetails: React.FC = () => {
         );
     };
 
-    const handleCreateNextAction = async (
-        projectId: number,
-        actionDescription: string
-    ) => {
-        const newTask = await createTask({
-            name: actionDescription,
-            status: 0,
-            project_id: projectId,
-            priority: 0,
-            completed_at: null,
-        });
-        setTasks([...tasks, newTask]);
-        setShowAutoSuggestForm(false);
-        const taskLink = (
-            <span>
-                {t('task.created', 'Task')}{' '}
-                <a
-                    href={`/task/${newTask.uid}`}
-                    className="text-green-200 underline hover:text-green-100"
-                >
-                    {newTask.name}
-                </a>{' '}
-                {t('task.createdSuccessfully', 'created successfully!')}
-            </span>
-        );
-        showSuccessToast(taskLink);
-    };
-
-    const handleSkipNextAction = () => setShowAutoSuggestForm(false);
-
-    const handleTaskStatusFilterChange = (
-        status: 'all' | 'active' | 'completed'
-    ) => {
+    const handleTaskStatusFilterChange = (status: TaskStatusFilter) => {
         setTaskStatusFilter(status);
         localStorage.setItem('project_task_status_filter', status);
     };
@@ -503,86 +485,6 @@ const ProjectDetails: React.FC = () => {
     const handleSortChange = (newOrderBy: string) => {
         setOrderBy(newOrderBy);
         localStorage.setItem('project_order_by', newOrderBy);
-    };
-
-    const loadProjectAttachments = useCallback(async () => {
-        if (!project?.uid) return;
-        setAttachmentsLoading(true);
-        try {
-            const data = await fetchProjectAttachments(project.uid);
-            setProjectAttachments(data);
-        } catch (err) {
-            console.error('Error loading project attachments:', err);
-        } finally {
-            setAttachmentsLoading(false);
-        }
-    }, [project?.uid]);
-
-    useEffect(() => {
-        if (activeTab === 'attachments' && project?.uid) {
-            loadProjectAttachments();
-        }
-    }, [activeTab, project?.uid, loadProjectAttachments]);
-
-    const handleProjectAttachmentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file || !project?.uid) return;
-        setAttachmentUploading(true);
-        try {
-            const newAtt = await uploadProjectAttachment(project.uid, file);
-            setProjectAttachments((prev) => [...prev, newAtt]);
-        } catch (err) {
-            console.error('Error uploading project attachment:', err);
-        } finally {
-            setAttachmentUploading(false);
-            if (projectAttachmentFileRef.current) projectAttachmentFileRef.current.value = '';
-        }
-    };
-
-    const handleProjectAttachmentDelete = async (att: ProjectAttachment) => {
-        if (!project?.uid) return;
-        try {
-            await deleteProjectAttachment(project.uid, att.uid);
-            setProjectAttachments((prev) => prev.filter((a) => a.uid !== att.uid));
-            if (previewAttachment?.uid === att.uid) setPreviewAttachment(null);
-        } catch (err) {
-            console.error('Error deleting project attachment:', err);
-        }
-    };
-
-    const handleUnitPriceChange = async (price: number) => {
-        if (!project?.uid) return;
-        const updated = await updateProject(project.uid, { ...project, unit_price: price });
-        setProject((prev) => prev ? { ...prev, unit_price: price, ...updated } : prev);
-    };
-
-    const handleStartDescriptionEdit = () => {
-        setEditedDescription(project?.description || '');
-        setIsEditingDescription(true);
-    };
-
-    const handleSaveDescription = async () => {
-        if (!project?.uid) return;
-        const updated = await updateProject(project.uid, {
-            ...project,
-            description: editedDescription,
-        });
-        setProject((prev) => prev ? { ...prev, description: editedDescription, ...updated } : prev);
-        setIsEditingDescription(false);
-    };
-
-    const handleCancelDescriptionEdit = () => {
-        setIsEditingDescription(false);
-        setEditedDescription(project?.description || '');
-    };
-
-    const handleDescriptionCheckboxChange = async (newContent: string) => {
-        if (!project?.uid) return;
-        const updated = await updateProject(project.uid, {
-            ...project,
-            description: newContent,
-        });
-        setProject((prev) => prev ? { ...prev, description: newContent, ...updated } : prev);
     };
 
     const handleDeleteProject = async () => {
@@ -595,23 +497,16 @@ const ProjectDetails: React.FC = () => {
         navigate('/projects');
     };
 
-    const handleEditNote = async (note: Note) => {
-        try {
-            const response = await fetch(getApiPath(`note/${note.uid}`), {
-                credentials: 'include',
-                headers: { Accept: 'application/json' },
-            });
-            if (response.ok) {
-                const fullNote = await response.json();
-                setSelectedNote(fullNote);
-            } else {
-                setSelectedNote(note);
-            }
-        } catch (error) {
-            console.error('Error fetching note details:', error);
-            setSelectedNote(note);
-        }
-        setIsNoteModalOpen(true);
+    // Opens the capture box on a task or note with this project filled in
+    const openCaptureForProject = (target: 'task' | 'note' = 'task') => {
+        if (!project) return;
+        const token = /\s/.test(project.name)
+            ? `+"${project.name}"`
+            : `+${project.name}`;
+        openCapture(target, null, `${token} `, {
+            uid: project.uid,
+            name: project.name,
+        });
     };
 
     const handleDeleteNote = async (noteIdentifier: string) => {
@@ -636,113 +531,35 @@ const ProjectDetails: React.FC = () => {
         setIsConfirmDialogOpen(false);
     };
 
-    const handleSaveNote = async (noteData: Note) => {
-        try {
-            let savedNote: Note;
-            const noteIdentifier =
-                noteData.uid ??
-                (noteData.id !== undefined ? String(noteData.id) : null);
-            let isUpdate = false;
-            if (noteIdentifier) {
-                savedNote = await updateNote(noteIdentifier, noteData);
-                isUpdate = true;
-            } else {
-                savedNote = await createNote(noteData);
-            }
-            if ((savedNote as any).Tags && !(savedNote as any).tags) {
-                (savedNote as any).tags = (savedNote as any).Tags;
-            }
-            const savedNoteProjectId = savedNote.project_id ?? null;
-            const currentProjectId = project?.id ?? null;
-            if (savedNote.id && savedNoteProjectId !== currentProjectId) {
-                setNotes(notes.filter((n) => n.id !== savedNote.id));
-                const globalNotes = useStore.getState().notesStore.notes;
-                useStore
-                    .getState()
-                    .notesStore.setNotes(
-                        globalNotes.map((note) =>
-                            note.uid === savedNote.uid ? savedNote : note
-                        )
-                    );
-            } else if (isUpdate) {
-                const savedIdentifier =
-                    savedNote.uid ??
-                    (savedNote.id !== undefined ? String(savedNote.id) : null);
-                setNotes(
-                    notes.map((n) => {
-                        const currentIdentifier =
-                            n.uid ??
-                            (n.id !== undefined ? String(n.id) : undefined);
-                        return currentIdentifier === savedIdentifier
-                            ? savedNote
-                            : n;
-                    })
-                );
-                const globalNotes = useStore.getState().notesStore.notes;
-                useStore
-                    .getState()
-                    .notesStore.setNotes(
-                        globalNotes.map((note) =>
-                            note.uid === savedNote.uid ? savedNote : note
-                        )
-                    );
-            } else {
-                setNotes([savedNote, ...notes]);
-                const globalNotes = useStore.getState().notesStore.notes;
-                useStore
-                    .getState()
-                    .notesStore.setNotes([savedNote, ...globalNotes]);
-            }
-            setIsNoteModalOpen(false);
-            setSelectedNote(null);
-        } catch {
-            // silent
-        }
-    };
+    // Unplaced tasks (never dragged) come first, newest first.
+    const taskPositions = useMemo(
+        () => new Map(taskOrder.map((uid, index) => [uid, index])),
+        [taskOrder]
+    );
 
-    const displayTasks = useMemo(() => {
-        let filteredTasks: Task[];
-
-        if (taskStatusFilter === 'completed') {
-            filteredTasks = tasks.filter(
-                (task) =>
-                    task.status === 'done' ||
-                    task.status === 'archived' ||
-                    task.status === 2 ||
-                    task.status === 3
-            );
-        } else if (taskStatusFilter === 'active') {
-            filteredTasks = tasks.filter(
-                (task) =>
-                    task.status === 'not_started' ||
-                    task.status === 'in_progress' ||
-                    task.status === 'waiting' ||
-                    task.status === 0 ||
-                    task.status === 1 ||
-                    task.status === 4
-            );
-        } else {
-            // taskStatusFilter === 'all'
-            filteredTasks = tasks;
-        }
-        if (taskSearchQuery.trim()) {
-            const query = taskSearchQuery.toLowerCase();
-            filteredTasks = filteredTasks.filter(
-                (task) =>
-                    task.name.toLowerCase().includes(query) ||
-                    task.original_name?.toLowerCase().includes(query) ||
-                    task.note?.toLowerCase().includes(query)
-            );
-        }
-        const getStatusRank = (status: Task['status']) => {
-            if (status === 'in_progress' || status === 1) return 0;
-            if (status === 'not_started' || status === 0) return 1;
-            if (status === 'waiting' || status === 4) return 2;
-            if (status === 'done' || status === 2) return 3;
-            if (status === 'archived' || status === 3) return 4;
-            return 5;
-        };
-        return [...filteredTasks].sort((a, b) => {
+    const compareTasks = useCallback(
+        (a: Task, b: Task) => {
+            if (orderBy.startsWith('custom:')) {
+                const posA = a.uid ? taskPositions.get(a.uid) : undefined;
+                const posB = b.uid ? taskPositions.get(b.uid) : undefined;
+                if (posA === undefined || posB === undefined) {
+                    if (posA !== posB) return posA === undefined ? -1 : 1;
+                    return (
+                        new Date(b.created_at || 0).getTime() -
+                        new Date(a.created_at || 0).getTime()
+                    );
+                }
+                return posA - posB;
+            }
+            const getStatusRank = (status: Task['status']) => {
+                if (status === 'in_progress' || status === 1) return 0;
+                if (status === 'not_started' || status === 0) return 1;
+                if (status === 'planned' || status === 6) return 2;
+                if (status === 'waiting' || status === 4) return 3;
+                if (status === 'done' || status === 2) return 4;
+                if (status === 'archived' || status === 3) return 5;
+                return 6;
+            };
             if (orderBy === 'status:inProgressFirst') {
                 const rankA = getStatusRank(a.status);
                 const rankB = getStatusRank(b.status);
@@ -798,57 +615,60 @@ const ProjectDetails: React.FC = () => {
                         b.created_at ? new Date(b.created_at).getTime() : 0
                     );
             }
-        });
-    }, [tasks, taskStatusFilter, orderBy, taskSearchQuery]);
+        },
+        [orderBy, taskPositions]
+    );
 
-    const {
-        taskStats,
-        completionGradient,
-        dueBuckets,
-        dueHighlights,
-        nextBestAction,
-        getDueDescriptor,
-        handleStartNextAction,
-        completionTrend,
-        upcomingDueTrend,
-        createdTrend,
-        upcomingInsights,
-        weeklyPace,
-        monthlyCompleted,
-    } = useProjectMetrics(tasks, handleTaskUpdate, t, showSuccessToast);
-
-    const getStatusIcon = (status: string) => {
-        switch (status) {
-            case 'not_started':
-                return (
-                    <EllipsisHorizontalCircleIcon className="h-3 w-3 text-gray-500 flex-shrink-0 mt-0.5" />
-                );
-            case 'planned':
-                return (
-                    <ClipboardDocumentListIcon className="h-3 w-3 text-blue-500 flex-shrink-0 mt-0.5" />
-                );
-            case 'in_progress':
-                return (
-                    <PlayIcon className="h-3 w-3 text-green-500 flex-shrink-0 mt-0.5" />
-                );
-            case 'waiting':
-                return (
-                    <ClockIcon className="h-3 w-3 text-yellow-500 flex-shrink-0 mt-0.5" />
-                );
-            case 'done':
-                return (
-                    <CheckCircleIcon className="h-3 w-3 text-green-600 flex-shrink-0 mt-0.5" />
-                );
-            case 'cancelled':
-                return (
-                    <XCircleIcon className="h-3 w-3 text-red-500 flex-shrink-0 mt-0.5" />
-                );
-            default:
-                return (
-                    <EllipsisHorizontalCircleIcon className="h-3 w-3 text-white/70 flex-shrink-0 mt-0.5" />
-                );
+    // Dragging a task saves a manual order and switches the list to it,
+    // starting from the order on screen.
+    const handleTaskReorder = async (orderedUids: string[]) => {
+        if (!project?.uid) return;
+        const fullOrder = tasks
+            .filter((task) => task.uid)
+            .sort(compareTasks)
+            .map((task) => task.uid as string);
+        const newOrder = mergeVisibleOrder(fullOrder, orderedUids);
+        const prevOrder = taskOrder;
+        const prevOrderBy = orderBy;
+        setTaskOrder(newOrder);
+        if (!orderBy.startsWith('custom:')) handleSortChange('custom:asc');
+        try {
+            await saveTaskOrder(
+                { scope: 'project', project_uid: project.uid },
+                newOrder
+            );
+        } catch (error) {
+            console.error('Error saving task order:', error);
+            setTaskOrder(prevOrder);
+            handleSortChange(prevOrderBy);
+            showErrorToast(
+                t('tasks.reorderError', 'Failed to save task order')
+            );
         }
     };
+
+    const displayTasks = useMemo(() => {
+        let filteredTasks = tasks.filter((task) =>
+            matchesTaskStatusFilter(task.status, taskStatusFilter)
+        );
+        if (taskSearchQuery.trim()) {
+            const query = taskSearchQuery.toLowerCase();
+            filteredTasks = filteredTasks.filter(
+                (task) =>
+                    task.name.toLowerCase().includes(query) ||
+                    task.original_name?.toLowerCase().includes(query) ||
+                    task.note?.toLowerCase().includes(query)
+            );
+        }
+        return [...filteredTasks].sort(compareTasks);
+    }, [tasks, taskStatusFilter, taskSearchQuery, compareTasks]);
+
+    const { taskStats } = useProjectMetrics(
+        tasks,
+        handleTaskUpdate,
+        t,
+        showSuccessToast
+    );
 
     if (loading) return <LoadingSpinner message="Loading project details..." />;
     if (error)
@@ -888,10 +708,7 @@ const ProjectDetails: React.FC = () => {
                                 type="button"
                                 onClick={() =>
                                     handleTaskStatusFilterChange(
-                                        opt.key as
-                                            | 'all'
-                                            | 'active'
-                                            | 'completed'
+                                        opt.key as TaskStatusFilter
                                     )
                                 }
                                 className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center justify-between ${
@@ -949,120 +766,113 @@ const ProjectDetails: React.FC = () => {
     );
 
     return (
-        <div className="w-full pb-12">
-            <ProjectBanner
+        <div className="w-full px-2 sm:px-4 lg:px-6 pt-4 pb-12">
+            <ProjectHero
                 project={project}
                 areas={areas}
                 t={t}
-                getStatusIcon={getStatusIcon}
+                doneCount={taskStats.completed}
+                totalCount={taskStats.total}
+                onUpdate={handleUpdateProject}
+                onComplete={() =>
+                    requestComplete(
+                        project,
+                        taskStats.total - taskStats.completed,
+                        handleProjectCompleted
+                    )
+                }
                 onDeleteClick={() => {
                     setNoteToDelete(null);
                     setIsConfirmDialogOpen(true);
                 }}
-                editButtonRef={editButtonRef}
+                onShareClick={() => setIsShareModalOpen(true)}
+                onSaveAsTemplate={
+                    templatesEnabled ? handleSaveAsTemplate : undefined
+                }
                 onEditBannerClick={handleEditBannerClick}
+                onEditClick={() => setIsEditPanelOpen(true)}
+                onTogglePin={handleTogglePin}
+                onImportClick={() => setIsImportOpen(true)}
+                onExport={(format) =>
+                    exportTasks(format, { project_uid: project.uid }).catch(
+                        (e: Error) => showErrorToast(spreadsheetErrorText(t, e))
+                    )
+                }
             />
 
-            <div className="w-full px-4 sm:px-6 lg:px-10">
+            {isImportOpen && project.uid && (
+                <ImportWizard
+                    projectUid={project.uid}
+                    onClose={() => setIsImportOpen(false)}
+                    onImported={() => setReloadKey((key) => key + 1)}
+                />
+            )}
+
+            <div className="w-full">
                 <div className="w-full">
                     <div className="mb-4">
                         <div className="flex items-center justify-between min-h-[2.5rem]">
-                            <div className="flex items-center space-x-3 sm:space-x-6">
-                                <button
-                                    onClick={() => setActiveTab('description')}
-                                    className={`flex items-center space-x-1 sm:space-x-2 text-xs sm:text-sm font-medium transition-colors ${
-                                        activeTab === 'description'
-                                            ? 'text-gray-900 dark:text-gray-100'
-                                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                                    }`}
-                                >
-                                    <span>{t('project.descriptionTab', '概要')}</span>
-                                </button>
-                                <button
-                                    onClick={() => setActiveTab('tasks')}
-                                    className={`flex items-center space-x-1 sm:space-x-2 text-xs sm:text-sm font-medium transition-colors ${
-                                        activeTab === 'tasks'
-                                            ? 'text-gray-900 dark:text-gray-100'
-                                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                                    }`}
-                                >
-                                    <span>{t('sidebar.tasks', 'Tasks')}</span>
-                                    {displayTasks.length > 0 && (
-                                        <span className="ml-1 sm:ml-2 px-1.5 sm:px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-600 rounded-full">
-                                            {displayTasks.length}
-                                        </span>
-                                    )}
-                                </button>
-                                <button
-                                    onClick={() => setActiveTab('notes')}
-                                    className={`flex items-center space-x-1 sm:space-x-2 text-xs sm:text-sm font-medium transition-colors ${
-                                        activeTab === 'notes'
-                                            ? 'text-gray-900 dark:text-gray-100'
-                                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                                    }`}
-                                >
-                                    <span>{t('sidebar.notes', 'Notes')}</span>
-                                    {notes.length > 0 && (
-                                        <span className="ml-1 sm:ml-2 px-1.5 sm:px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-600 rounded-full">
-                                            {notes.length}
-                                        </span>
-                                    )}
-                                </button>
-                                <button
-                                    onClick={() => setActiveTab('attachments')}
-                                    className={`flex items-center space-x-1 sm:space-x-2 text-xs sm:text-sm font-medium transition-colors ${
-                                        activeTab === 'attachments'
-                                            ? 'text-gray-900 dark:text-gray-100'
-                                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                                    }`}
-                                >
-                                    <PaperClipIcon className="h-3.5 w-3.5" />
-                                    <span>{t('project.attachmentsTab', '添付ファイル')}</span>
-                                    {projectAttachments.length > 0 && (
-                                        <span className="ml-1 sm:ml-2 px-1.5 sm:px-2 py-0.5 text-xs bg-gray-200 dark:bg-gray-600 rounded-full">
-                                            {projectAttachments.length}
-                                        </span>
-                                    )}
-                                </button>
+                            <div className="flex items-center gap-4 sm:gap-6 self-stretch pl-2 sm:pl-3">
+                                {(
+                                    ['description', 'tasks', 'timeline'] as const
+                                ).map((tab) => (
+                                    <button
+                                        key={tab}
+                                        type="button"
+                                        aria-pressed={view === tab}
+                                        data-testid={`project-view-${tab}`}
+                                        onClick={() => changeView(tab)}
+                                        className={`relative flex items-center self-stretch py-2.5 text-sm font-medium ${
+                                            view === tab
+                                                ? 'text-gray-900 dark:text-gray-100 after:absolute after:bottom-0 after:left-px after:right-px after:h-0.5 after:rounded-full after:bg-gray-900 dark:after:bg-gray-100'
+                                                : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'
+                                        }`}
+                                    >
+                                        {tab === 'description'
+                                            ? t(
+                                                  'project.descriptionTab',
+                                                  '概要'
+                                              )
+                                            : tab === 'tasks'
+                                              ? t('tasks.title', 'Tasks')
+                                              : t(
+                                                    'projectTimeline.title',
+                                                    'Timeline'
+                                                )}
+                                    </button>
+                                ))}
                             </div>
 
-                            {activeTab === 'tasks' && (
+                            {
                                 <div className="flex items-center justify-end gap-2 sm:gap-4">
+                                    <NewItemButton
+                                        label={t('capture.add', 'Add')}
+                                        onClick={() => openCaptureForProject()}
+                                        testId="project-add-button"
+                                    />
                                     <button
-                                        onClick={toggleMetrics}
-                                        className={`flex items-center transition-all duration-300 focus:outline-none focus:ring-0 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset rounded-lg p-1.5 sm:p-2 ${
-                                            showMetrics
-                                                ? 'bg-blue-100 dark:bg-blue-900/30 shadow-sm'
-                                                : 'bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'
+                                        onClick={() =>
+                                            aiInsightsRef.current?.activate()
+                                        }
+                                        className={`flex items-center transition-all duration-300 focus:outline-none focus:ring-0 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset rounded-lg p-1.5 sm:p-2 ${
+                                            aiInsightsActive
+                                                ? 'bg-indigo-100 dark:bg-indigo-900/40'
+                                                : 'bg-gray-100 dark:bg-gray-800 hover:bg-indigo-50 dark:hover:bg-indigo-900/30'
                                         }`}
-                                        aria-pressed={showMetrics}
-                                        aria-label={
-                                            showMetrics
-                                                ? t(
-                                                      'projects.hideMetrics',
-                                                      'Hide metrics'
-                                                  )
-                                                : t(
-                                                      'projects.showMetrics',
-                                                      'Show metrics'
-                                                  )
-                                        }
-                                        title={
-                                            showMetrics
-                                                ? t(
-                                                      'projects.hideMetrics',
-                                                      'Hide metrics'
-                                                  )
-                                                : t(
-                                                      'projects.showMetrics',
-                                                      'Show metrics'
-                                                  )
-                                        }
+                                        aria-pressed={aiInsightsActive}
+                                        aria-label={t(
+                                            'aiAssistant.projectInsightsTitle',
+                                            'AI Insights'
+                                        )}
+                                        title={t(
+                                            'aiAssistant.projectInsightsTitle',
+                                            'AI Insights'
+                                        )}
                                     >
-                                        <ChartBarIcon
+                                        <SparklesIcon
                                             className={`h-4 w-4 sm:h-5 sm:w-5 ${
-                                                showMetrics
-                                                    ? 'text-blue-600 dark:text-blue-200'
+                                                aiInsightsActive
+                                                    ? 'text-indigo-600 dark:text-indigo-300'
                                                     : 'text-gray-600 dark:text-gray-200'
                                             }`}
                                         />
@@ -1104,65 +914,21 @@ const ProjectDetails: React.FC = () => {
                                         footerContent={renderStatusFilter()}
                                     />
                                 </div>
-                            )}
+                            }
                         </div>
                     </div>
 
-                    {activeTab === 'description' && (
-                        <div className="w-full max-w-5xl">
-                            {isEditingDescription ? (
-                                <div className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-blue-200 dark:border-blue-700 p-4">
-                                    <MarkdownEditor
-                                        value={editedDescription}
-                                        onChange={setEditedDescription}
-                                        uploadContext={{ type: 'project', uid: project.uid || null }}
-                                        minHeight={200}
-                                        placeholder={t('project.descriptionPlaceholder', 'プロジェクトの概要を入力... (Markdown 対応)')}
-                                        className="mb-2"
-                                    />
-                                    <div className="flex justify-end space-x-2 mt-2">
-                                        <button
-                                            onClick={handleSaveDescription}
-                                            className="px-4 py-1.5 text-sm bg-green-600 dark:bg-green-500 text-white rounded hover:bg-green-700 dark:hover:bg-green-600 transition-colors"
-                                        >
-                                            {t('common.save', 'Save')}
-                                        </button>
-                                        <button
-                                            onClick={handleCancelDescriptionEdit}
-                                            className="px-4 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
-                                        >
-                                            {t('common.cancel', 'Cancel')}
-                                        </button>
-                                    </div>
-                                </div>
-                            ) : project?.description ? (
-                                <div
-                                    onDoubleClick={handleStartDescriptionEdit}
-                                    className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-gray-50 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700 p-4 cursor-pointer transition-colors"
-                                    title={t('project.doubleClickToEditDescription', 'ダブルクリックして編集')}
-                                >
-                                    <MarkdownRenderer
-                                        content={project.description}
-                                        className="prose dark:prose-invert max-w-none text-sm"
-                                        onContentChange={handleDescriptionCheckboxChange}
-                                    />
-                                </div>
-                            ) : (
-                                <div
-                                    onDoubleClick={handleStartDescriptionEdit}
-                                    className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-gray-50 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700 p-4 cursor-pointer transition-colors"
-                                    title={t('project.doubleClickToAddDescription', 'ダブルクリックして概要を追加')}
-                                >
-                                    <span className="text-sm text-gray-400 dark:text-gray-500 italic">
-                                        {t('project.noDescription', '概要なし（ダブルクリックして追加）')}
-                                    </span>
-                                </div>
-                            )}
-                        </div>
-                    )}
-
-                    {activeTab === 'tasks' && (
+                    {
                         <>
+                            <div className="mb-6">
+                                <ProjectAIInsights
+                                    ref={aiInsightsRef}
+                                    project={project}
+                                    taskStats={taskStats}
+                                    onActiveChange={setAiInsightsActive}
+                                />
+                            </div>
+
                             <div
                                 className={`transition-all duration-300 ease-in-out ${
                                     isSearchExpanded
@@ -1187,34 +953,92 @@ const ProjectDetails: React.FC = () => {
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start transition-all duration-300">
-                                <div
-                                    className={`flex justify-center transition-all duration-300 relative z-10 ${
-                                        showMetrics
-                                            ? 'xl:col-span-2 translate-x-0'
-                                            : 'xl:col-span-3 translate-x-0'
-                                    }`}
-                                >
-                                    <div
-                                        className={`w-full max-w-5xl transition-all duration-300 ${
-                                            showMetrics
-                                                ? 'xl:translate-x-0'
-                                                : 'xl:translate-x-6'
-                                        }`}
-                                    >
+                            {view === 'description' ? (
+                                <div className="w-full max-w-5xl">
+                                    {isEditingDescription ? (
+                                        <div className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-blue-200 dark:border-blue-700 p-4">
+                                            <MarkdownEditor
+                                                value={editedDescription}
+                                                onChange={setEditedDescription}
+                                                uploadContext={{
+                                                    type: 'project',
+                                                    uid: project.uid || null,
+                                                }}
+                                                minHeight={200}
+                                                placeholder={t(
+                                                    'project.descriptionPlaceholder',
+                                                    'プロジェクトの概要を入力... (Markdown 対応)'
+                                                )}
+                                                className="mb-2"
+                                            />
+                                            <div className="flex justify-end space-x-2 mt-2">
+                                                <button
+                                                    onClick={
+                                                        handleSaveDescription
+                                                    }
+                                                    className="px-4 py-1.5 text-sm bg-green-600 dark:bg-green-500 text-white rounded hover:bg-green-700 dark:hover:bg-green-600 transition-colors"
+                                                >
+                                                    {t('common.save', 'Save')}
+                                                </button>
+                                                <button
+                                                    onClick={
+                                                        handleCancelDescriptionEdit
+                                                    }
+                                                    className="px-4 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                                                >
+                                                    {t(
+                                                        'common.cancel',
+                                                        'Cancel'
+                                                    )}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div
+                                            onDoubleClick={
+                                                handleStartDescriptionEdit
+                                            }
+                                            className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-gray-50 dark:border-gray-800 hover:border-gray-200 dark:hover:border-gray-700 p-4 cursor-pointer transition-colors"
+                                            title={t(
+                                                'project.doubleClickToEditDescription',
+                                                'ダブルクリックして編集'
+                                            )}
+                                        >
+                                            {project.description ? (
+                                                <MarkdownRenderer
+                                                    content={
+                                                        project.description
+                                                    }
+                                                    className="prose dark:prose-invert max-w-none text-sm"
+                                                    onContentChange={
+                                                        handleDescriptionCheckboxChange
+                                                    }
+                                                />
+                                            ) : (
+                                                <span className="text-sm text-gray-400 dark:text-gray-500 italic">
+                                                    {t(
+                                                        'project.noDescription',
+                                                        '概要なし（ダブルクリックして追加）'
+                                                    )}
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            ) : view === 'timeline' ? (
+                                <ProjectTimeline
+                                    project={project}
+                                    tasks={displayTasks}
+                                    links={project.task_links || []}
+                                    onDatesChange={handleTaskDatesChange}
+                                    onOpenTask={setPanelTask}
+                                    t={t}
+                                />
+                            ) : (
+                                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_18rem] xl:grid-cols-[minmax(0,1fr)_20rem] gap-6 items-start">
+                                    <div className="min-w-0 space-y-4">
                                         <ProjectTasksSection
-                                            project={project}
                                             displayTasks={displayTasks}
-                                            showAutoSuggestForm={
-                                                showAutoSuggestForm
-                                            }
-                                            onAddNextAction={
-                                                handleCreateNextAction
-                                            }
-                                            onDismissNextAction={
-                                                handleSkipNextAction
-                                            }
-                                            onTaskCreate={handleTaskCreate}
                                             onTaskUpdate={handleTaskUpdate}
                                             onTaskCompletionToggle={
                                                 handleTaskCompletionToggle
@@ -1226,184 +1050,101 @@ const ProjectDetails: React.FC = () => {
                                                 taskStatusFilter !== 'active'
                                             }
                                             taskSearchQuery={taskSearchQuery}
+                                            onTaskReorder={handleTaskReorder}
                                             t={t}
                                         />
                                     </div>
-                                </div>
 
-                                <div className="xl:col-span-1">
-                                    <div
-                                        className={`transition-all duration-300 ease-in-out ${
-                                            showMetrics
-                                                ? 'max-h-[2000px] opacity-100 translate-x-0'
-                                                : 'max-h-0 opacity-0 translate-x-8 pointer-events-none'
-                                        }`}
-                                        style={{ overflow: 'hidden' }}
-                                        aria-hidden={!showMetrics}
-                                    >
+                                    <div className="space-y-4">
+                                        <ProjectOverviewRail
+                                            project={project}
+                                            areas={areas}
+                                            notes={notes}
+                                            t={t}
+                                            onUpdate={handleUpdateProject}
+                                            onShareClick={() =>
+                                                setIsShareModalOpen(true)
+                                            }
+                                            onCreateNote={() =>
+                                                openCaptureForProject('note')
+                                            }
+                                            onOpenNote={setPreviewNote}
+                                        />
                                         <WorkSummaryCard
-                                            totalWorkHours={project.total_work_hours ?? 0}
+                                            totalWorkHours={
+                                                project.total_work_hours ?? 0
+                                            }
                                             unitPrice={project.unit_price}
                                             defaultUnitPrice={defaultUnitPrice}
-                                            onUnitPriceChange={handleUnitPriceChange}
-                                        />
-
-                                        <ProjectInsightsPanel
-                                            taskStats={taskStats}
-                                            completionGradient={
-                                                completionGradient
+                                            onUnitPriceChange={
+                                                handleUnitPriceChange
                                             }
-                                            dueBuckets={dueBuckets}
-                                            dueHighlights={dueHighlights}
-                                            nextBestAction={nextBestAction}
-                                            getDueDescriptor={getDueDescriptor}
-                                            onStartNextAction={
-                                                handleStartNextAction
-                                            }
-                                            t={t}
-                                            completionTrend={completionTrend}
-                                            upcomingDueTrend={upcomingDueTrend}
-                                            createdTrend={createdTrend}
-                                            upcomingInsights={upcomingInsights}
-                                            weeklyPace={weeklyPace}
-                                            monthlyCompleted={monthlyCompleted}
                                         />
+                                        {attachmentsApi && (
+                                            <ProjectAttachmentsWidget
+                                                api={attachmentsApi}
+                                                t={t}
+                                            />
+                                        )}
                                     </div>
                                 </div>
-                            </div>
+                            )}
                         </>
+                    }
+
+                    {panelTask && (
+                        <TaskModal
+                            isOpen
+                            onClose={() => setPanelTask(null)}
+                            task={panelTask}
+                            onSaved={(fresh) =>
+                                setTasks((prev) =>
+                                    prev.map((item) =>
+                                        item.uid === fresh.uid
+                                            ? { ...item, ...fresh }
+                                            : item
+                                    )
+                                )
+                            }
+                        />
                     )}
 
-                    {activeTab === 'notes' && project && (
-                        <ProjectNotesSection
-                            project={project}
-                            notes={notes}
-                            t={t}
-                            onCreateNote={() => {
-                                setSelectedNote({
-                                    title: '',
-                                    content: '',
-                                    tags: [],
-                                    project_id: project.id,
-                                    project: {
-                                        id: project.id,
-                                        name: project.name,
-                                        uid: project.uid,
-                                    },
-                                    project_uid: project.uid,
-                                });
-                                setIsNoteModalOpen(true);
+                    {previewNote && (
+                        <NoteSidePanel
+                            note={previewNote}
+                            onClose={() => setPreviewNote(null)}
+                            onSaved={(saved) => {
+                                const savedProjectUid =
+                                    saved.project_uid ??
+                                    saved.project?.uid ??
+                                    saved.Project?.uid;
+                                setNotes((prev) =>
+                                    savedProjectUid &&
+                                    savedProjectUid !== project.uid
+                                        ? // Moved to another project
+                                          prev.filter(
+                                              (n) => n.uid !== saved.uid
+                                          )
+                                        : prev.map((n) =>
+                                              n.uid === saved.uid
+                                                  ? { ...n, ...saved }
+                                                  : n
+                                          )
+                                );
+                                const { notesStore } = useStore.getState();
+                                notesStore.setNotes(
+                                    notesStore.notes.map((n) =>
+                                        n.uid === saved.uid ? saved : n
+                                    )
+                                );
                             }}
-                            onEditNote={handleEditNote}
-                            onDeleteNote={(note) => {
+                            onDelete={(note) => {
+                                setPreviewNote(null);
                                 setNoteToDelete(note);
                                 setIsConfirmDialogOpen(true);
                             }}
                         />
                     )}
-
-                    {activeTab === 'attachments' && (
-                        <div className="w-full max-w-5xl">
-                            {attachmentsLoading ? (
-                                <p className="text-sm text-gray-500 dark:text-gray-400">{t('common.loading', 'Loading...')}</p>
-                            ) : (
-                                <>
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                                        {/* Upload card */}
-                                        <div
-                                            className="bg-gray-50 dark:bg-gray-900 rounded-lg shadow-md relative flex flex-col cursor-pointer hover:shadow-lg transition-shadow"
-                                            style={{ minHeight: '250px', maxHeight: '250px' }}
-                                            onClick={() => !attachmentUploading && projectAttachmentFileRef.current?.click()}
-                                        >
-                                            <input
-                                                ref={projectAttachmentFileRef}
-                                                type="file"
-                                                className="hidden"
-                                                onChange={handleProjectAttachmentUpload}
-                                                disabled={attachmentUploading}
-                                                accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.gif,.svg,.webp,.xls,.xlsx,.csv,.zip"
-                                            />
-                                            <div
-                                                className="bg-gray-200 dark:bg-gray-700 flex flex-col items-center justify-center rounded-t-lg border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
-                                                style={{ height: '140px' }}
-                                            >
-                                                <CloudArrowUpIcon className="h-12 w-12 text-gray-400 dark:text-gray-500 mb-2" />
-                                                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                                                    {attachmentUploading
-                                                        ? t('task.attachments.uploading', 'Uploading...')
-                                                        : t('task.attachments.clickToUpload', 'Click to upload')}
-                                                </p>
-                                            </div>
-                                            <div className="p-4 flex-1 flex flex-col justify-center">
-                                                <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
-                                                    {t('task.attachments.maxSize', 'Max 10MB')}
-                                                </p>
-                                            </div>
-                                        </div>
-
-                                        {/* Attachment cards */}
-                                        {projectAttachments.map((att) => (
-                                            <div
-                                                key={att.uid}
-                                                className="bg-gray-50 dark:bg-gray-900 rounded-lg shadow-md relative flex flex-col"
-                                                style={{ minHeight: '250px', maxHeight: '250px' }}
-                                            >
-                                                <div
-                                                    className="bg-gray-200 dark:bg-gray-700 flex items-center justify-center rounded-t-lg cursor-pointer overflow-hidden"
-                                                    style={{ height: '140px' }}
-                                                    onClick={() => setPreviewAttachment(previewAttachment?.uid === att.uid ? null : att)}
-                                                >
-                                                    {getAttachmentType(att.mime_type) === 'image' && att.file_url ? (
-                                                        <img src={att.file_url} alt={att.original_filename} className="w-full h-full object-cover" />
-                                                    ) : (
-                                                        <PaperClipIcon className="h-12 w-12 text-gray-400 dark:text-gray-500" />
-                                                    )}
-                                                </div>
-                                                <div className="p-3 flex-1 flex flex-col justify-between">
-                                                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{att.original_filename}</p>
-                                                    <button
-                                                        onClick={() => handleProjectAttachmentDelete(att)}
-                                                        className="text-xs text-red-500 hover:text-red-700 mt-2"
-                                                    >
-                                                        {t('common.delete', 'Delete')}
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-
-                                    {/* Preview modal */}
-                                    {previewAttachment && (
-                                        <div
-                                            className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"
-                                            onClick={() => setPreviewAttachment(null)}
-                                        >
-                                            <div
-                                                className="bg-white dark:bg-gray-800 rounded-lg max-w-4xl max-h-[90vh] overflow-auto"
-                                                onClick={(e) => e.stopPropagation()}
-                                            >
-                                                <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-                                                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{previewAttachment.original_filename}</h3>
-                                                    <button onClick={() => setPreviewAttachment(null)} className="text-gray-500 hover:text-gray-700">✕</button>
-                                                </div>
-                                                <div className="p-1">
-                                                    <AttachmentPreview attachment={previewAttachment as any} />
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )}
-                                </>
-                            )}
-                        </div>
-                    )}
-
-                    <ProjectModal
-                        isOpen={isModalOpen}
-                        onClose={closeModal}
-                        onSave={handleSaveProject}
-                        project={project}
-                        areas={areas}
-                    />
 
                     <BannerEditModal
                         isOpen={isBannerEditModalOpen}
@@ -1412,20 +1153,28 @@ const ProjectDetails: React.FC = () => {
                         currentImageUrl={project.image_url}
                     />
 
-                    <NoteModal
-                        isOpen={isNoteModalOpen}
-                        onClose={() => {
-                            setIsNoteModalOpen(false);
-                            setSelectedNote(null);
-                        }}
-                        onSave={handleSaveNote}
-                        note={selectedNote}
-                        projects={allProjects}
-                    />
+                    {isEditPanelOpen && (
+                        <ProjectModal
+                            isOpen={isEditPanelOpen}
+                            onClose={() => setIsEditPanelOpen(false)}
+                            onSave={handleUpdateProject}
+                            onDelete={handleDeleteProject}
+                            project={project}
+                            areas={areas}
+                        />
+                    )}
+
+                    {isShareModalOpen && (
+                        <ProjectShareModal
+                            isOpen={isShareModalOpen}
+                            onClose={() => setIsShareModalOpen(false)}
+                            project={project}
+                        />
+                    )}
 
                     {isConfirmDialogOpen && noteToDelete && (
                         <ConfirmDialog
-                            title="Delete Note"
+                            title={t('modals.deleteNote.title')}
                             message={`Are you sure you want to delete the note "${noteToDelete.title}"?`}
                             onConfirm={() => {
                                 const identifier =
@@ -1449,12 +1198,30 @@ const ProjectDetails: React.FC = () => {
                             )}
                             message={t(
                                 'modals.deleteProject.message',
-                                'Deleting this project will remove the project only. All items inside will be retained but will no longer belong to any project. Continue?'
+                                'Deleting this project will remove the project only. All items inside will be retained but will no longer belong to any project. Continue?',
+                                { projectName: project?.name }
                             )}
                             onConfirm={handleDeleteProject}
                             onCancel={() => setIsConfirmDialogOpen(false)}
                         />
                     )}
+                    {isTemplateConfirmOpen && (
+                        <ConfirmDialog
+                            title={t(
+                                'modals.saveAsTemplate.title',
+                                'Save as Template'
+                            )}
+                            message={t(
+                                'modals.saveAsTemplate.message',
+                                'Save "{{name}}" as a template? This will create a reusable template based on this project.',
+                                { name: project?.name }
+                            )}
+                            onConfirm={handleConfirmSaveAsTemplate}
+                            onCancel={() => setIsTemplateConfirmOpen(false)}
+                            confirmButtonText={t('common.save', 'Save')}
+                        />
+                    )}
+                    {completeDialog}
                 </div>
             </div>
         </div>

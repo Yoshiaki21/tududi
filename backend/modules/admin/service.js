@@ -1,13 +1,19 @@
 'use strict';
 
 const adminRepository = require('./repository');
+const { accountStatusOf } = require('./accountStatus');
+const { buildInsights } = require('./insights');
+const membersService = require('../members/service');
+const mfaService = require('../mfa/service');
 const {
+    validateRoleChange,
     validateUserId,
+    validatePersonName,
     validateEmail,
     validatePassword,
     validateSetAdminRole,
-    validateCreateUser,
     validateToggleRegistration,
+    validateOidcConfig,
 } = require('./validation');
 const {
     NotFoundError,
@@ -16,10 +22,21 @@ const {
     UnauthorizedError,
     ConflictError,
 } = require('../../shared/errors');
-const { isAdmin } = require('../../services/rolesService');
-const {
-    getDefaultNotificationPreferences,
-} = require('../../utils/notificationPreferences');
+const rolesService = require('../../services/rolesService');
+const accountsService = require('../../services/accountsService');
+const { isAdmin } = rolesService;
+const { sequelize } = require('../../models');
+const { destroyUserSessions } = require('../../services/sessionService');
+const { getConfig } = require('../../config/config');
+
+// A user id from the URL, as a positive integer.
+function parseUserId(value) {
+    const id = Number(value);
+    if (!Number.isInteger(id) || id <= 0) {
+        throw new ValidationError('Invalid user id');
+    }
+    return id;
+}
 
 class AdminService {
     /**
@@ -36,9 +53,18 @@ class AdminService {
         }
 
         const requesterIsAdmin = await isAdmin(requester.uid);
+        if (requesterIsAdmin) {
+            return true;
+        }
+
+        // Bootstrap fallback: an instance with no roles at all lets any user
+        // claim admin so it cannot lock itself out. Never on a hosted
+        // instance, where the roles table being empty would hand the whole
+        // instance to whoever asks first.
+        const hosted = getConfig().hosted?.enabled === true;
         const existingRolesCount = await adminRepository.countRoles();
 
-        if (!requesterIsAdmin && existingRolesCount > 0) {
+        if (hosted || existingRolesCount > 0) {
             throw new ForbiddenError('Forbidden');
         }
 
@@ -79,90 +105,174 @@ class AdminService {
             throw new ValidationError('Invalid user_id');
         }
 
-        const [role] = await adminRepository.findOrCreateRole(
-            user_id,
-            makeAdmin
-        );
-        if (role.is_admin !== makeAdmin) {
-            role.is_admin = makeAdmin;
-            await role.save();
+        const current = await rolesService.getRoleInfo(user_id);
+        if (makeAdmin) {
+            await rolesService.setRole(user_id, 'admin');
+        } else if (current.role === 'admin') {
+            await rolesService.setRole(user_id, 'user');
         }
 
-        return { user_id, is_admin: role.is_admin };
+        return { user_id, is_admin: await isAdmin(user_id) };
+    }
+
+    // Who may open the Access page (users, groups, roles) and what it shows:
+    // the instance admin sees everyone; on a hosted instance an admin of a
+    // customer account sees only its account. Anyone else is refused.
+    async accessScope(requesterId) {
+        if (!requesterId) {
+            throw new UnauthorizedError('Authentication required');
+        }
+        if (await isAdmin(requesterId)) return { superadmin: true };
+        if (await rolesService.isAccountAdmin(requesterId)) {
+            const account = await accountsService.getAccount(requesterId);
+            if (account) {
+                const userIds = await accountsService.getUserIds(account.id);
+                return {
+                    superadmin: false,
+                    accountId: account.id,
+                    ownerId: account.owner_user_id,
+                    userIds,
+                };
+            }
+        }
+        throw new ForbiddenError('Forbidden');
+    }
+
+    describeRole(row) {
+        const role = rolesService.effectiveRole(row);
+        return {
+            role,
+            capabilities: rolesService.effectiveCapabilities(
+                role,
+                row && row.capabilities
+            ),
+        };
+    }
+
+    async listRoles(requesterId) {
+        const scope = await this.accessScope(requesterId);
+        return scope.superadmin
+            ? rolesService.describeRoles()
+            : rolesService.describeRoles({ userIds: scope.userIds });
     }
 
     /**
      * List all users with roles.
      */
     async listUsers(requesterId) {
-        await this.verifyAdmin(requesterId);
+        const scope = await this.accessScope(requesterId);
+        const userIds = scope.superadmin ? null : scope.userIds;
 
-        const users = await adminRepository.findAllUsers();
-        const roles = await adminRepository.findAllRoles();
-        const userIdToRole = new Map(roles.map((r) => [r.user_id, r.is_admin]));
+        const users = await adminRepository.findAllUsers(userIds);
+        const roles = await adminRepository.findAllRoles(userIds);
+        const userIdToRole = new Map(roles.map((r) => [r.user_id, r]));
+        const identityUserIds =
+            await adminRepository.findIdentityUserIds(userIds);
+        const mfaUserIds = await adminRepository.findMfaUserIds(userIds);
+        const hosted = accountsService.isHosted();
+        const ownerIds = hosted
+            ? await adminRepository.findAccountOwnerIds(
+                  scope.superadmin ? null : [scope.accountId]
+              )
+            : new Set();
 
         return users.map((u) => ({
             id: u.id,
-            email: u.email,
+            email: u.email ?? null,
             name: u.name,
             surname: u.surname,
             created_at: u.created_at,
-            role: userIdToRole.get(u.id) ? 'admin' : 'user',
+            email_verified: !!u.email_verified,
+            account_status: accountStatusOf(u, identityUserIds.has(u.id)),
+            mfa_enabled: mfaUserIds.has(u.id),
+            ...this.describeRole(userIdToRole.get(u.id)),
+            ...(hosted ? { is_account_owner: ownerIds.has(u.id) } : {}),
         }));
+    }
+
+    // Clears two-factor sign-in for someone who lost their phone and their
+    // recovery codes. The instance admin may do it for anyone; an account
+    // admin only for the members of their own account, and not for another
+    // admin, whose reset stays with the instance admin.
+    async resetUserMfa(requesterId, userId, req) {
+        const scope = await this.accessScope(requesterId);
+        const id = validateUserId(userId);
+        const user = await adminRepository.findUserById(id);
+        if (!user) throw new NotFoundError('User not found');
+        // Turning your own off takes a fresh code, in Profile > Security.
+        if (user.id === requesterId) {
+            throw new ForbiddenError(
+                'Turn off your own two-factor sign-in from your profile'
+            );
+        }
+        if (!scope.superadmin) {
+            if (!scope.userIds.includes(user.id)) {
+                throw new NotFoundError('User not found');
+            }
+            const targetRole = rolesService.effectiveRole(
+                await adminRepository.findRoleByUserId(user.id)
+            );
+            if (targetRole === 'admin' || targetRole === 'account_admin') {
+                throw new ForbiddenError(
+                    'Only the instance admin can reset two-factor sign-in for an admin'
+                );
+            }
+        }
+        return mfaService.reset(user.id, requesterId, req);
     }
 
     /**
      * Create a new user.
      */
     async createUser(requesterId, body) {
-        await this.verifyAdmin(requesterId);
+        await this.accessScope(requesterId);
+        return membersService.createMember(requesterId, body);
+    }
 
-        const { email, password, name, surname, role } =
-            validateCreateUser(body);
-
-        const userData = {
-            email,
-            password,
-            notification_preferences: getDefaultNotificationPreferences(),
-        };
-        if (name) userData.name = name;
-        if (surname) userData.surname = surname;
-
-        let user;
-        try {
-            user = await adminRepository.createUser(userData);
-        } catch (err) {
-            if (err?.name === 'SequelizeUniqueConstraintError') {
-                throw new ConflictError('Email already exists');
-            }
-            throw err;
+    // What an admin of a hosted account may change on someone in its
+    // account. The owner stays an admin (setRole refuses), only the person
+    // themself changes an email they already have, and a password is set
+    // only for a user or a guest, never for another admin.
+    async assertAccountAdminMayUpdate(scope, requesterId, user, body) {
+        if (!scope.userIds.includes(user.id)) {
+            throw new NotFoundError('User not found');
         }
-
-        const makeAdmin = role === 'admin';
-        if (makeAdmin) {
-            const [userRole, roleCreated] =
-                await adminRepository.findOrCreateRole(user.id, true);
-            if (!roleCreated && !userRole.is_admin) {
-                userRole.is_admin = true;
-                await userRole.save();
+        const { email, password, role } = body || {};
+        if (role === 'admin') {
+            throw new ForbiddenError('Only an admin can create an admin');
+        }
+        const self = user.id === requesterId;
+        const changesEmail =
+            email !== undefined &&
+            email !== null &&
+            String(email).trim() !== '' &&
+            String(email).trim().toLowerCase() !== user.email;
+        if (changesEmail && user.email && !self) {
+            throw new ForbiddenError(
+                'Only the account holder can change their email address'
+            );
+        }
+        const changesPassword =
+            password !== undefined &&
+            password !== null &&
+            !(typeof password === 'string' && password.trim() === '');
+        if (changesPassword && !self) {
+            const targetRole = rolesService.effectiveRole(
+                await adminRepository.findRoleByUserId(user.id)
+            );
+            if (targetRole === 'admin' || targetRole === 'account_admin') {
+                throw new ForbiddenError(
+                    'Only the account holder can change an admin password'
+                );
             }
         }
-
-        return {
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            surname: user.surname,
-            created_at: user.created_at,
-            role: makeAdmin ? 'admin' : 'user',
-        };
     }
 
     /**
      * Update a user.
      */
-    async updateUser(requesterId, userId, body) {
-        await this.verifyAdmin(requesterId);
+    async updateUser(requesterId, userId, body, { sessionId = null } = {}) {
+        const scope = await this.accessScope(requesterId);
 
         const id = validateUserId(userId);
         const user = await adminRepository.findUserById(id);
@@ -170,24 +280,60 @@ class AdminService {
             throw new NotFoundError('User not found');
         }
 
-        const { email, password, name, surname, role } = body || {};
+        const { email, password, name, surname, role, capabilities } =
+            body || {};
+        validateRoleChange(role, capabilities);
+        if (!scope.superadmin) {
+            await this.assertAccountAdminMayUpdate(
+                scope,
+                requesterId,
+                user,
+                body
+            );
+        }
 
-        if (email !== undefined && email !== null) {
+        // A blank email leaves the current one alone: an email can be added or
+        // changed here, but not taken away, since the account could then no
+        // longer be reached.
+        if (
+            email !== undefined &&
+            email !== null &&
+            String(email).trim() !== ''
+        ) {
             validateEmail(email);
             user.email = email;
         }
 
-        if (password && password.trim() !== '') {
+        const changesPassword =
+            password !== undefined &&
+            password !== null &&
+            !(typeof password === 'string' && password.trim() === '');
+        if (changesPassword) {
             validatePassword(password);
             user.password = password;
             user.changed('password_digest', true);
         }
 
-        if (name !== undefined) user.name = name || null;
-        if (surname !== undefined) user.surname = surname || null;
+        if (name !== undefined) user.name = validatePersonName(name, 'Name');
+        if (surname !== undefined) {
+            user.surname = validatePersonName(surname, 'Surname');
+        }
 
+        // The account, its role and its permissions change together or not at
+        // all, so refusing a demotion (the last admin) cannot leave a rename
+        // or a new password behind.
         try {
-            await user.save();
+            await sequelize.transaction(async (transaction) => {
+                await user.save({ transaction });
+                if (role !== undefined) {
+                    await rolesService.setRole(user.id, role, { transaction });
+                }
+                if (capabilities !== undefined) {
+                    await rolesService.setCapabilities(user.id, capabilities, {
+                        transaction,
+                    });
+                }
+            });
         } catch (err) {
             if (err?.name === 'SequelizeUniqueConstraintError') {
                 throw new ConflictError('Email already exists');
@@ -195,27 +341,30 @@ class AdminService {
             throw err;
         }
 
-        if (role !== undefined) {
-            const makeAdmin = role === 'admin';
-            const [userRole] = await adminRepository.findOrCreateRole(
-                user.id,
-                makeAdmin
-            );
-            if (userRole.is_admin !== makeAdmin) {
-                userRole.is_admin = makeAdmin;
-                await userRole.save();
-            }
+        // A new password signs the account out everywhere, the way a reset
+        // does, so a session opened with the old one stops working. The admin
+        // changing their own password keeps the session they are using.
+        if (changesPassword) {
+            await destroyUserSessions(user.id, {
+                exceptSid: user.id === requesterId ? sessionId : null,
+            });
         }
 
         const userRole = await adminRepository.findRoleByUserId(user.id);
 
+        const identityUserIds = await adminRepository.findIdentityUserIds([
+            user.id,
+        ]);
+
         return {
             id: user.id,
-            email: user.email,
+            email: user.email ?? null,
             name: user.name,
             surname: user.surname,
             created_at: user.created_at,
-            role: userRole?.is_admin ? 'admin' : 'user',
+            email_verified: !!user.email_verified,
+            account_status: accountStatusOf(user, identityUserIds.has(user.id)),
+            ...this.describeRole(userRole),
         };
     }
 
@@ -223,7 +372,7 @@ class AdminService {
      * Delete a user.
      */
     async deleteUser(requesterId, userId) {
-        await this.verifyAdmin(requesterId);
+        const scope = await this.accessScope(requesterId);
 
         const id = validateUserId(userId);
 
@@ -231,10 +380,20 @@ class AdminService {
             throw new ValidationError('Cannot delete your own account');
         }
 
-        const result = await adminRepository.deleteUserWithData(
-            id,
-            requesterId
-        );
+        // An admin of a hosted account removes members of its account (never
+        // its owner) the way the People page does, seat included.
+        if (!scope.superadmin) {
+            if (id === scope.ownerId) {
+                throw new ForbiddenError('The account owner cannot be removed');
+            }
+            if (!scope.userIds.includes(id)) {
+                throw new NotFoundError('User not found');
+            }
+            await membersService.removeMember(requesterId, id);
+            return null;
+        }
+
+        const result = await adminRepository.deleteUserWithData(id);
 
         if (!result.success) {
             if (result.status === 404) {
@@ -249,6 +408,640 @@ class AdminService {
     /**
      * Toggle registration setting.
      */
+    // One page's worth of numbers for the admin dashboard: who is here,
+    // what is being sold, and who is waiting for it to open.
+    // Everyone on the instance with how they got here and where they stand:
+    // signed up themselves or added as a member, verified, on the trial
+    // (and the days left), paying, comped, or an ended trial waiting to be
+    // deleted. The admin dashboard lists it, newest first.
+    async userEmails(requesterId, userId) {
+        await this.verifyAdmin(requesterId);
+        return require('./userEmails').describe(parseUserId(userId));
+    }
+
+    async previewUserEmail(requesterId, userId, key) {
+        await this.verifyAdmin(requesterId);
+        return require('./userEmails').preview(parseUserId(userId), key);
+    }
+
+    async sendUserEmail(requesterId, userId, key) {
+        await this.verifyAdmin(requesterId);
+        return require('./userEmails').send(
+            parseUserId(userId),
+            key,
+            requesterId
+        );
+    }
+
+    async userStatuses(requesterId) {
+        await this.verifyAdmin(requesterId);
+        const { User, Role, Account, BillingAccount } = require('../../models');
+        const entitlements = require('../../services/entitlementsService');
+        const hosted = entitlements.isHostedMode();
+        const now = new Date();
+        const DAY_MS = 24 * 60 * 60 * 1000;
+
+        const [
+            users,
+            adminRoles,
+            accounts,
+            billingRows,
+            identities,
+            providers,
+            usage,
+            emailCounts,
+        ] = await Promise.all([
+            User.findAll({
+                attributes: [
+                    'id',
+                    'email',
+                    'name',
+                    'surname',
+                    'created_at',
+                    'email_verified',
+                    'password_digest',
+                    'account_id',
+                ],
+                order: [['created_at', 'DESC']],
+            }),
+            Role.findAll({
+                where: { is_admin: true },
+                attributes: ['user_id'],
+                raw: true,
+            }),
+            hosted
+                ? Account.findAll({
+                      attributes: ['id', 'owner_user_id'],
+                      raw: true,
+                  })
+                : [],
+            hosted ? BillingAccount.findAll() : [],
+            adminRepository.findIdentities(),
+            require('../oidc/providerConfig')
+                .getAllProviders()
+                .catch(() => []),
+            adminRepository.countItemsByUser(),
+            adminRepository.countSentEmailsByUser(),
+        ]);
+
+        const adminIds = new Set(adminRoles.map((r) => r.user_id));
+        const identityIds = new Set(identities.map((i) => i.user_id));
+        const firstIdentity = new Map();
+        for (const i of identities) {
+            if (!firstIdentity.has(i.user_id)) firstIdentity.set(i.user_id, i);
+        }
+        const providerName = new Map(providers.map((p) => [p.slug, p.name]));
+        // Single sign-on created the account when it has no password, or
+        // when its first link was made within minutes of the account. A
+        // link made later is someone who signed up with email first.
+        const signupProviderOf = (u) => {
+            const identity = firstIdentity.get(u.id);
+            if (!identity) return null;
+            const gap =
+                new Date(identity.created_at).getTime() -
+                new Date(u.created_at).getTime();
+            if (u.password_digest && gap > 5 * 60 * 1000) return null;
+            return (
+                providerName.get(identity.provider_slug) ||
+                identity.provider_slug
+            );
+        };
+        const ownerByAccount = new Map(
+            accounts.map((a) => [a.id, a.owner_user_id])
+        );
+        const billingByUser = new Map(billingRows.map((b) => [b.user_id, b]));
+        const emailById = new Map(users.map((u) => [u.id, u.email]));
+        const resolve = (userId) =>
+            entitlements.resolvePlan(billingByUser.get(userId) || null, null, {
+                isAdmin: adminIds.has(userId),
+                now,
+            });
+
+        const usageOf = (entry) => {
+            const counts = entry?.counts || {};
+            return {
+                total: Object.values(counts).reduce((a, b) => a + b, 0),
+                counts,
+                last_created_at: entry?.last ?? null,
+            };
+        };
+
+        return {
+            hosted,
+            users: users.map((u) => {
+                const billing = billingByUser.get(u.id) || null;
+                const ownerId = u.account_id
+                    ? ownerByAccount.get(u.account_id)
+                    : null;
+                const memberOf = ownerId && ownerId !== u.id ? ownerId : null;
+                let access = hosted ? resolve(u.id).reason : 'self_hosted';
+                if (access === 'free' && memberOf) access = 'member';
+
+                const trialEnd = billing?.trial_ends_at
+                    ? new Date(billing.trial_ends_at)
+                    : null;
+                const readOnly =
+                    access === 'free' && billing
+                        ? entitlements.readOnlyUntil(billing)
+                        : null;
+                // A member is paid for by the owner's subscription.
+                const payer = memberOf ? billingByUser.get(memberOf) : billing;
+                const payerReason = memberOf
+                    ? hosted
+                        ? resolve(memberOf).reason
+                        : null
+                    : access;
+
+                return {
+                    id: u.id,
+                    email: u.email ?? null,
+                    name: [u.name, u.surname].filter(Boolean).join(' ') || null,
+                    created_at: u.created_at,
+                    email_verified: !!u.email_verified,
+                    account_status: accountStatusOf(u, identityIds.has(u.id)),
+                    signup_provider: signupProviderOf(u),
+                    is_admin: adminIds.has(u.id),
+                    member_of: memberOf
+                        ? { id: memberOf, email: emailById.get(memberOf) }
+                        : null,
+                    access,
+                    trial_ends_at: trialEnd,
+                    trial_days_left:
+                        access === 'trial' && trialEnd
+                            ? Math.max(
+                                  1,
+                                  Math.ceil(
+                                      (trialEnd.getTime() - now.getTime()) /
+                                          DAY_MS
+                                  )
+                              )
+                            : null,
+                    read_only_until:
+                        readOnly && readOnly > now ? readOnly : null,
+                    paid:
+                        payerReason === 'subscription' ||
+                        payerReason === 'grace',
+                    subscription_status: payer?.status ?? null,
+                    ever_paid: !!payer?.provider_subscription_id,
+                    usage: usageOf(usage.get(u.id)),
+                    emails_sent: emailCounts.get(u.id) || 0,
+                };
+            }),
+        };
+    }
+
+    // The last 14 days as UTC days, oldest first, so the dashboard can show
+    // this week next to the one before. Signups and waitlist joins per day,
+    // how many of this week's signups did anything, who was active, page
+    // views, what people created and finished, and on a hosted instance the
+    // trial and churn signals for the same window.
+    async trends(now = new Date()) {
+        const {
+            User,
+            WaitlistSubscriber,
+            BillingAccount,
+            Task,
+        } = require('../../models');
+        const { getConfig } = require('../../config/config');
+        const visitService = require('../../services/visitService');
+        const entitlements = require('../../services/entitlementsService');
+        const { Op } = require('sequelize');
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        const DAYS = 14;
+
+        const today = new Date(
+            Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+        );
+        const start = new Date(today.getTime() - (DAYS - 1) * DAY_MS);
+        const weekStart = new Date(today.getTime() - 6 * DAY_MS);
+        const weekAhead = new Date(now.getTime() + 7 * DAY_MS);
+        const hosted = entitlements.isHostedMode();
+        const dayKeys = Array.from({ length: DAYS }, (_, i) =>
+            new Date(start.getTime() + i * DAY_MS).toISOString().slice(0, 10)
+        );
+
+        // Today's count, this week's and the week before's for one date
+        // column.
+        const countByWeek = async (Model, field, where) => {
+            const [day, last7d, prev7d] = await Promise.all([
+                Model.count({
+                    where: { ...where, [field]: { [Op.gte]: today } },
+                }),
+                Model.count({
+                    where: { ...where, [field]: { [Op.gte]: weekStart } },
+                }),
+                Model.count({
+                    where: {
+                        ...where,
+                        [field]: { [Op.gte]: start, [Op.lt]: weekStart },
+                    },
+                }),
+            ]);
+            return { today: day, last7d, prev7d };
+        };
+
+        const [
+            signups,
+            joins,
+            active,
+            activeToday,
+            trialsStarted,
+            trialsEnding,
+            canceled,
+            failed,
+            visits,
+            tasksCreated,
+            tasksCompleted,
+        ] = await Promise.all([
+            User.findAll({
+                attributes: ['id', 'created_at', 'email_verified'],
+                where: { created_at: { [Op.gte]: start } },
+                raw: true,
+            }),
+            WaitlistSubscriber.findAll({
+                attributes: ['created_at'],
+                where: { created_at: { [Op.gte]: start } },
+                raw: true,
+            }),
+            adminRepository.findCreatorIdsSince(weekStart),
+            adminRepository.findCreatorIdsSince(today),
+            hosted
+                ? countByWeek(BillingAccount, 'trial_started_at', {})
+                : { today: 0, last7d: 0, prev7d: 0 },
+            hosted
+                ? BillingAccount.count({
+                      where: {
+                          trial_ends_at: { [Op.between]: [now, weekAhead] },
+                          status: { [Op.notIn]: ['active', 'past_due'] },
+                      },
+                  })
+                : 0,
+            hosted
+                ? BillingAccount.count({
+                      where: { canceled_at: { [Op.gte]: weekStart } },
+                  })
+                : 0,
+            hosted
+                ? BillingAccount.count({
+                      where: {
+                          last_payment_failed_at: { [Op.gte]: weekStart },
+                      },
+                  })
+                : 0,
+            getConfig().visits?.enabled === false
+                ? null
+                : visitService.summary(dayKeys, now),
+            countByWeek(Task, 'created_at', { recurring_parent_id: null }),
+            countByWeek(Task, 'completed_at', {}),
+        ]);
+
+        const dayKey = (value) => new Date(value).toISOString().slice(0, 10);
+        const days = Array.from({ length: DAYS }, (_, i) => ({
+            date: dayKey(start.getTime() + i * DAY_MS),
+            signups: 0,
+            waitlist: 0,
+        }));
+        const byDate = new Map(days.map((d) => [d.date, d]));
+        for (const u of signups) {
+            const day = byDate.get(dayKey(u.created_at));
+            if (day) day.signups += 1;
+        }
+        for (const w of joins) {
+            const day = byDate.get(dayKey(w.created_at));
+            if (day) day.waitlist += 1;
+        }
+
+        const sum = (list, field) => list.reduce((n, d) => n + d[field], 0);
+        const thisWeek = days.slice(7);
+        const lastWeek = days.slice(0, 7);
+        const newUsers = signups.filter(
+            (u) => new Date(u.created_at) >= weekStart
+        );
+        const newIds = newUsers.map((u) => u.id);
+        const activated = newIds.length
+            ? await adminRepository.findCreatorIdsSince(weekStart, newIds)
+            : new Set();
+        const onboarding = await this.onboardingTrends(signups, weekStart);
+
+        return {
+            days,
+            signups: {
+                today: days[DAYS - 1].signups,
+                last7d: sum(thisWeek, 'signups'),
+                prev7d: sum(lastWeek, 'signups'),
+            },
+            waitlist: {
+                today: days[DAYS - 1].waitlist,
+                last7d: sum(thisWeek, 'waitlist'),
+                prev7d: sum(lastWeek, 'waitlist'),
+            },
+            activation: {
+                new_users: newIds.length,
+                activated: activated.size,
+                verified: newUsers.filter((u) => u.email_verified).length,
+            },
+            onboarding,
+            active_users_7d: active.size,
+            active_users_today: activeToday.size,
+            tasks: { created: tasksCreated, completed: tasksCompleted },
+            visits,
+            billing: hosted
+                ? {
+                      trials_started_today: trialsStarted.today,
+                      trials_started_7d: trialsStarted.last7d,
+                      trials_started_prev7d: trialsStarted.prev7d,
+                      trials_ending_7d: trialsEnding,
+                      canceled_7d: canceled,
+                      payment_failed_7d: failed,
+                  }
+                : null,
+        };
+    }
+
+    // The two numbers the welcome screen is judged by. Of this week's
+    // signups, who planned a day with three or more tasks. Of last week's
+    // signups (old enough to have had a full week), who planned on three
+    // different days within seven days of signing up.
+    async onboardingTrends(signups, weekStart) {
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        const dayKey = (value) => new Date(value).toISOString().slice(0, 10);
+        const thisWeek = signups.filter(
+            (u) => new Date(u.created_at) >= weekStart
+        );
+        const lastWeek = signups.filter(
+            (u) => new Date(u.created_at) < weekStart
+        );
+        const plans = await adminRepository.findPlanSizes(
+            signups.map((u) => u.id)
+        );
+        const byUser = new Map();
+        for (const plan of plans) {
+            if (!byUser.has(plan.user_id)) byUser.set(plan.user_id, []);
+            byUser.get(plan.user_id).push(plan);
+        }
+
+        const firstPlan = thisWeek.filter((u) =>
+            (byUser.get(u.id) || []).some((p) => p.items >= 3)
+        ).length;
+        const threeDays = lastWeek.filter((u) => {
+            const limit = dayKey(new Date(u.created_at).getTime() + 7 * DAY_MS);
+            const days = new Set(
+                (byUser.get(u.id) || [])
+                    .filter((p) => p.plan_date <= limit)
+                    .map((p) => p.plan_date)
+            );
+            return days.size >= 3;
+        }).length;
+
+        return {
+            new_users: thisWeek.length,
+            first_plan: firstPlan,
+            cohort: lastWeek.length,
+            three_days: threeDays,
+        };
+    }
+
+    // Visitors, signups, activated users and paying customers for everyone
+    // who signed up in the last 30 days, and the 30 days before to compare.
+    // A signup is someone who made their own account (a member added to
+    // another account did not), on a hosted instance that starts a trial.
+    // Activated is five tasks or a planned day. Paid is anyone who has had a
+    // subscription. Each step counts only people from the step before.
+    async funnel(now = new Date()) {
+        const { User, Account, BillingAccount } = require('../../models');
+        const { getConfig } = require('../../config/config');
+        const visitService = require('../../services/visitService');
+        const entitlements = require('../../services/entitlementsService');
+        const { Op } = require('sequelize');
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        const DAYS = 30;
+        const ACTIVATION_TASKS = 5;
+
+        const today = new Date(
+            Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+        );
+        const start = new Date(today.getTime() - (DAYS - 1) * DAY_MS);
+        const prevStart = new Date(start.getTime() - DAYS * DAY_MS);
+        const tomorrow = new Date(today.getTime() + DAY_MS);
+        const dayKey = (date) => date.toISOString().slice(0, 10);
+        const hosted = entitlements.isHostedMode();
+        const visitsOn = getConfig().visits?.enabled !== false;
+
+        const users = await User.findAll({
+            attributes: ['id', 'created_at', 'account_id'],
+            where: { created_at: { [Op.gte]: prevStart } },
+            raw: true,
+        });
+        const accountIds = [
+            ...new Set(users.map((u) => u.account_id).filter(Boolean)),
+        ];
+        const [accounts, visitors, prevVisitors] = await Promise.all([
+            accountIds.length
+                ? Account.findAll({
+                      attributes: ['id', 'owner_user_id'],
+                      where: { id: accountIds },
+                      raw: true,
+                  })
+                : [],
+            visitsOn
+                ? visitService.siteVisitors(dayKey(start), dayKey(tomorrow))
+                : null,
+            visitsOn
+                ? visitService.siteVisitors(dayKey(prevStart), dayKey(start))
+                : null,
+        ]);
+        const ownerOf = new Map(accounts.map((a) => [a.id, a.owner_user_id]));
+        const signups = users.filter((u) => {
+            const owner = u.account_id ? ownerOf.get(u.account_id) : null;
+            return !owner || owner === u.id;
+        });
+        const ids = signups.map((u) => u.id);
+
+        const [taskCounts, plans, billing] = await Promise.all([
+            adminRepository.countTasksByUser(ids),
+            adminRepository.findPlanSizes(ids),
+            hosted && ids.length
+                ? BillingAccount.findAll({
+                      attributes: ['user_id', 'provider_subscription_id'],
+                      where: { user_id: ids },
+                      raw: true,
+                  })
+                : [],
+        ]);
+        const planned = new Set(plans.map((p) => p.user_id));
+        const isActivated = (id) =>
+            (taskCounts.get(id) || 0) >= ACTIVATION_TASKS || planned.has(id);
+        const paidIds = new Set(
+            billing
+                .filter((b) => b.provider_subscription_id)
+                .map((b) => b.user_id)
+        );
+
+        const stepsOf = (cohort, siteVisitors) => {
+            const activated = cohort.filter((u) => isActivated(u.id));
+            return {
+                visitors: siteVisitors,
+                signups: cohort.length,
+                activated: activated.length,
+                paid: hosted
+                    ? activated.filter((u) => paidIds.has(u.id)).length
+                    : null,
+                paid_any: hosted
+                    ? cohort.filter((u) => paidIds.has(u.id)).length
+                    : null,
+            };
+        };
+
+        return {
+            days: DAYS,
+            hosted,
+            trials: hosted && (getConfig().hosted.trialDays || 0) > 0,
+            activation_tasks: ACTIVATION_TASKS,
+            current: stepsOf(
+                signups.filter((u) => new Date(u.created_at) >= start),
+                visitors
+            ),
+            previous: stepsOf(
+                signups.filter((u) => new Date(u.created_at) < start),
+                prevVisitors
+            ),
+        };
+    }
+
+    async overview(requesterId) {
+        await this.verifyAdmin(requesterId);
+        const {
+            User,
+            Role,
+            Task,
+            Project,
+            Note,
+            BillingAccount,
+            WaitlistSubscriber,
+            Feedback,
+            Setting,
+        } = require('../../models');
+        const { getConfig } = require('../../config/config');
+        const entitlements = require('../../services/entitlementsService');
+        const { Op } = require('sequelize');
+
+        const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        const config = getConfig();
+
+        const [
+            users,
+            admins,
+            verified,
+            newUsers,
+            tasks,
+            projects,
+            notes,
+            waitlist,
+            waitlistWeek,
+            paying,
+            registrationSetting,
+            openFeedback,
+            trends,
+            funnel,
+            itemsByUser,
+            userIds,
+        ] = await Promise.all([
+            User.count(),
+            Role.count({ where: { is_admin: true } }),
+            User.count({ where: { email_verified: true } }),
+            User.count({ where: { created_at: { [Op.gte]: dayAgo } } }),
+            Task.count(),
+            Project.count(),
+            Note.count(),
+            WaitlistSubscriber.count(),
+            WaitlistSubscriber.count({
+                where: { created_at: { [Op.gte]: weekAgo } },
+            }),
+            BillingAccount.count({
+                where: { status: { [Op.in]: ['active', 'trialing'] } },
+            }),
+            Setting.findOne({ where: { key: 'registration_enabled' } }),
+            Feedback.count({ where: { resolved_at: null } }),
+            this.trends(),
+            this.funnel(),
+            adminRepository.countItemsByUser(),
+            User.findAll({ attributes: ['id'], raw: true }),
+        ]);
+
+        // Accounts that exist but never created anything: no task, habit,
+        // project, note, area, goal, tag, person, view or inbox item.
+        const empty = userIds.filter((u) => {
+            const entry = itemsByUser.get(u.id);
+            return !entry || Object.keys(entry.counts).length === 0;
+        }).length;
+
+        const summary = {
+            users: {
+                total: users,
+                admins,
+                verified,
+                last24h: newUsers,
+                empty,
+            },
+            content: { tasks, projects, notes },
+            waitlist: { total: waitlist, last7d: waitlistWeek },
+            feedback: { open: openFeedback },
+            trends,
+            funnel,
+            billing: {
+                paying,
+                hosted: config.hosted?.enabled === true,
+                subscription_required: entitlements.isSubscriptionRequired(),
+                provider: config.hosted?.billing?.provider || null,
+            },
+        };
+
+        return {
+            ...summary,
+            insights: buildInsights(summary),
+            instance: {
+                registration_enabled: registrationSetting
+                    ? registrationSetting.value === 'true'
+                    : false,
+                version: require('../../../package.json').version,
+                environment: config.environment,
+            },
+        };
+    }
+
+    // The waitlist, newest first, for the admin dashboard and the waitlist
+    // page. `q` narrows it to addresses containing that fragment.
+    async listWaitlist(requesterId, { limit = 50, offset = 0, q = '' } = {}) {
+        await this.verifyAdmin(requesterId);
+        const waitlist = require('../../services/waitlistService');
+        return waitlist.list({ limit, offset, q });
+    }
+
+    // The whole list as CSV, which is how it gets into a mail provider on
+    // launch day.
+    async exportWaitlist(requesterId) {
+        await this.verifyAdmin(requesterId);
+        const waitlist = require('../../services/waitlistService');
+        return waitlist.toCsv(await waitlist.all());
+    }
+
+    // Removing an address someone asked to be forgotten, or a bad row that
+    // will never be mailed anyway.
+    async deleteWaitlistEntry(requesterId, id) {
+        await this.verifyAdmin(requesterId);
+        const numericId = Number(id);
+        if (!Number.isInteger(numericId) || numericId <= 0) {
+            throw new ValidationError('Invalid id');
+        }
+
+        const waitlist = require('../../services/waitlistService');
+        const removed = await waitlist.remove(numericId);
+        if (!removed) {
+            throw new NotFoundError('Waitlist entry not found');
+        }
+    }
+
     async toggleRegistration(requesterId, body) {
         await this.verifyAdmin(requesterId);
 
@@ -260,6 +1053,43 @@ class AdminService {
         await setRegistrationEnabled(enabled);
 
         return { enabled };
+    }
+
+    /**
+     * Get the current OIDC/SSO provider configuration (masked secrets),
+     * for the admin panel in Profile Settings -> OIDC/SSO.
+     */
+    async getOidcConfig(requesterId) {
+        await this.verifyAdmin(requesterId);
+
+        const oidcConfigService = require('../oidc/configService');
+        return oidcConfigService.getMaskedConfig();
+    }
+
+    /**
+     * Replace the OIDC/SSO provider configuration.
+     */
+    async updateOidcConfig(requesterId, body) {
+        await this.verifyAdmin(requesterId);
+
+        const validated = validateOidcConfig(body);
+
+        const oidcConfigService = require('../oidc/configService');
+        return oidcConfigService.saveConfig(validated);
+    }
+
+    // The blog is the instance's own, so only the superadmin runs it.
+    async getBlog(requesterId) {
+        await this.verifyAdmin(requesterId);
+        const { blogService } = require('../blog');
+        return blogService.status();
+    }
+
+    async updateBlog(requesterId, body = {}) {
+        await this.verifyAdmin(requesterId);
+        const { blogService } = require('../blog');
+        await blogService.setNoteUid(requesterId, body.note);
+        return blogService.status();
     }
 }
 

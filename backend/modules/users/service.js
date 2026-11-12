@@ -1,5 +1,46 @@
 'use strict';
 
+const FEATURE_KEYS = [
+    'ai_assistant_enabled',
+    'pomodoro_enabled',
+    'eisenhower_enabled',
+    'kanban_enabled',
+    'habits_enabled',
+    'calendar_enabled',
+    'templates_enabled',
+];
+
+function sanitizeFeatures(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const result = {};
+    const toBool = (v) =>
+        v === 'false' || v === '0' || v === 0 || v === false
+            ? false
+            : Boolean(v);
+    for (const key of FEATURE_KEYS) {
+        if (key in raw) result[key] = toBool(raw[key]);
+    }
+    return result;
+}
+
+function maskAiSettings(user) {
+    const encrypted = user.ai_api_key || '';
+    let plaintext = '';
+    if (encrypted) {
+        try {
+            plaintext = secretCipher.decrypt(encrypted) || '';
+        } catch (error) {
+            logError('Failed to decrypt stored AI API key for masking', error);
+        }
+    }
+    return {
+        ai_base_url: user.ai_base_url || null,
+        ai_model: user.ai_model || null,
+        ai_api_key_set: encrypted.length > 0,
+        ai_api_key_last4: plaintext.length >= 4 ? plaintext.slice(-4) : null,
+    };
+}
+
 const usersRepository = require('./repository');
 const {
     validateFirstDayOfWeek,
@@ -9,9 +50,18 @@ const {
     validateApiKeyName,
     validateExpiresAt,
     validateSidebarSettings,
+    validateAiSettings,
 } = require('./validation');
-const { NotFoundError, ValidationError } = require('../../shared/errors');
-const { User } = require('../../models');
+const {
+    NotFoundError,
+    ValidationError,
+    ForbiddenError,
+} = require('../../shared/errors');
+const { User, Role } = require('../../models');
+const { isAdmin } = require('../../services/rolesService');
+const entitlements = require('../../services/entitlementsService');
+const { eraseUserAccount } = require('../../services/accountErasureService');
+const secretCipher = require('../../shared/crypto/secretCipher');
 const {
     createApiToken,
     revokeApiToken,
@@ -41,11 +91,85 @@ async function safeDeleteFile(filePath) {
     await fs.unlink(resolvedPath).catch(() => {});
 }
 
+const MAX_FOCUS_TAGS = 10;
+
+// The Focus chip's saved scope: an area, optionally a project inside it and
+// up to ten tag names. Uids are not checked against the database here; a
+// deleted area or project simply makes the lists come back empty and the
+// client clears the focus when it no longer resolves.
+function sanitizeFocus(focus) {
+    if (!focus) return null;
+    if (typeof focus !== 'object' || Array.isArray(focus)) {
+        throw new ValidationError('Focus must be an object or null.');
+    }
+    const areaUid =
+        typeof focus.area_uid === 'string' ? focus.area_uid.trim() : '';
+    const projectUid =
+        typeof focus.project_uid === 'string' ? focus.project_uid.trim() : '';
+    const rawTags =
+        focus.tags === undefined || focus.tags === null ? [] : focus.tags;
+    if (!Array.isArray(rawTags)) {
+        throw new ValidationError('Focus tags must be a list of names.');
+    }
+    const tags = [
+        ...new Set(
+            rawTags
+                .filter((name) => typeof name === 'string')
+                .map((name) => name.trim())
+                .filter(Boolean)
+        ),
+    ];
+    if (tags.length > MAX_FOCUS_TAGS) {
+        throw new ValidationError(
+            `A focus can hold at most ${MAX_FOCUS_TAGS} tags.`
+        );
+    }
+    if (!areaUid && !projectUid && tags.length === 0) {
+        return null;
+    }
+    const clean = {};
+    if (areaUid) clean.area_uid = areaUid;
+    if (projectUid) clean.project_uid = projectUid;
+    if (tags.length > 0) clean.tags = tags;
+    return clean;
+}
+
+const MAX_COLUMN_ORDER = 500;
+
+// The Everyone board's column order: person uids, first to last. People
+// not in the list keep the server order after the listed ones.
+function sanitizeEveryone(everyone) {
+    if (!everyone || typeof everyone !== 'object' || Array.isArray(everyone)) {
+        throw new ValidationError('Everyone settings must be an object.');
+    }
+    const rawOrder = everyone.column_order ?? [];
+    if (!Array.isArray(rawOrder)) {
+        throw new ValidationError('The column order must be a list of uids.');
+    }
+    const order = [
+        ...new Set(
+            rawOrder
+                .filter((uid) => typeof uid === 'string')
+                .map((uid) => uid.trim())
+                .filter(Boolean)
+        ),
+    ];
+    if (order.length > MAX_COLUMN_ORDER) {
+        throw new ValidationError(
+            `The column order can hold at most ${MAX_COLUMN_ORDER} people.`
+        );
+    }
+    return { column_order: order };
+}
+
 class UsersService {
-    /**
-     * List all users with roles.
-     */
-    async listUsers() {
+    // The user directory is an admin view. Regular users share by typing an
+    // exact email, so they never need (and must not get) the full list.
+    async listUsers(requesterId) {
+        if (!(await isAdmin(requesterId))) {
+            throw new ForbiddenError('Forbidden');
+        }
+
         const users = await usersRepository.findAllBasic();
         const roles = await usersRepository.findAllRoles();
         const userIdToRole = new Map(roles.map((r) => [r.user_id, r.is_admin]));
@@ -68,7 +192,15 @@ class UsersService {
             throw new NotFoundError('Profile not found.');
         }
 
-        // Parse today_settings if it's a string
+        if (user.features && typeof user.features === 'string') {
+            try {
+                user.features = JSON.parse(user.features);
+            } catch (error) {
+                logError('Error parsing features:', error);
+                user.features = null;
+            }
+        }
+        user.features = sanitizeFeatures(user.features);
         if (user.today_settings && typeof user.today_settings === 'string') {
             try {
                 user.today_settings = JSON.parse(user.today_settings);
@@ -85,8 +217,22 @@ class UsersService {
                 user.ui_settings = null;
             }
         }
+        if (
+            user.sidebar_settings &&
+            typeof user.sidebar_settings === 'string'
+        ) {
+            try {
+                user.sidebar_settings = JSON.parse(user.sidebar_settings);
+            } catch (error) {
+                logError('Error parsing sidebar_settings:', error);
+                user.sidebar_settings = null;
+            }
+        }
 
-        return user;
+        const profile = user.toJSON();
+        profile.has_password = !!user.password_digest;
+        delete profile.password_digest;
+        return profile;
     }
 
     /**
@@ -108,16 +254,13 @@ class UsersService {
             avatar_image,
             telegram_bot_token,
             telegram_allowed_users,
-            task_intelligence_enabled,
+            features,
             task_summary_enabled,
             task_summary_frequency,
-            auto_suggest_next_actions_enabled,
-            productivity_assistant_enabled,
-            next_task_suggestion_enabled,
-            pomodoro_enabled,
             ui_settings,
             notification_preferences,
             keyboard_shortcuts,
+            ai_profile,
             currentPassword,
             newPassword,
             default_unit_price,
@@ -133,51 +276,93 @@ class UsersService {
             validateFirstDayOfWeek(first_day_of_week);
             allowedUpdates.first_day_of_week = first_day_of_week;
         }
-        if (avatar_image !== undefined)
-            allowedUpdates.avatar_image = avatar_image;
-        if (telegram_bot_token !== undefined)
+        // The avatar path is only ever set by the upload endpoint. Accepting a
+        // client-supplied path would let a user claim another user's avatar
+        // file (and have it deleted on their next upload), so this field can
+        // only be cleared here; any other value is ignored.
+        if (avatar_image === null || avatar_image === '')
+            allowedUpdates.avatar_image = null;
+        // With Telegram turned off the profile form still posts these
+        // fields; keep what is stored so turning it back on just works.
+        const telegramEnabled = getConfig().telegramEnabled === true;
+        if (telegramEnabled && telegram_bot_token !== undefined) {
+            if (telegram_bot_token) {
+                await entitlements.assertFeature(userId, 'telegram');
+            }
             allowedUpdates.telegram_bot_token = telegram_bot_token;
-        if (telegram_allowed_users !== undefined)
+        }
+        if (telegramEnabled && telegram_allowed_users !== undefined)
             allowedUpdates.telegram_allowed_users = telegram_allowed_users;
-        if (task_intelligence_enabled !== undefined)
-            allowedUpdates.task_intelligence_enabled =
-                task_intelligence_enabled;
+        if (features !== undefined) {
+            let currentFeatures = user.features;
+            if (typeof currentFeatures === 'string') {
+                try {
+                    currentFeatures = JSON.parse(currentFeatures);
+                } catch {
+                    currentFeatures = {};
+                }
+            }
+            allowedUpdates.features = {
+                ...sanitizeFeatures(currentFeatures),
+                ...sanitizeFeatures(features),
+            };
+        }
         if (task_summary_enabled !== undefined)
             allowedUpdates.task_summary_enabled = task_summary_enabled;
         if (task_summary_frequency !== undefined)
             allowedUpdates.task_summary_frequency = task_summary_frequency;
-        if (auto_suggest_next_actions_enabled !== undefined)
-            allowedUpdates.auto_suggest_next_actions_enabled =
-                auto_suggest_next_actions_enabled;
-        if (productivity_assistant_enabled !== undefined)
-            allowedUpdates.productivity_assistant_enabled =
-                productivity_assistant_enabled;
-        if (next_task_suggestion_enabled !== undefined)
-            allowedUpdates.next_task_suggestion_enabled =
-                next_task_suggestion_enabled;
-        if (pomodoro_enabled !== undefined)
-            allowedUpdates.pomodoro_enabled = pomodoro_enabled;
-        if (ui_settings !== undefined) allowedUpdates.ui_settings = ui_settings;
+        if (ui_settings !== undefined) {
+            // The planner order is saved by its own endpoint; a profile form
+            // loaded before that save must not put the old order back.
+            let current = user.ui_settings;
+            if (typeof current === 'string') {
+                try {
+                    current = JSON.parse(current);
+                } catch {
+                    current = null;
+                }
+            }
+            // The Focus chip saves through its own endpoint too, so a
+            // profile save must not clear it.
+            const kept = {};
+            if (current?.planning) kept.planning = current.planning;
+            if (current?.focus !== undefined) kept.focus = current.focus;
+            if (current?.everyone) kept.everyone = current.everyone;
+            allowedUpdates.ui_settings =
+                ui_settings && Object.keys(kept).length > 0
+                    ? { ...ui_settings, ...kept }
+                    : ui_settings;
+        }
         if (notification_preferences !== undefined)
             allowedUpdates.notification_preferences = notification_preferences;
         if (keyboard_shortcuts !== undefined)
             allowedUpdates.keyboard_shortcuts = keyboard_shortcuts;
+        if (ai_profile !== undefined)
+            allowedUpdates.ai_profile = ai_profile || null;
         if (default_unit_price !== undefined)
             allowedUpdates.default_unit_price = default_unit_price;
 
-        // Handle password change if provided
-        if (currentPassword && newPassword) {
+        // Handle password change/set if provided
+        if (newPassword) {
             validatePassword(newPassword, 'newPassword');
 
-            const isValidPassword = await User.checkPassword(
-                currentPassword,
-                user.password_digest
-            );
-            if (!isValidPassword) {
-                throw new ValidationError(
-                    'Current password is incorrect',
-                    'currentPassword'
+            if (user.password_digest) {
+                if (!currentPassword) {
+                    throw new ValidationError(
+                        'Current password is required',
+                        'currentPassword'
+                    );
+                }
+                const isValidPassword = await User.checkPassword(
+                    currentPassword,
+                    user.password_digest
                 );
+                if (!isValidPassword) {
+                    throw new ValidationError(
+                        'Current password is incorrect',
+                        'currentPassword'
+                    );
+                }
             }
 
             const hashedNewPassword = await User.hashPassword(newPassword);
@@ -185,7 +370,25 @@ class UsersService {
         }
 
         await usersRepository.update(user, allowedUpdates);
-        return usersRepository.findUpdatedProfile(user.id);
+        const updated = await usersRepository.findUpdatedProfile(user.id);
+        if (updated) {
+            if (typeof updated.features === 'string') {
+                try {
+                    updated.features = JSON.parse(updated.features);
+                } catch {
+                    updated.features = {};
+                }
+            }
+            updated.features = sanitizeFeatures(updated.features);
+            if (typeof updated.ui_settings === 'string') {
+                try {
+                    updated.ui_settings = JSON.parse(updated.ui_settings);
+                } catch {
+                    updated.ui_settings = null;
+                }
+            }
+        }
+        return updated;
     }
 
     /**
@@ -247,11 +450,53 @@ class UsersService {
     /**
      * Change password.
      */
-    async changePassword(userId, currentPassword, newPassword) {
-        if (!currentPassword || !newPassword) {
+    async deleteAccount(userId, { password, confirmEmail } = {}) {
+        const user = await usersRepository.findByIdWithPassword(userId);
+        if (!user) {
+            throw new NotFoundError('User not found');
+        }
+
+        if (user.password_digest) {
+            if (!password) {
+                throw new ValidationError(
+                    'Current password is required',
+                    'password'
+                );
+            }
+            const ok = await User.checkPassword(password, user.password_digest);
+            if (!ok) {
+                throw new ValidationError(
+                    'Current password is incorrect',
+                    'password'
+                );
+            }
+        } else if (
+            !confirmEmail ||
+            String(confirmEmail).trim().toLowerCase() !== user.email
+        ) {
             throw new ValidationError(
-                'Current password and new password are required'
+                'Type your email address to confirm',
+                'confirm_email'
             );
+        }
+
+        const role = await Role.findOne({ where: { user_id: userId } });
+        if (role?.is_admin) {
+            const admins = await Role.count({ where: { is_admin: true } });
+            if (admins <= 1) {
+                throw new ValidationError(
+                    'The last administrator cannot delete their own account. Promote another user first.'
+                );
+            }
+        }
+
+        await eraseUserAccount(userId);
+        return { success: true };
+    }
+
+    async changePassword(userId, currentPassword, newPassword) {
+        if (!newPassword) {
+            throw new ValidationError('New password is required');
         }
 
         validatePassword(newPassword, 'newPassword');
@@ -261,15 +506,23 @@ class UsersService {
             throw new NotFoundError('User not found');
         }
 
-        const isValidPassword = await User.checkPassword(
-            currentPassword,
-            user.password_digest
-        );
-        if (!isValidPassword) {
-            throw new ValidationError(
-                'Current password is incorrect',
-                'currentPassword'
+        if (user.password_digest) {
+            if (!currentPassword) {
+                throw new ValidationError(
+                    'Current password is required',
+                    'currentPassword'
+                );
+            }
+            const isValidPassword = await User.checkPassword(
+                currentPassword,
+                user.password_digest
             );
+            if (!isValidPassword) {
+                throw new ValidationError(
+                    'Current password is incorrect',
+                    'currentPassword'
+                );
+            }
         }
 
         const hashedNewPassword = await User.hashPassword(newPassword);
@@ -431,8 +684,9 @@ class UsersService {
         const {
             showMetrics,
             projectShowMetrics,
-            showProductivity,
-            showNextTaskSuggestion,
+            showDailyBrief,
+            showAreaBalance,
+            showActiveProjects,
             showSuggestions,
             showDueToday,
             showCompleted,
@@ -448,14 +702,18 @@ class UsersService {
                 showMetrics !== undefined
                     ? showMetrics
                     : user.today_settings?.showMetrics || false,
-            showProductivity:
-                showProductivity !== undefined
-                    ? showProductivity
-                    : user.today_settings?.showProductivity || false,
-            showNextTaskSuggestion:
-                showNextTaskSuggestion !== undefined
-                    ? showNextTaskSuggestion
-                    : user.today_settings?.showNextTaskSuggestion || false,
+            showAreaBalance:
+                showAreaBalance !== undefined
+                    ? showAreaBalance
+                    : (user.today_settings?.showAreaBalance ?? true),
+            showActiveProjects:
+                showActiveProjects !== undefined
+                    ? showActiveProjects
+                    : (user.today_settings?.showActiveProjects ?? true),
+            showDailyBrief:
+                showDailyBrief !== undefined
+                    ? showDailyBrief
+                    : user.today_settings?.showDailyBrief || false,
             showSuggestions:
                 showSuggestions !== undefined
                     ? showSuggestions
@@ -475,16 +733,7 @@ class UsersService {
                     : user.today_settings?.showDailyQuote || true,
         };
 
-        const profileUpdates = { today_settings: todaySettings };
-        if (showProductivity !== undefined) {
-            profileUpdates.productivity_assistant_enabled = showProductivity;
-        }
-        if (showNextTaskSuggestion !== undefined) {
-            profileUpdates.next_task_suggestion_enabled =
-                showNextTaskSuggestion;
-        }
-
-        await usersRepository.update(user, profileUpdates);
+        await usersRepository.update(user, { today_settings: todaySettings });
 
         return { success: true, today_settings: todaySettings };
     }
@@ -498,8 +747,24 @@ class UsersService {
             throw new NotFoundError('User not found.');
         }
 
-        const { pinnedViewsOrder } = validateSidebarSettings(data);
-        const sidebarSettings = { pinnedViewsOrder };
+        const updates = validateSidebarSettings(data);
+        const currentSettings =
+            user.sidebar_settings && typeof user.sidebar_settings === 'object'
+                ? user.sidebar_settings
+                : {};
+
+        const sidebarSettings = {
+            ...currentSettings,
+            ...updates,
+            ...(updates.visibleSections !== undefined
+                ? {
+                      visibleSections: {
+                          ...(currentSettings.visibleSections || {}),
+                          ...updates.visibleSections,
+                      },
+                  }
+                : {}),
+        };
 
         await usersRepository.update(user, {
             sidebar_settings: sidebarSettings,
@@ -517,7 +782,7 @@ class UsersService {
             throw new NotFoundError('User not found.');
         }
 
-        const { project } = data;
+        const { project, appearance, inbox, focus, everyone } = data;
 
         const currentSettings =
             user.ui_settings && typeof user.ui_settings === 'object'
@@ -535,12 +800,95 @@ class UsersService {
                         {}),
                     ...((project && project.details) || {}),
                 },
+                list: {
+                    ...((currentSettings.project &&
+                        currentSettings.project.list) ||
+                        {}),
+                    ...((project && project.list) || {}),
+                },
             },
         };
+
+        if (appearance !== undefined) {
+            newSettings.appearance = {
+                ...(currentSettings.appearance || {}),
+                ...appearance,
+            };
+        }
+
+        if (inbox !== undefined) {
+            newSettings.inbox = {
+                ...(currentSettings.inbox || {}),
+                ...inbox,
+            };
+        }
+
+        if (focus !== undefined) {
+            newSettings.focus = sanitizeFocus(focus);
+        }
+
+        if (everyone !== undefined) {
+            newSettings.everyone = sanitizeEveryone(everyone);
+        }
 
         await usersRepository.update(user, { ui_settings: newSettings });
 
         return { success: true, ui_settings: newSettings };
+    }
+
+    /**
+     * Get per-user AI provider settings, API key masked.
+     */
+    async getAiSettings(userId) {
+        const user = await usersRepository.findAiSettings(userId);
+        if (!user) {
+            throw new NotFoundError('User not found.');
+        }
+
+        return maskAiSettings(user);
+    }
+
+    /**
+     * Update per-user AI provider settings (API key, base URL, model).
+     * An omitted ai_api_key leaves the stored key untouched; an explicit
+     * null/'' clears it.
+     */
+    async updateAiSettings(userId, data) {
+        if (entitlements.isHostedMode()) {
+            throw new ForbiddenError(
+                'AI provider settings are managed by the operator on the hosted plan.'
+            );
+        }
+
+        const user = await usersRepository.findAiSettings(userId);
+        if (!user) {
+            throw new NotFoundError('User not found.');
+        }
+
+        const { ai_api_key, ai_base_url, ai_model } = data;
+        await validateAiSettings({ ai_base_url, ai_model });
+
+        const updates = {};
+        if (ai_api_key !== undefined) {
+            if (ai_api_key) {
+                if (!secretCipher.hasKeyMaterial()) {
+                    throw new ValidationError(
+                        'Cannot save an AI API key: set TUDUDI_SESSION_SECRET (or TUDUDI_OIDC_SECRET_ENCRYPTION_KEY) on the server first',
+                        'ai_api_key'
+                    );
+                }
+                updates.ai_api_key = secretCipher.encrypt(ai_api_key);
+            } else {
+                updates.ai_api_key = null;
+            }
+        }
+        if (ai_base_url !== undefined)
+            updates.ai_base_url = ai_base_url || null;
+        if (ai_model !== undefined) updates.ai_model = ai_model || null;
+
+        await usersRepository.update(user, updates);
+        const updated = await usersRepository.findAiSettings(userId);
+        return maskAiSettings(updated);
     }
 }
 

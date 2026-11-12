@@ -6,15 +6,15 @@ const {
 } = require('../../../../../modules/caldav/icalendar/vtodo-parser');
 
 describe('CalDAV Round-Trip Conversion', () => {
-    it('should preserve basic task data through round-trip', async () => {
+    it('should preserve basic task data through round-trip (date-only)', async () => {
         const originalTask = {
             uid: 'round-trip-test',
             name: 'Test Round Trip',
             status: 1,
             priority: 2,
             note: 'Testing round-trip conversion',
-            due_date: new Date('2026-06-01T15:00:00Z'),
-            defer_until: new Date('2026-05-25T09:00:00Z'),
+            due_date: new Date('2026-06-01T00:00:00Z'),
+            defer_until: new Date('2026-05-25T00:00:00Z'),
             created_at: new Date('2026-04-01T10:00:00Z'),
             updated_at: new Date('2026-04-14T12:00:00Z'),
         };
@@ -27,11 +27,96 @@ describe('CalDAV Round-Trip Conversion', () => {
         expect(parsedTask.status).toBe(originalTask.status);
         expect(parsedTask.priority).toBe(originalTask.priority);
         expect(parsedTask.note).toBe(originalTask.note);
-        expect(parsedTask.due_date.getTime()).toBe(
-            originalTask.due_date.getTime()
+        // DATE-only values are stored as end-of-day in UTC (the fallback timezone
+        // when no user timezone is passed to the parser).
+        expect(parsedTask.due_date.toISOString()).toBe(
+            '2026-06-01T23:59:59.999Z'
         );
-        expect(parsedTask.defer_until.getTime()).toBe(
-            originalTask.defer_until.getTime()
+        expect(parsedTask.defer_until.toISOString()).toBe(
+            '2026-05-25T00:00:00.000Z'
+        );
+    });
+
+    it('should collapse timed due_date to date-only through round-trip', async () => {
+        const originalTask = {
+            uid: 'timed-round-trip',
+            name: 'Timed Task',
+            status: 0,
+            priority: 1,
+            due_date: new Date('2026-06-04T09:00:00Z'),
+            defer_until: new Date('2026-06-04T09:00:00Z'),
+            created_at: new Date('2026-04-01T10:00:00Z'),
+            updated_at: new Date('2026-04-14T12:00:00Z'),
+        };
+
+        const vtodoString = await serializeTaskToVTODO(originalTask);
+        const parsedTask = await parseVTODOToTask(vtodoString);
+
+        // Without a due time, DUE/DTSTART are emitted as VALUE=DATE; after parsing
+        // the date is stored as end-of-day in UTC (fallback when no user timezone provided).
+        expect(parsedTask.due_date.toISOString()).toBe(
+            '2026-06-04T23:59:59.999Z'
+        );
+        // A start that is not before the due date is not a defer date, so the
+        // DTSTART emitted above does not come back as one (#1906).
+        expect(parsedTask.defer_until).toBeNull();
+    });
+
+    it('should keep a defer date that is earlier than the due date', async () => {
+        const originalTask = {
+            uid: 'defer-round-trip',
+            name: 'Deferred Task',
+            status: 0,
+            priority: null,
+            due_date: new Date('2026-06-04T09:00:00Z'),
+            defer_until: new Date('2026-06-01T09:00:00Z'),
+            created_at: new Date('2026-04-01T10:00:00Z'),
+            updated_at: new Date('2026-04-14T12:00:00Z'),
+        };
+
+        const vtodoString = await serializeTaskToVTODO(originalTask);
+        const parsedTask = await parseVTODOToTask(vtodoString);
+
+        expect(parsedTask.defer_until.toISOString()).toBe(
+            '2026-06-01T00:00:00.000Z'
+        );
+        expect(parsedTask.priority).toBeNull();
+    });
+
+    it('should preserve iOS VALARM reminder through a note-edit round-trip', async () => {
+        const iosVTODO = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Apple Inc.//iOS 17//EN
+BEGIN:VTODO
+DTSTART;TZID=Europe/Berlin:20260604T110000
+DUE;TZID=Europe/Berlin:20260604T110000
+SUMMARY:Testaufgabe
+UID:byyevjtafg34nr1
+DTSTAMP:20260604T080000Z
+BEGIN:VALARM
+ACTION:DISPLAY
+TRIGGER;VALUE=DATE-TIME:20260604T090000Z
+UID:D4D580EE-4FAD-4E34-AF53-FFF561013D2D
+END:VALARM
+END:VTODO
+END:VCALENDAR`;
+
+        const parsedTask = await parseVTODOToTask(iosVTODO);
+        expect(parsedTask.reminder_at).toBeInstanceOf(Date);
+        expect(parsedTask.reminder_at.toISOString()).toBe(
+            '2026-06-04T09:00:00.000Z'
+        );
+
+        parsedTask.note = 'Updated note via web UI';
+        const reserialized = await serializeTaskToVTODO(parsedTask);
+
+        expect(reserialized).toContain('BEGIN:VALARM');
+        expect(reserialized).toContain('20260604T090000Z');
+
+        const reparsed = await parseVTODOToTask(reserialized);
+        expect(reparsed.reminder_at).toBeInstanceOf(Date);
+        expect(reparsed.reminder_at.toISOString()).toBe(
+            '2026-06-04T09:00:00.000Z'
         );
     });
 

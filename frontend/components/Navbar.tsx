@@ -1,19 +1,37 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { UserIcon, BoltIcon, InboxIcon } from '@heroicons/react/24/solid';
 import {
-    UserIcon,
-    Bars3Icon,
-    BoltIcon,
-    InboxIcon,
-} from '@heroicons/react/24/solid';
-import { EnvelopeIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+    EnvelopeIcon,
+    MagnifyingGlassIcon,
+    Cog6ToothIcon,
+    ShieldCheckIcon,
+    CircleStackIcon,
+    InformationCircleIcon,
+    ArrowRightStartOnRectangleIcon,
+} from '@heroicons/react/24/outline';
 import { useTranslation } from 'react-i18next';
 import PomodoroTimer from './Shared/PomodoroTimer';
 import UniversalSearch from './UniversalSearch/UniversalSearch';
+import SidebarPanelIcon from './Sidebar/SidebarPanelIcon';
 import NotificationsDropdown from './Notifications/NotificationsDropdown';
+import FocusChip from './Focus/FocusChip';
 import { getApiPath, getAssetPath } from '../config/paths';
 import { getFeatureFlags, FeatureFlags } from '../utils/featureFlags';
+import PlanBadge from './Billing/PlanBadge';
 import { setUserTimezone } from '../utils/dateUtils';
+import {
+    fetchProfile as fetchProfileFromService,
+    invalidateProfileCache,
+} from '../utils/profileService';
+import {
+    clearBillingStatusCache,
+    refreshBillingStatus,
+} from '../utils/billingService';
+import { notifySwClearCache } from '../utils/swUtils';
+import { detachPushForLogout } from '../utils/pushService';
+import { resetSessionState } from '../utils/sessionReset';
+import { toggleCapture, useCaptureUi } from '../utils/captureUi';
 
 interface NavbarProps {
     isDarkMode: boolean;
@@ -26,6 +44,8 @@ interface NavbarProps {
     setCurrentUser: React.Dispatch<React.SetStateAction<any>>;
     isSidebarOpen: boolean;
     setIsSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
+    // Tints the bar instead of hiding the page background photo behind it
+    transparent?: boolean;
 }
 
 const Navbar: React.FC<NavbarProps> = ({
@@ -34,21 +54,20 @@ const Navbar: React.FC<NavbarProps> = ({
     isSidebarOpen,
     setIsSidebarOpen,
     isDarkMode,
+    transparent = false,
 }) => {
     const { t } = useTranslation();
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
-    const [pomodoroEnabled, setPomodoroEnabled] = useState(true); // Default to true
+    const [pomodoroEnabled, setPomodoroEnabled] = useState(false); // Off until turned on in Settings
     const [featureFlags, setFeatureFlags] = useState<FeatureFlags>({
-        backups: false,
-        calendar: false,
-        caldav: false,
-        habits: false,
-        mcp: false,
+        hosted: false,
+        billing: false,
+        telegram: false,
     });
     const dropdownRef = useRef<HTMLDivElement>(null);
     const navigate = useNavigate();
-
+    const { open: captureOpen } = useCaptureUi();
     // Dispatch event when mobile search state changes
     useEffect(() => {
         window.dispatchEvent(
@@ -57,6 +76,17 @@ const Navbar: React.FC<NavbarProps> = ({
             })
         );
     }, [isMobileSearchOpen]);
+
+    // Pages open Universal Search with an openUniversalSearch event; on
+    // phones that means showing the navbar search bar.
+    useEffect(() => {
+        const handleOpenSearch = () => {
+            if (window.innerWidth < 768) setIsMobileSearchOpen(true);
+        };
+        window.addEventListener('openUniversalSearch', handleOpenSearch);
+        return () =>
+            window.removeEventListener('openUniversalSearch', handleOpenSearch);
+    }, []);
 
     // Listen for close mobile search events
     useEffect(() => {
@@ -91,35 +121,31 @@ const Navbar: React.FC<NavbarProps> = ({
 
     // Fetch user's pomodoro setting and feature flags
     useEffect(() => {
-        const fetchProfile = async () => {
+        const loadProfile = async () => {
             try {
-                const response = await fetch(getApiPath('profile'), {
-                    credentials: 'include',
-                });
-                if (response.ok) {
-                    const profile = await response.json();
-                    setPomodoroEnabled(
-                        profile.pomodoro_enabled !== undefined
-                            ? profile.pomodoro_enabled
-                            : true
-                    );
-                    // Set user timezone for date formatting
-                    if (profile.timezone) {
-                        setUserTimezone(profile.timezone);
-                    }
+                const profile = await fetchProfileFromService();
+                setPomodoroEnabled(
+                    profile.features?.pomodoro_enabled !== undefined
+                        ? profile.features.pomodoro_enabled
+                        : false
+                );
+                if (profile.timezone) {
+                    setUserTimezone(profile.timezone);
                 }
             } catch (error) {
                 console.error('Error fetching profile:', error);
-                // Keep default value (true) if fetch fails
             }
         };
 
         const fetchFlags = async () => {
             const flags = await getFeatureFlags();
             setFeatureFlags(flags);
+            if (flags.hosted) {
+                refreshBillingStatus().catch(() => {});
+            }
         };
 
-        fetchProfile();
+        loadProfile();
         fetchFlags();
 
         // Listen for Pomodoro setting changes from ProfileSettings
@@ -145,6 +171,9 @@ const Navbar: React.FC<NavbarProps> = ({
     };
 
     const handleLogout = async () => {
+        invalidateProfileCache();
+        clearBillingStatusCache();
+        await detachPushForLogout();
         try {
             const response = await fetch(getApiPath('logout'), {
                 method: 'GET',
@@ -152,6 +181,8 @@ const Navbar: React.FC<NavbarProps> = ({
             });
 
             if (response.ok) {
+                notifySwClearCache();
+                resetSessionState();
                 setCurrentUser(null);
                 navigate('/login');
             } else {
@@ -163,43 +194,47 @@ const Navbar: React.FC<NavbarProps> = ({
     };
 
     return (
-        <nav className="fixed top-0 left-0 right-0 z-50 bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-md">
-            {/* Main navbar row */}
-            <div className="h-16 flex items-center justify-between">
-                {/* Sidebar-width area with logo and hamburger */}
-                <div
-                    className={`${isSidebarOpen ? 'sm:w-72' : 'w-auto sm:w-16'} flex items-center ${isSidebarOpen ? 'sm:justify-center' : 'sm:justify-start'} transition-all duration-300 ease-in-out px-4 relative flex-shrink-0`}
-                >
-                    <button
-                        onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-                        className={`flex items-center focus:outline-none text-gray-500 dark:text-gray-500 ${isSidebarOpen ? 'sm:absolute sm:left-4' : 'sm:relative'}`}
-                        aria-label={
-                            isSidebarOpen
-                                ? 'Collapse Sidebar'
-                                : 'Expand Sidebar'
-                        }
-                    >
-                        <Bars3Icon className="h-6 mt-1 w-6" />
-                    </button>
-
-                    <Link
-                        to="/"
-                        className={`flex items-center no-underline ml-2 ${isSidebarOpen ? 'sm:ml-0' : 'sm:ml-2'}`}
-                    >
-                        <img
-                            src={getAssetPath(
-                                isDarkMode
-                                    ? 'wide-logo-light.png'
-                                    : 'wide-logo-dark.png'
-                            )}
-                            alt="tududi"
-                            className="h-9 w-auto"
-                        />
-                    </Link>
+        <nav
+            className={`relative z-30 has-[[data-testid=universal-search][data-state=open]]:z-50 flex-shrink-0 text-gray-900 dark:text-white ${
+                transparent
+                    ? 'bg-gray-100/40 dark:bg-gray-800/40 backdrop-blur-md'
+                    : 'bg-gray-100 dark:bg-gray-800'
+            }`}
+        >
+            {/* Main bar row */}
+            <div className="h-14 flex items-center justify-between">
+                {/* On phones with the sidebar closed, the button that brings
+                    it back and the logo (the sidebar's logo is off screen);
+                    then the Focus chip that scopes the app */}
+                <div className="flex items-center gap-1 pl-3 sm:pl-4 flex-shrink-0 min-w-0">
+                    {!isSidebarOpen && (
+                        <>
+                            <button
+                                onClick={() => setIsSidebarOpen(true)}
+                                className="sm:hidden p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-200 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                                aria-label="Expand Sidebar"
+                                data-testid="sidebar-expand"
+                            >
+                                <SidebarPanelIcon className="h-5 w-5" />
+                            </button>
+                            <Link
+                                to="/"
+                                className="sm:hidden flex items-center justify-center h-9 w-9"
+                                aria-label="tududi"
+                                data-testid="navbar-logo"
+                            >
+                                <img
+                                    src={getAssetPath('icon-logo.png')}
+                                    alt="tududi"
+                                    className="h-7 w-7 rounded-md"
+                                />
+                            </Link>
+                        </>
+                    )}
+                    <FocusChip />
                 </div>
-
-                {/* Center section - Universal Search (hidden on mobile) */}
-                <div className="hidden md:flex flex-1 justify-center px-4">
+                {/* Search, toward the right next to the actions (hidden on mobile) */}
+                <div className="hidden md:flex flex-1 justify-end px-2">
                     <UniversalSearch />
                 </div>
 
@@ -211,17 +246,21 @@ const Navbar: React.FC<NavbarProps> = ({
                             setIsMobileSearchOpen(!isMobileSearchOpen)
                         }
                         className="md:hidden flex items-center bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded-full focus:outline-none transition-all duration-200 p-2"
-                        aria-label="Toggle Search"
-                        title="Search"
+                        aria-label={t('navigation.toggleSearch')}
+                        title={t('navigation.search')}
                     >
                         <MagnifyingGlassIcon className="h-5 w-5" />
                     </button>
 
                     <button
-                        onClick={() => navigate('/inbox')}
-                        className="flex items-center bg-blue-500 hover:bg-blue-600 text-white rounded-full focus:outline-none transition-all duration-200 px-2 py-2 md:px-3 md:py-2"
-                        aria-label="Quick Inbox Capture"
-                        title="Quick Inbox Capture"
+                        type="button"
+                        onClick={() => toggleCapture('inbox')}
+                        aria-haspopup="dialog"
+                        aria-expanded={captureOpen}
+                        data-testid="capture-navbar-button"
+                        className="flex items-center bg-blue-500 hover:bg-blue-600 text-white rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 transition-all duration-200 px-2 py-2 md:px-3 md:py-2"
+                        aria-label={t('navigation.quickInboxCapture')}
+                        title={t('navigation.quickInboxCapture')}
                     >
                         <BoltIcon className="h-4 w-4 text-white" />
                         <InboxIcon className="hidden md:inline-block ml-1.5 h-4 w-4 text-blue-200" />
@@ -234,7 +273,7 @@ const Navbar: React.FC<NavbarProps> = ({
                         <button
                             onClick={toggleDropdown}
                             className="flex items-center focus:outline-none"
-                            aria-label="User Menu"
+                            aria-label={t('navigation.userMenu')}
                         >
                             {currentUser?.avatar_image ? (
                                 <img
@@ -259,52 +298,72 @@ const Navbar: React.FC<NavbarProps> = ({
                                         {currentUser.email}
                                     </div>
                                 )}
+                                {featureFlags.hosted && <PlanBadge />}
+                                {currentUser?.is_admin && (
+                                    <Link
+                                        to="/admin"
+                                        className="flex items-center justify-between px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                        onClick={() => setIsDropdownOpen(false)}
+                                        data-testid="navbar-admin-link"
+                                    >
+                                        <span className="flex items-center">
+                                            <ShieldCheckIcon className="h-4 w-4 mr-2 shrink-0" />
+                                            {t('navigation.admin', 'Admin')}
+                                        </span>
+                                        <span className="ml-3 px-1.5 py-0.5 rounded text-[10px] font-semibold tracking-wide uppercase bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                                            {featureFlags.hosted
+                                                ? t(
+                                                      'admin.roles.names.superadmin',
+                                                      'Superadmin'
+                                                  )
+                                                : t(
+                                                      'navigation.adminBadge',
+                                                      'Admin'
+                                                  )}
+                                        </span>
+                                    </Link>
+                                )}
                                 <Link
                                     to="/profile"
-                                    className="block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                    className="flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
                                     onClick={() => setIsDropdownOpen(false)}
                                 >
+                                    <Cog6ToothIcon className="h-4 w-4 mr-2 shrink-0" />
                                     {t(
                                         'navigation.profileSettings',
                                         'Profile Settings'
                                     )}
                                 </Link>
-                                {featureFlags.backups && (
-                                    <Link
-                                        to="/backup"
-                                        className="block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
-                                        onClick={() => setIsDropdownOpen(false)}
-                                    >
-                                        {t(
-                                            'navigation.backupRestore',
-                                            'Backup & Restore'
-                                        )}
-                                    </Link>
-                                )}
-                                {currentUser?.is_admin === true && (
-                                    <Link
-                                        to="/admin/users"
-                                        className="block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
-                                        onClick={() => setIsDropdownOpen(false)}
-                                    >
-                                        {t('admin.manageUsers', 'Manage users')}
-                                    </Link>
-                                )}
                                 <Link
-                                    to="/about"
-                                    className="block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                    to="/backup"
+                                    className="flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
                                     onClick={() => setIsDropdownOpen(false)}
                                 >
-                                    {t('navigation.about', 'About')}
+                                    <CircleStackIcon className="h-4 w-4 mr-2 shrink-0" />
+                                    {t(
+                                        'navigation.backupRestore',
+                                        'Backup & Restore'
+                                    )}
                                 </Link>
+                                {!featureFlags.hosted && (
+                                    <Link
+                                        to="/about"
+                                        className="flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                        onClick={() => setIsDropdownOpen(false)}
+                                    >
+                                        <InformationCircleIcon className="h-4 w-4 mr-2 shrink-0" />
+                                        {t('navigation.about', 'About')}
+                                    </Link>
+                                )}
                                 <hr className="my-1 border-gray-200 dark:border-gray-600" />
                                 <button
                                     onClick={() => {
                                         setIsDropdownOpen(false);
                                         handleLogout();
                                     }}
-                                    className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+                                    className="w-full flex items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
                                 >
+                                    <ArrowRightStartOnRectangleIcon className="h-4 w-4 mr-2 shrink-0" />
                                     {t('navigation.logout', 'Logout')}
                                 </button>
                             </div>

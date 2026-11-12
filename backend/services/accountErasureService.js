@@ -1,0 +1,353 @@
+const path = require('path');
+const fs = require('fs').promises;
+const { Op } = require('sequelize');
+const {
+    sequelize,
+    User,
+    Role,
+    Area,
+    Goal,
+    Project,
+    Task,
+    Tag,
+    Note,
+    InboxItem,
+    TaskEvent,
+    Action,
+    Permission,
+    UserGroup,
+    UserGroupMember,
+    MemberSignInLink,
+    GroupShare,
+    GroupPermission,
+    View,
+    ApiToken,
+    Notification,
+    RecurringCompletion,
+    TaskAttachment,
+    InboxItemAttachment,
+    ProjectAttachment,
+    NoteAttachment,
+    Backup,
+    OIDCIdentity,
+    AuthAuditLog,
+    CalDAVCalendar,
+    CalDAVSyncState,
+    CalDAVOccurrenceOverride,
+    CalDAVRemoteCalendar,
+    CalendarToken,
+    CalendarFeed,
+    DailyPlan,
+    DailyPlanItem,
+    Person,
+    UserProjectArea,
+    UserProjectOrder,
+    UserGoalOrder,
+    UserAreaOrder,
+    UserTaskOrder,
+    BillingAccount,
+    UsageCounter,
+    Feedback,
+    PushSubscription,
+    Webhook,
+    WebhookDelivery,
+    ImportJob,
+    SiteVisit,
+    EmailDelivery,
+    UserMfa,
+    UserRecoveryCode,
+} = require('../models');
+const { getConfig } = require('../config/config');
+const { assertAnotherAdminRemains } = require('./rolesService');
+const { getBackupsDirectory } = require('./backupService');
+const { destroyUserSessions } = require('./sessionService');
+const { logError } = require('./logService');
+
+const config = getConfig();
+
+// Deletes a file only if it lives under `baseDir`; a bad path in the
+// database must not turn into an arbitrary unlink.
+async function unlinkWithin(baseDir, relativeOrAbsolute) {
+    if (!relativeOrAbsolute) return;
+    const resolvedBase = path.resolve(baseDir);
+    const resolved = path.resolve(resolvedBase, relativeOrAbsolute);
+    const relative = path.relative(resolvedBase, resolved);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        logError('Refusing to delete file outside its directory:', resolved);
+        return;
+    }
+    await fs.unlink(resolved).catch(() => {});
+}
+
+// Removes every row that belongs to a user, and every file those rows
+// point at. Used for admin deletion and for self-service account deletion.
+// Rows go inside one transaction; files are removed only after it commits,
+// so a rollback never leaves rows pointing at missing files.
+async function eraseUserAccount(userId) {
+    // Stop charging before removing the rows that point at Stripe
+    const { billingService } = require('../modules/billing');
+    await billingService.cancelForDeletedUser(userId);
+
+    const filesToDelete = [];
+    const transaction = await sequelize.transaction();
+
+    try {
+        const user = await User.findByPk(userId, { transaction });
+        if (!user) {
+            await transaction.rollback();
+            return false;
+        }
+
+        const targetRole = await Role.findOne({
+            where: { user_id: userId },
+            transaction,
+        });
+        if (targetRole?.is_admin) {
+            await assertAnotherAdminRemains(
+                transaction,
+                'Cannot delete the last remaining admin'
+            );
+        }
+
+        const tx = { transaction };
+        const byUser = { where: { user_id: userId }, ...tx };
+
+        const taskAttachments = await TaskAttachment.findAll({
+            where: { user_id: userId },
+            attributes: ['file_path'],
+            raw: true,
+            ...tx,
+        });
+        const otherAttachments = [];
+        for (const Model of [
+            InboxItemAttachment,
+            ProjectAttachment,
+            NoteAttachment,
+        ]) {
+            otherAttachments.push(
+                ...(await Model.findAll({
+                    where: { user_id: userId },
+                    attributes: ['file_path'],
+                    raw: true,
+                    ...tx,
+                }))
+            );
+        }
+        for (const a of [...taskAttachments, ...otherAttachments]) {
+            filesToDelete.push([config.uploadPath, a.file_path]);
+        }
+
+        const backups = await Backup.findAll({
+            where: { user_id: userId },
+            attributes: ['file_path'],
+            raw: true,
+            ...tx,
+        });
+        if (backups.length > 0) {
+            const backupsDir = await getBackupsDirectory();
+            for (const b of backups) {
+                filesToDelete.push([backupsDir, b.file_path]);
+            }
+        }
+
+        if (user.avatar_image) {
+            filesToDelete.push([
+                path.join(config.uploadPath, 'avatars'),
+                path.basename(user.avatar_image),
+            ]);
+        }
+
+        const userTasks = await Task.findAll({
+            where: { user_id: userId },
+            attributes: ['id'],
+            raw: true,
+            ...tx,
+        });
+        const taskIds = userTasks.map((t) => t.id);
+        if (taskIds.length > 0) {
+            await RecurringCompletion.destroy({
+                where: { task_id: taskIds },
+                ...tx,
+            });
+            // Other people may have planned one of these (shared) tasks.
+            await DailyPlanItem.destroy({
+                where: { task_id: taskIds },
+                ...tx,
+            });
+        }
+
+        const plans = await DailyPlan.findAll({
+            where: { user_id: userId },
+            attributes: ['id'],
+            raw: true,
+            ...tx,
+        });
+        if (plans.length > 0) {
+            await DailyPlanItem.destroy({
+                where: { daily_plan_id: plans.map((p) => p.id) },
+                ...tx,
+            });
+        }
+        await DailyPlan.destroy(byUser);
+        await CalendarFeed.destroy(byUser);
+
+        const calendars = await CalDAVCalendar.findAll({
+            where: { user_id: userId },
+            attributes: ['id'],
+            raw: true,
+            ...tx,
+        });
+        const calendarIds = calendars.map((c) => c.id);
+        if (calendarIds.length > 0) {
+            await CalDAVSyncState.destroy({
+                where: { calendar_id: calendarIds },
+                ...tx,
+            });
+            await CalDAVOccurrenceOverride.destroy({
+                where: { calendar_id: calendarIds },
+                ...tx,
+            });
+        }
+        await CalDAVRemoteCalendar.destroy(byUser);
+        await CalDAVCalendar.destroy(byUser);
+        await CalendarToken.destroy(byUser);
+
+        await UserTaskOrder.destroy(byUser);
+        await TaskEvent.destroy(byUser);
+        await TaskAttachment.destroy(byUser);
+        await ProjectAttachment.destroy(byUser);
+        await NoteAttachment.destroy(byUser);
+        await Task.destroy(byUser);
+        await Note.destroy(byUser);
+        await UserProjectArea.destroy(byUser);
+        await UserProjectOrder.destroy(byUser);
+        await UserGoalOrder.destroy(byUser);
+        await UserAreaOrder.destroy(byUser);
+        await Project.destroy(byUser);
+        await Goal.destroy(byUser);
+        await Area.destroy(byUser);
+        await Tag.destroy(byUser);
+        await InboxItemAttachment.destroy(byUser);
+        await InboxItem.destroy(byUser);
+        await View.destroy(byUser);
+        await Notification.destroy(byUser);
+        await ApiToken.destroy(byUser);
+        await Backup.destroy(byUser);
+        await OIDCIdentity.destroy(byUser);
+        await AuthAuditLog.destroy(byUser);
+        await UserRecoveryCode.destroy(byUser);
+        await UserMfa.destroy(byUser);
+        await UsageCounter.destroy(byUser);
+        await Feedback.destroy(byUser);
+        await PushSubscription.destroy(byUser);
+        const webhookIds = (
+            await Webhook.findAll({ attributes: ['id'], ...byUser })
+        ).map((w) => w.id);
+        if (webhookIds.length > 0) {
+            await WebhookDelivery.destroy({
+                where: { webhook_id: webhookIds },
+                ...tx,
+            });
+        }
+        await Webhook.destroy(byUser);
+        await ImportJob.destroy(byUser);
+        await SiteVisit.destroy(byUser);
+        await EmailDelivery.destroy(byUser);
+        // Emails this account sent by hand as an admin stay in the log.
+        await EmailDelivery.update(
+            { triggered_by_user_id: null },
+            { where: { triggered_by_user_id: userId }, ...tx }
+        );
+        await BillingAccount.destroy(byUser);
+
+        // A hosted account this one owned goes with it; its members stay.
+        await require('./accountsService').releaseOwnedAccount(userId, tx);
+
+        // Accounts this one created stay, and just forget who created them.
+        await User.update(
+            { created_by_user_id: null },
+            { where: { created_by_user_id: userId }, ...tx }
+        );
+
+        // Other people's contact cards that pointed at this account keep
+        // their own data but lose the link.
+        await Person.update(
+            { linked_user_id: null },
+            { where: { linked_user_id: userId }, ...tx }
+        );
+        await Person.destroy(byUser);
+
+        await Permission.destroy({
+            where: {
+                [Op.or]: [{ user_id: userId }, { granted_by_user_id: userId }],
+            },
+            ...tx,
+        });
+
+        // Group access rows this user received or granted, the group grants
+        // they made, and their group memberships. Groups are instance-wide, so
+        // they outlive the user who created them.
+        const ownGroupShares = await GroupShare.findAll({
+            where: { granted_by_user_id: userId },
+            attributes: ['id'],
+            raw: true,
+            ...tx,
+        });
+        await GroupPermission.destroy({
+            where: {
+                [Op.or]: [
+                    { user_id: userId },
+                    { granted_by_user_id: userId },
+                    { group_share_id: ownGroupShares.map((s) => s.id) },
+                ],
+            },
+            ...tx,
+        });
+        await GroupShare.destroy({
+            where: { granted_by_user_id: userId },
+            ...tx,
+        });
+        await UserGroupMember.destroy({
+            where: {
+                [Op.or]: [{ user_id: userId }, { added_by_user_id: userId }],
+            },
+            ...tx,
+        });
+        await MemberSignInLink.destroy({
+            where: {
+                [Op.or]: [{ user_id: userId }, { created_by_user_id: userId }],
+            },
+            ...tx,
+        });
+        await UserGroup.update(
+            { created_by_user_id: null },
+            { where: { created_by_user_id: userId }, ...tx }
+        );
+        await Action.destroy({
+            where: {
+                [Op.or]: [
+                    { actor_user_id: userId },
+                    { target_user_id: userId },
+                ],
+            },
+            ...tx,
+        });
+
+        await Role.destroy(byUser);
+        await user.destroy(tx);
+
+        await transaction.commit();
+    } catch (error) {
+        await transaction.rollback();
+        throw error;
+    }
+
+    await destroyUserSessions(userId);
+    for (const [baseDir, file] of filesToDelete) {
+        await unlinkWithin(baseDir, file);
+    }
+
+    return true;
+}
+
+module.exports = { eraseUserAccount };

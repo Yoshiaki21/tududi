@@ -1,7 +1,8 @@
-const { Task } = require('../../../models');
+const { Task, RecurringCompletion } = require('../../../models');
 const { Op } = require('sequelize');
 const moment = require('moment-timezone');
 const permissionsService = require('../../../services/permissionsService');
+const { withScope } = require('../../../services/scopeService');
 const {
     countTotalOpenTasks,
     countTasksPendingOverMonth,
@@ -10,13 +11,17 @@ const {
     fetchTasksDueToday,
     fetchOverdueTasks,
     fetchSomedayTaskIds,
+    fetchSomedayExcludedTaskIds,
     fetchNonProjectTasks,
     fetchProjectTasks,
     fetchSomedayFallbackTasks,
     fetchTasksCompletedToday,
 } = require('./metrics-queries');
+const { compareCandidates } = require('../../daily-plan/ranking');
+const { isSuggestible } = require('../../daily-plan/planningSettings');
+const habitService = require('../../habits/habitService');
 
-const MAX_SUGGESTED_TASKS = 10;
+const MAX_SUGGESTED_TASKS = 50;
 
 const getPriorityValue = (priority) => {
     const priorityOrder = {
@@ -78,7 +83,9 @@ async function computeSuggestedTasks(
     tasksInProgress,
     tasksDueToday,
     tasksOverdue,
-    todayPlanTasks
+    todayPlanTasks,
+    planning = null,
+    scopeWhere = null
 ) {
     if (
         totalOpenTasks < 3 &&
@@ -106,7 +113,21 @@ async function computeSuggestedTasks(
         fetchProjectTasks(visibleTasksWhere, excludedTaskIds, somedayTaskIds),
     ]);
 
-    let combinedTasks = [...nonProjectTasks, ...projectTasks];
+    // Plan my day passes the user's planning settings: filter first, sort
+    // with the planner's rules, and leave the cap to the planner, which
+    // applies it after its final order. The classic Today page passes none
+    // and keeps the behaviour below.
+    const now = Date.now();
+    const keep = planning
+        ? (tasks) => tasks.filter((task) => isSuggestible(task, planning, now))
+        : (tasks) => tasks;
+
+    // Habits stay open, so only the ones asking for a check-in today count.
+    const keepDue = (tasks) => habitService.keepHabitsDueToday(tasks, userId);
+
+    let combinedTasks = keep(
+        await keepDue([...nonProjectTasks, ...projectTasks])
+    );
 
     if (combinedTasks.length < 6) {
         const usedTaskIds = [
@@ -117,18 +138,35 @@ async function computeSuggestedTasks(
         const somedayFallbackTasks = await fetchSomedayFallbackTasks(
             userId,
             usedTaskIds,
-            somedayTaskIds
+            somedayTaskIds,
+            null,
+            scopeWhere
         );
 
-        combinedTasks = [...combinedTasks, ...somedayFallbackTasks];
+        combinedTasks = [
+            ...combinedTasks,
+            ...keep(await keepDue(somedayFallbackTasks)),
+        ];
     }
 
-    const now = Date.now();
+    if (planning) {
+        return combinedTasks.sort((a, b) =>
+            compareCandidates(a, b, planning.tieBreak)
+        );
+    }
+
+    const DUE_DATE_HORIZON_MS = 3 * 24 * 60 * 60 * 1000;
     const filteredTasks = combinedTasks.filter((task) => {
-        if (!task.defer_until) return true;
-        const deferUntil = new Date(task.defer_until).getTime();
-        if (Number.isNaN(deferUntil)) return true;
-        return deferUntil <= now;
+        if (task.defer_until) {
+            const deferUntil = new Date(task.defer_until).getTime();
+            if (!Number.isNaN(deferUntil) && deferUntil > now) return false;
+        }
+        if (task.due_date) {
+            const due = new Date(task.due_date).getTime();
+            if (!Number.isNaN(due) && due > now + DUE_DATE_HORIZON_MS)
+                return false;
+        }
+        return true;
     });
 
     filteredTasks.sort(multiCriteriaTaskSort);
@@ -142,21 +180,50 @@ async function computeWeeklyCompletions(userId, userTimezone) {
     const weekStart = weekStartInUserTz.clone().startOf('day').utc().toDate();
     const weekEnd = todayInUserTz.clone().endOf('day').utc().toDate();
 
-    const weeklyCompletionsRaw = await Task.findAll({
-        where: {
-            user_id: userId,
-            status: Task.STATUS.DONE,
-            completed_at: {
-                [Op.between]: [weekStart, weekEnd],
+    const [weeklyCompletionsRaw, recurringCompletionsRaw] = await Promise.all([
+        Task.findAll({
+            where: {
+                user_id: userId,
+                status: Task.STATUS.DONE,
+                habit_mode: false,
+                completed_at: {
+                    [Op.between]: [weekStart, weekEnd],
+                },
             },
-        },
-        attributes: ['completed_at'],
-        raw: true,
-    });
+            attributes: ['completed_at'],
+            raw: true,
+        }),
+        RecurringCompletion.findAll({
+            include: [
+                {
+                    model: Task,
+                    as: 'Task',
+                    attributes: [],
+                    where: { user_id: userId },
+                    required: true,
+                },
+            ],
+            where: {
+                completed_at: {
+                    [Op.between]: [weekStart, weekEnd],
+                },
+                skipped: false,
+            },
+            attributes: ['completed_at'],
+            raw: true,
+        }),
+    ]);
 
     const dateCountMap = {};
     weeklyCompletionsRaw.forEach((task) => {
         const completedDate = new Date(task.completed_at);
+        const dateInUserTz = moment(completedDate)
+            .tz(userTimezone)
+            .format('YYYY-MM-DD');
+        dateCountMap[dateInUserTz] = (dateCountMap[dateInUserTz] || 0) + 1;
+    });
+    recurringCompletionsRaw.forEach((rc) => {
+        const completedDate = new Date(rc.completed_at);
         const dateInUserTz = moment(completedDate)
             .tz(userTimezone)
             .format('YYYY-MM-DD');
@@ -189,17 +256,30 @@ async function computeWeeklyCompletions(userId, userTimezone) {
     return weeklyData;
 }
 
+// `scopeWhere` (from scopeService.taskScopeWhere) narrows every list to a
+// Focus scope; the visible-tasks where then carries it into each query.
 async function computeTaskMetrics(
     userId,
     userTimezone = 'UTC',
-    permissionCache = null
+    permissionCache = null,
+    planning = null,
+    scopeWhere = null
 ) {
-    const visibleTasksWhere =
-        await permissionsService.ownershipOrPermissionWhere(
-            'task',
-            userId,
-            permissionCache
-        );
+    const visibleTasksWhere = withScope(
+        {
+            [Op.and]: [
+                await permissionsService.ownershipOrPermissionWhere(
+                    'task',
+                    userId,
+                    permissionCache
+                ),
+                await permissionsService.myWorkWhere(userId),
+            ],
+        },
+        scopeWhere
+    );
+
+    const somedayExcludedIds = await fetchSomedayExcludedTaskIds(userId);
 
     const [
         totalOpenTasks,
@@ -213,11 +293,23 @@ async function computeTaskMetrics(
     ] = await Promise.all([
         countTotalOpenTasks(visibleTasksWhere),
         countTasksPendingOverMonth(visibleTasksWhere),
-        fetchTasksInProgress(visibleTasksWhere),
-        fetchTodayPlanTasks(visibleTasksWhere),
-        fetchTasksDueToday(visibleTasksWhere, userTimezone, userId),
-        fetchOverdueTasks(visibleTasksWhere, userTimezone, userId),
-        fetchTasksCompletedToday(userId, userTimezone),
+        fetchTasksInProgress(visibleTasksWhere, somedayExcludedIds),
+        fetchTodayPlanTasks(visibleTasksWhere, somedayExcludedIds),
+        fetchTasksDueToday(
+            visibleTasksWhere,
+            userTimezone,
+            userId,
+            somedayExcludedIds,
+            permissionCache
+        ),
+        fetchOverdueTasks(
+            visibleTasksWhere,
+            userTimezone,
+            userId,
+            somedayExcludedIds,
+            permissionCache
+        ),
+        fetchTasksCompletedToday(userId, userTimezone, scopeWhere),
         computeWeeklyCompletions(userId, userTimezone),
     ]);
 
@@ -228,7 +320,9 @@ async function computeTaskMetrics(
         tasksInProgress,
         tasksDueToday,
         tasksOverdue,
-        todayPlanTasks
+        todayPlanTasks,
+        planning,
+        scopeWhere
     );
 
     return {
@@ -246,36 +340,114 @@ async function computeTaskMetrics(
 }
 
 async function getTaskMetrics(userId, timezone) {
-    const metrics = await computeTaskMetrics(userId, timezone);
+    const permissionCache = new Map();
+    const metrics = await computeTaskMetrics(userId, timezone, permissionCache);
+
     const {
         buildMetricsResponse,
         serializeTasks,
     } = require('../core/serializers');
+    const { getTaskTodayMoveCounts } = require('../taskEventService');
+    const { Task } = require('../../../models');
+    const { Op } = require('sequelize');
 
     const response = await buildMetricsResponse(metrics);
 
-    const serializedLists = {
-        tasks_in_progress: await serializeTasks(
+    // Collect all tasks across every list for single-pass pre-fetching
+    const allLists = [
+        metrics.tasks_in_progress,
+        metrics.today_plan_tasks,
+        metrics.tasks_due_today,
+        metrics.tasks_overdue,
+        metrics.suggested_tasks,
+        metrics.tasks_completed_today,
+    ];
+    const allTasks = allLists.flat();
+    const allTaskIds = [...new Set(allTasks.map((t) => t.id))];
+
+    // Single move-count query covering all lists
+    const moveCountMap = await getTaskTodayMoveCounts(allTaskIds);
+
+    // Single batch query for all recurring parent UIDs
+    const parentIds = [
+        ...new Set(
+            allTasks
+                .filter((t) => t.recurring_parent_id)
+                .map((t) => t.recurring_parent_id)
+        ),
+    ];
+    const parentUidMap = {};
+    if (parentIds.length > 0) {
+        const parents = await Task.findAll({
+            where: { id: { [Op.in]: parentIds } },
+            attributes: ['id', 'uid'],
+            raw: true,
+        });
+        parents.forEach((p) => {
+            parentUidMap[p.id] = p.uid;
+        });
+    }
+
+    // Parallelize all 6 serialization calls with shared pre-fetched maps
+    const [
+        tasks_in_progress,
+        tasks_today_plan,
+        tasks_due_today,
+        tasks_overdue,
+        suggested_tasks,
+        tasks_completed_today,
+    ] = await Promise.all([
+        serializeTasks(
             metrics.tasks_in_progress,
-            timezone
+            timezone,
+            {},
+            moveCountMap,
+            parentUidMap
         ),
-        tasks_today_plan: await serializeTasks(
+        serializeTasks(
             metrics.today_plan_tasks,
-            timezone
+            timezone,
+            {},
+            moveCountMap,
+            parentUidMap
         ),
-        tasks_due_today: await serializeTasks(
+        serializeTasks(
             metrics.tasks_due_today,
-            timezone
+            timezone,
+            {},
+            moveCountMap,
+            parentUidMap
         ),
-        tasks_overdue: await serializeTasks(metrics.tasks_overdue, timezone),
-        suggested_tasks: await serializeTasks(
+        serializeTasks(
+            metrics.tasks_overdue,
+            timezone,
+            {},
+            moveCountMap,
+            parentUidMap
+        ),
+        serializeTasks(
             metrics.suggested_tasks,
-            timezone
+            timezone,
+            {},
+            moveCountMap,
+            parentUidMap
         ),
-        tasks_completed_today: await serializeTasks(
+        serializeTasks(
             metrics.tasks_completed_today,
-            timezone
+            timezone,
+            {},
+            moveCountMap,
+            parentUidMap
         ),
+    ]);
+
+    const serializedLists = {
+        tasks_in_progress,
+        tasks_today_plan,
+        tasks_due_today,
+        tasks_overdue,
+        suggested_tasks,
+        tasks_completed_today,
     };
 
     Object.assign(response, serializedLists);

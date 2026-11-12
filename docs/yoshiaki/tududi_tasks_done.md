@@ -532,3 +532,36 @@
   - `storeType=undefined` で `OlmMachine.initialize()` してもSQLite作成は成功するが、プロセス終了時にRustの `tokio_runtime.rs` でパニックし `exit code 134` でabort
   - `machine.close()` を明示的に呼ぶことでパニックを回避できる
   - SQLite WALモードでクラッシュセーフだが、新パスへの移行が本質的な修正
+
+---
+
+## タスク24: 本家 v1.14.0 取り込み
+
+- **完了日**: 2026-11-11
+- **ブランチ**: `merge-upstream-v1.14.0`（本家 `0da352fb` = v1.14.0 をマージ）
+- **方針**:
+  - 本家 v2.0.0 以降は SQLite 廃止・PostgreSQL 専用のため、SQLite で動く最終 1.x の v1.14.0 までを取り込み
+  - コンフリクト 43 ファイル。本家が大きく作り直した画面は「本家版を採用し、独自機能を移植」で解消
+- **独自機能の扱い**:
+  | 独自機能 | 扱い |
+  |---|---|
+  | プロジェクト/ノート添付ファイル (PR#2, PR#4) | 本家が同スキーマで実装済み → **本家実装に移行**。独自の `modules/{projects,notes}/attachments.js`、`utils/{project,note}AttachmentsService.ts`、独自添付タブ UI を削除 |
+  | 添付の保存先 | `yoshiaki21-20261111000001-migrate-attachment-dirs.js` で `projects/`→`project-files/`、`notes/`→`note-files/` にコピー＋`file_path` 更新（旧ファイルは残すので Markdown 内の旧 URL も有効） |
+  | ノート UI (#15 ツールバー, #18 ダブルクリック編集) | 本家のノートエディタ（ツールバー・貼り付け/ドロップ添付付き）に置き換わったため**本家版を採用**。`NoteDetails.tsx` は本家で削除済み |
+  | ノート一覧はプロジェクト外のみ表示 | `Notes.tsx` の `sortedNotes` に再適用 |
+  | プロジェクト概要タブ (#12, #13) | 本家の新プロジェクト画面（ProjectHero＋右レール）に「概要」タブとして再実装。モーダルの説明欄は引き続き削除 |
+  | プロジェクトバナー期限表示 (#16) | 本家で `ProjectBanner` が未使用になり ProjectHero が期限を表示するため不要 |
+  | 工数・単価 (#10, PR#1) | モデル/サービス/一覧カード(EntityCard の details)/詳細右レール(WorkSummaryCard)/サイドパネル型 ProjectModal に再適用 |
+  | Matrix 通知 | 本家の `reminderSources`/`deliverySources` に `matrix` を追加して一元化。テスト通知 (`channel: 'matrix'`) と通知設定表の Matrix 列を追加 |
+  | タスクの作業時間入力 | 本家はタスクをクリックするとサイドパネル (`TaskModal`) が開き、詳細ページは `/task/<uid>/details` に移った（アプリ内リンク無し）。作業時間欄を `TaskModal` にも追加（Update で一括保存）。サブタスクもここで入力できる。サブタスクの時間は従来どおりプロジェクト合計に**含めない**（パネルに注記を表示） |
+  | ノートの添付一覧 | 本家は本文への埋め込みのみのため、`NoteEditorView` に「本文 / 添付ファイル」タブを追加し、本家の `AttachmentsPanel` ＋ `ownerAttachmentsApi('note', uid)` で一覧・アップロード・プレビュー・削除を復活（Notes ページとプロジェクトのノートサイドパネル共通） |
+  | コードブロックのコピー | 本家に同等機能（CodeBlock）があるため本家版を採用 |
+  | 孤立添付クリーンアップ (#17) | `cleanup` モジュール・StorageTab は維持（`file_path` ベースなので新保存先でも動作） |
+  | Docker | 本家の変更を取り込みつつ `node:22-trixie-slim` を維持。ボリュームは本家に合わせ `/app/db`・`/app/uploads`・`/app/backups` に変更（`./data` マウントは廃止） |
+- **検証 (2026-11-12, podman の builder ステージで実行)**:
+  - `npm install` で `package-lock.json` を再生成（matrix-bot-sdk 0.8.0 / crypto-nodejs 0.4.0）
+  - `npm run lint`: エラー 0（警告 12 件は本家のテストファイル）。独自ファイルの prettier 違反は `backend:lint:fix` で整形
+  - `tsc --noEmit`: OK
+  - backend テスト: 307 スイート全通過
+  - frontend テスト: 1054 件中 3 件失敗（MermaidDiagram / roleLabels / MarkdownRenderer.publicLinks）。**本家 v1.14.0 のままでも同じく失敗**することを確認済み（独自変更とは無関係）
+  - 試験環境 `tududi-backup/`（本番データのコピー）でコンテナ起動・マイグレーション成功を確認

@@ -36,7 +36,16 @@ function errorHandler(err, req, res, next) {
         });
     }
 
-    // Handle express-rate-limit trust proxy validation error
+    // The CSRF middleware (lusca) sets the response to 403 and passes on a plain
+    // Error, so without this the request would be answered as a server error.
+    if (/^CSRF token (missing|mismatch)$/.test(err.message)) {
+        return res.status(403).json({
+            error: err.message,
+            code: 'CSRF_ERROR',
+        });
+    }
+
+    // Handle express-rate-limit trust proxy validation errors
     if (err.code === 'ERR_ERL_UNEXPECTED_X_FORWARDED_FOR') {
         return res.status(500).json({
             error: 'Trust proxy configuration error',
@@ -44,6 +53,15 @@ function errorHandler(err, req, res, next) {
                 'X-Forwarded-For header detected but trust proxy is not configured. ' +
                 'Please set TUDUDI_TRUST_PROXY=true in your environment variables. ' +
                 'See documentation: https://github.com/chrisvel/tududi#reverse-proxy-setup',
+            code: 'TRUST_PROXY_ERROR',
+        });
+    }
+    if (err.code === 'ERR_ERL_PERMISSIVE_TRUST_PROXY') {
+        return res.status(500).json({
+            error: 'Trust proxy configuration error',
+            message:
+                'Express trust proxy is set to true, which is permissive. ' +
+                'Consider setting TUDUDI_TRUST_PROXY to a specific hop count (e.g. 1) instead of true.',
             code: 'TRUST_PROXY_ERROR',
         });
     }

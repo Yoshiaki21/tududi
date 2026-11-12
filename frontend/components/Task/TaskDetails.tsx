@@ -5,6 +5,7 @@ import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import ConfirmDialog from '../Shared/ConfirmDialog';
 import { Task } from '../../entities/Task';
 import { Project } from '../../entities/Project';
+import { Area } from '../../entities/Area';
 import {
     updateTask,
     deleteTask,
@@ -13,30 +14,44 @@ import {
     fetchSubtasks,
     TaskIteration,
     toggleTaskCompletion,
+    skipTaskOccurrence,
 } from '../../utils/tasksService';
 import { createProject } from '../../utils/projectsService';
 import { fetchAttachments } from '../../utils/attachmentsService';
+import { fetchComments } from '../../utils/commentsService';
 import { useStore } from '../../store/useStore';
 import { useToast } from '../Shared/ToastContext';
 import LoadingScreen from '../Shared/LoadingScreen';
 import TaskTimeline from './TaskTimeline';
+import TaskComments from './TaskComments';
 import {
     TaskDetailsHeader,
     TaskContentCard,
     TaskProjectCard,
+    TaskAreaCard,
     TaskTagsCard,
     TaskSubtasksCard,
+    TaskRelationsCard,
     TaskRecurrenceCard,
     TaskDueDateCard,
+    TaskStartDateCard,
     TaskDeferUntilCard,
+    TaskEstimateCard,
     TaskAttachmentsCard,
+    TaskAssignedToCard,
+    TaskGoalCard,
     TaskWorkHoursCard,
 } from './TaskDetails/';
+import TaskAIInsights, { TaskAIInsightsHandle } from '../AI/TaskAIInsights';
+import TaskModal from './TaskModal';
+import { resolveTaskTokens, tokenChanges } from '../../utils/taskTokens';
 import {
     isTaskOverdueInTodayPlan,
     isTaskPastDue,
     getTodayDateString,
 } from '../../utils/dateUtils';
+import { isTaskDone } from '../../constants/taskStatus';
+import { isStartAfterDue } from '../../utils/dueDateTime';
 
 const TaskDetails: React.FC = () => {
     const { uid } = useParams<{ uid: string }>();
@@ -46,6 +61,7 @@ const TaskDetails: React.FC = () => {
     const isNewTask = location.state?.isNew === true;
     const isNewTaskRef = useRef(isNewTask);
     const taskModifiedRef = useRef(false);
+    const hasFetchedRef = useRef<string | null>(null);
     const { showSuccessToast, showErrorToast } = useToast();
 
     // Clear navigation state so refresh/back doesn't re-trigger edit mode
@@ -65,7 +81,9 @@ const TaskDetails: React.FC = () => {
                 );
                 const store = useStore.getState();
                 store.tasksStore.setTasks(
-                    store.tasksStore.tasks.filter((t: Task) => t.uid !== taskUid)
+                    store.tasksStore.tasks.filter(
+                        (t: Task) => t.uid !== taskUid
+                    )
                 );
             }
         };
@@ -74,6 +92,8 @@ const TaskDetails: React.FC = () => {
     const projectsStore = useStore((state: any) => state.projectsStore);
     const tagsStore = useStore((state: any) => state.tagsStore);
     const tasksStore = useStore((state: any) => state.tasksStore);
+    const areasStore = useStore((state: any) => state.areasStore);
+    const goalsStore = useStore((state: any) => state.goalsStore);
     const task = useStore((state: any) =>
         state.tasksStore.tasks.find((t: Task) => t.uid === uid)
     );
@@ -83,6 +103,7 @@ const TaskDetails: React.FC = () => {
     const [loading, setLoading] = useState(!task);
     const [error, setError] = useState<string | null>(null);
     const [isConfirmDialogOpen, setIsConfirmDialogOpen] = useState(false);
+    const [isTaskPanelOpen, setIsTaskPanelOpen] = useState(false);
     const [taskToDelete, setTaskToDelete] = useState<Task | null>(null);
     const [timelineRefreshKey, setTimelineRefreshKey] = useState(0);
     const [isOverdueBubbleVisible, setIsOverdueBubbleVisible] = useState(false);
@@ -90,9 +111,20 @@ const TaskDetails: React.FC = () => {
     const [loadingIterations, setLoadingIterations] = useState(false);
     const [parentTask, setParentTask] = useState<Task | null>(null);
     const [loadingParent, setLoadingParent] = useState(false);
-    const [pendingSubtasks, setPendingSubtasks] = useState<Task[]>([]);
+    const [ancestorChain, setAncestorChain] = useState<
+        Array<{ uid: string; name: string }>
+    >([]);
     const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
     const actionsMenuRef = useRef<HTMLDivElement>(null);
+    const aiAssistantEnabled = useStore(
+        (state: any) => state.userSettingsStore.aiAssistantEnabled
+    );
+    const aiInsightsRef = useRef<TaskAIInsightsHandle>(null);
+    const [aiInsightsActive, setAiInsightsActive] = useState(false);
+
+    const handleAiInsightsClick = useCallback(() => {
+        aiInsightsRef.current?.activate();
+    }, []);
     const lastKnownSubtaskCount = useRef<number>(0);
     useEffect(() => {
         const handleClickOutside = (e: MouseEvent) => {
@@ -132,6 +164,16 @@ const TaskDetails: React.FC = () => {
     const [editedDueDate, setEditedDueDate] = useState<string>(
         task?.due_date || ''
     );
+    const [editedDueTime, setEditedDueTime] = useState<string>(
+        task?.due_has_time ? (task.due_time ?? '') : ''
+    );
+    const [isEditingStartDate, setIsEditingStartDate] = useState(false);
+    const [editedStartDate, setEditedStartDate] = useState<string>(
+        task?.start_date || ''
+    );
+    const [editedStartTime, setEditedStartTime] = useState<string>(
+        task?.start_time || ''
+    );
     const [isEditingDeferUntil, setIsEditingDeferUntil] = useState(false);
     const [editedDeferUntil, setEditedDeferUntil] = useState<string>(
         task?.defer_until || ''
@@ -149,11 +191,18 @@ const TaskDetails: React.FC = () => {
     });
     const [activePill, setActivePill] = useState('overview');
     const [attachmentCount, setAttachmentCount] = useState(0);
+    const [commentCount, setCommentCount] = useState(0);
     const [hasLoadedSubtasks, setHasLoadedSubtasks] = useState(false);
 
     useEffect(() => {
         setEditedDueDate(task?.due_date || '');
-    }, [task?.due_date]);
+        setEditedDueTime(task?.due_has_time ? (task.due_time ?? '') : '');
+    }, [task?.due_date, task?.due_time, task?.due_has_time]);
+
+    useEffect(() => {
+        setEditedStartDate(task?.start_date || '');
+        setEditedStartTime(task?.start_time || '');
+    }, [task?.start_date, task?.start_time]);
 
     useEffect(() => {
         setRecurrenceForm({
@@ -182,6 +231,18 @@ const TaskDetails: React.FC = () => {
             tagsStore.loadTags();
         }
     }, [tagsStore]);
+
+    useEffect(() => {
+        if (!areasStore.hasLoaded && !areasStore.isLoading) {
+            areasStore.loadAreas();
+        }
+    }, [areasStore]);
+
+    useEffect(() => {
+        if (!goalsStore.hasLoaded && !goalsStore.isLoading) {
+            goalsStore.loadGoals();
+        }
+    }, [goalsStore]);
 
     const handleStartRecurrenceEdit = () => {
         setRecurrenceForm({
@@ -248,7 +309,7 @@ const TaskDetails: React.FC = () => {
                 recurrence_weekday:
                     recurrenceForm.recurrence_type === 'weekly' ||
                     recurrenceForm.recurrence_type === 'monthly_weekday'
-                        ? recurrenceForm.recurrence_weekday ?? null
+                        ? (recurrenceForm.recurrence_weekday ?? null)
                         : null,
                 recurrence_weekdays:
                     recurrenceForm.recurrence_type === 'weekly'
@@ -256,11 +317,11 @@ const TaskDetails: React.FC = () => {
                         : null,
                 recurrence_month_day:
                     recurrenceForm.recurrence_type === 'monthly'
-                        ? recurrenceForm.recurrence_month_day ?? null
+                        ? (recurrenceForm.recurrence_month_day ?? null)
                         : null,
                 recurrence_week_of_month:
                     recurrenceForm.recurrence_type === 'monthly_weekday'
-                        ? recurrenceForm.recurrence_week_of_month ?? null
+                        ? (recurrenceForm.recurrence_week_of_month ?? null)
                         : null,
                 completion_based: recurrenceForm.completion_based,
             };
@@ -309,6 +370,7 @@ const TaskDetails: React.FC = () => {
 
     const handleStartDueDateEdit = () => {
         setEditedDueDate(task?.due_date || '');
+        setEditedDueTime(task?.due_has_time ? (task.due_time ?? '') : '');
         setIsEditingDueDate(true);
     };
 
@@ -319,7 +381,11 @@ const TaskDetails: React.FC = () => {
             return;
         }
 
-        if ((editedDueDate || '') === (task.due_date || '')) {
+        const currentDueTime = task.due_has_time ? (task.due_time ?? '') : '';
+        if (
+            (editedDueDate || '') === (task.due_date || '') &&
+            (editedDueTime || '') === currentDueTime
+        ) {
             setIsEditingDueDate(false);
             return;
         }
@@ -329,7 +395,10 @@ const TaskDetails: React.FC = () => {
             const dueDate = new Date(editedDueDate);
 
             if (!isNaN(deferDate.getTime()) && !isNaN(dueDate.getTime())) {
-                if (deferDate > dueDate) {
+                // Due dates are date-only; allow defer until any time on the same calendar day
+                const dueDateEndOfDay = new Date(dueDate);
+                dueDateEndOfDay.setUTCHours(23, 59, 59, 999);
+                if (deferDate > dueDateEndOfDay) {
                     showErrorToast(
                         t(
                             'task.dueDateBeforeDeferError',
@@ -339,6 +408,23 @@ const TaskDetails: React.FC = () => {
                     return;
                 }
             }
+        }
+
+        if (
+            isStartAfterDue(
+                task.start_date,
+                task.start_time,
+                editedDueDate,
+                editedDueTime
+            )
+        ) {
+            showErrorToast(
+                t(
+                    'task.startAfterDueError',
+                    'Start cannot be after the due date'
+                )
+            );
+            return;
         }
 
         if (editedDueDate) {
@@ -359,6 +445,7 @@ const TaskDetails: React.FC = () => {
             taskModifiedRef.current = true;
             await updateTask(task.uid, {
                 due_date: editedDueDate || null,
+                due_time: editedDueDate && editedDueTime ? editedDueTime : null,
             });
 
             if (uid) {
@@ -392,6 +479,82 @@ const TaskDetails: React.FC = () => {
     const handleCancelDueDateEdit = () => {
         setIsEditingDueDate(false);
         setEditedDueDate(task?.due_date || '');
+        setEditedDueTime(task?.due_has_time ? (task.due_time ?? '') : '');
+    };
+
+    const handleStartStartDateEdit = () => {
+        setEditedStartDate(task?.start_date || '');
+        setEditedStartTime(task?.start_time || '');
+        setIsEditingStartDate(true);
+    };
+
+    const handleCancelStartDateEdit = () => {
+        setIsEditingStartDate(false);
+        setEditedStartDate(task?.start_date || '');
+        setEditedStartTime(task?.start_time || '');
+    };
+
+    const handleSaveStartDate = async () => {
+        if (!task?.uid) {
+            handleCancelStartDateEdit();
+            return;
+        }
+
+        if (
+            (editedStartDate || '') === (task.start_date || '') &&
+            (editedStartTime || '') === (task.start_time || '')
+        ) {
+            setIsEditingStartDate(false);
+            return;
+        }
+
+        if (
+            isStartAfterDue(
+                editedStartDate,
+                editedStartTime,
+                task.due_date,
+                task.due_has_time ? task.due_time : null
+            )
+        ) {
+            showErrorToast(
+                t(
+                    'task.startAfterDueError',
+                    'Start cannot be after the due date'
+                )
+            );
+            return;
+        }
+
+        try {
+            taskModifiedRef.current = true;
+            await updateTask(task.uid, {
+                start_date: editedStartDate || null,
+                start_time:
+                    editedStartDate && editedStartTime ? editedStartTime : null,
+            });
+
+            if (uid) {
+                const updatedTask = await fetchTaskByUid(uid);
+                const existingIndex = tasksStore.tasks.findIndex(
+                    (t: Task) => t.uid === uid
+                );
+                if (existingIndex >= 0) {
+                    const updatedTasks = [...tasksStore.tasks];
+                    updatedTasks[existingIndex] = updatedTask;
+                    tasksStore.setTasks(updatedTasks);
+                }
+            }
+
+            showSuccessToast(t('task.startDateUpdated', 'Start date updated'));
+            setIsEditingStartDate(false);
+            setTimelineRefreshKey((prev) => prev + 1);
+        } catch (error) {
+            console.error('Error updating start date:', error);
+            showErrorToast(
+                t('task.startDateUpdateError', 'Failed to update start date')
+            );
+            handleCancelStartDateEdit();
+        }
     };
 
     const handleStartDeferUntilEdit = () => {
@@ -419,8 +582,10 @@ const TaskDetails: React.FC = () => {
                 // For recurring instances, skip strict frontend validation
                 // Backend will validate against parent's recurrence_end_date
                 if (!task.recurring_parent_id) {
-                    // Only validate for non-recurring tasks
-                    if (deferDate > dueDate) {
+                    // Due dates are date-only; allow any time on the same calendar day
+                    const dueDateEndOfDay = new Date(dueDate);
+                    dueDateEndOfDay.setUTCHours(23, 59, 59, 999);
+                    if (deferDate > dueDateEndOfDay) {
                         showErrorToast(
                             t(
                                 'task.deferAfterDueError',
@@ -483,22 +648,39 @@ const TaskDetails: React.FC = () => {
                 return;
             }
 
-            if (!task) {
-                try {
-                    setLoading(true);
-                    const fetchedTask = await fetchTaskByUid(uid);
+            if (hasFetchedRef.current === uid) {
+                return;
+            }
+
+            hasFetchedRef.current = uid;
+
+            const alreadyInStore = tasksStore.tasks.some(
+                (t: Task) => t.uid === uid
+            );
+
+            try {
+                if (!alreadyInStore) setLoading(true);
+                const fetchedTask = await fetchTaskByUid(uid);
+                const existingIndex = tasksStore.tasks.findIndex(
+                    (t: Task) => t.uid === uid
+                );
+                if (existingIndex >= 0) {
+                    const updatedTasks = [...tasksStore.tasks];
+                    updatedTasks[existingIndex] = fetchedTask;
+                    tasksStore.setTasks(updatedTasks);
+                } else {
                     tasksStore.setTasks([...tasksStore.tasks, fetchedTask]);
-                } catch (fetchError) {
-                    setError('Task not found');
-                    console.error('Error fetching task:', fetchError);
-                } finally {
-                    setLoading(false);
                 }
+            } catch (fetchError) {
+                if (!alreadyInStore) setError('Task not found');
+                console.error('Error fetching task:', fetchError);
+            } finally {
+                setLoading(false);
             }
         };
 
         fetchTaskData();
-    }, [uid, task, tasksStore]);
+    }, [uid, tasksStore]);
 
     useEffect(() => {
         const loadAttachmentCount = async () => {
@@ -516,13 +698,28 @@ const TaskDetails: React.FC = () => {
     }, [task?.uid]);
 
     useEffect(() => {
+        const loadCommentCount = async () => {
+            if (task?.uid) {
+                try {
+                    const comments = await fetchComments(task.uid);
+                    setCommentCount(comments.length);
+                } catch (error) {
+                    console.error('Error loading comment count:', error);
+                }
+            }
+        };
+
+        loadCommentCount();
+    }, [task?.uid]);
+
+    useEffect(() => {
         setHasLoadedSubtasks(false);
         lastKnownSubtaskCount.current = 0;
     }, [uid]);
 
     useEffect(() => {
         const loadSubtasks = async () => {
-            if (activePill !== 'subtasks' || !task?.uid) {
+            if (!task?.uid) {
                 return;
             }
 
@@ -558,11 +755,7 @@ const TaskDetails: React.FC = () => {
         };
 
         loadSubtasks();
-    }, [activePill, task?.uid, task?.subtasks, hasLoadedSubtasks, tasksStore]);
-
-    useEffect(() => {
-        setPendingSubtasks(subtasks);
-    }, [subtasks]);
+    }, [task?.uid, task?.subtasks, hasLoadedSubtasks, tasksStore]);
 
     useEffect(() => {
         const loadNextIterations = async () => {
@@ -640,6 +833,139 @@ const TaskDetails: React.FC = () => {
         loadParentTask();
     }, [task?.recurring_parent_uid]);
 
+    useEffect(() => {
+        if (!task?.parent_task?.uid) {
+            setAncestorChain([]);
+            return;
+        }
+
+        let cancelled = false;
+
+        const buildAncestorChain = async () => {
+            const chain: Array<{ uid: string; name: string }> = [
+                { uid: task.parent_task!.uid, name: task.parent_task!.name },
+            ];
+
+            let currentUid = task.parent_task!.uid;
+            for (let i = 0; i < 5; i++) {
+                try {
+                    const fetched = await fetchTaskByUid(currentUid);
+                    if (!fetched.parent_task?.uid) break;
+                    chain.unshift({
+                        uid: fetched.parent_task.uid,
+                        name: fetched.parent_task.name,
+                    });
+                    currentUid = fetched.parent_task.uid;
+                } catch {
+                    break;
+                }
+            }
+
+            if (!cancelled) setAncestorChain(chain);
+        };
+
+        buildAncestorChain();
+        return () => {
+            cancelled = true;
+        };
+    }, [task?.parent_task?.uid]);
+
+    const handleSubtaskUpdate = async (updatedSubtask: Task) => {
+        if (!updatedSubtask.uid) return;
+
+        try {
+            const savedSubtask = await updateTask(
+                updatedSubtask.uid,
+                updatedSubtask
+            );
+
+            const taskIndex = tasksStore.tasks.findIndex(
+                (t: Task) => t.uid === uid
+            );
+            if (taskIndex >= 0) {
+                const storeTask = tasksStore.tasks[taskIndex];
+                const updatedSubtasks = (storeTask.subtasks || []).map(
+                    (s: Task) =>
+                        s.id === savedSubtask.id ? { ...s, ...savedSubtask } : s
+                );
+                const updatedTasks = [...tasksStore.tasks];
+                updatedTasks[taskIndex] = {
+                    ...storeTask,
+                    subtasks: updatedSubtasks,
+                };
+                tasksStore.setTasks(updatedTasks);
+            }
+        } catch (error) {
+            console.error('Error updating subtask:', error);
+            showErrorToast(
+                t('task.statusUpdateError', 'Failed to update status')
+            );
+        }
+    };
+
+    const handleSubtaskDelete = async (taskUid: string) => {
+        try {
+            await deleteTask(taskUid);
+            const taskIndex = tasksStore.tasks.findIndex(
+                (t: Task) => t.uid === uid
+            );
+            if (taskIndex >= 0) {
+                const storeTask = tasksStore.tasks[taskIndex];
+                const updatedSubtasks = (storeTask.subtasks || []).filter(
+                    (s: Task) => s.uid !== taskUid
+                );
+                const updatedTasks = [...tasksStore.tasks];
+                updatedTasks[taskIndex] = {
+                    ...storeTask,
+                    subtasks: updatedSubtasks,
+                };
+                tasksStore.setTasks(updatedTasks);
+                lastKnownSubtaskCount.current = updatedSubtasks.length;
+            }
+            showSuccessToast(
+                t('task.deleteSuccess', 'Task deleted successfully')
+            );
+        } catch (error) {
+            console.error('Error deleting subtask:', error);
+            showErrorToast(t('task.deleteError', 'Failed to delete task'));
+        }
+    };
+
+    const handleRelationsChange = async () => {
+        if (!uid) return;
+        try {
+            const updatedTask = await fetchTaskByUid(uid);
+            const existingIndex = tasksStore.tasks.findIndex(
+                (t: Task) => t.uid === uid
+            );
+            if (existingIndex >= 0) {
+                const updatedTasks = [...tasksStore.tasks];
+                updatedTasks[existingIndex] = updatedTask;
+                tasksStore.setTasks(updatedTasks);
+            }
+            setTimelineRefreshKey((prev) => prev + 1);
+        } catch (error) {
+            console.error(
+                'Error refreshing task after relation change:',
+                error
+            );
+        }
+    };
+
+    const handleQuickAddSubtask = (name: string) => {
+        if (!task?.id) return;
+        const newSubtask = {
+            name,
+            status: 'not_started',
+            today: false,
+            parent_task_id: task.id,
+            _isNew: true,
+            isNew: true,
+            completed_at: null,
+        } as unknown as Task;
+        handleSaveSubtasks([...subtasks, newSubtask]);
+    };
+
     const handleSaveSubtasks = async (subtasksToSave: Task[]) => {
         if (!task?.uid) {
             return;
@@ -685,7 +1011,6 @@ const TaskDetails: React.FC = () => {
             showErrorToast(
                 t('task.subtasksUpdateError', 'Failed to update subtasks')
             );
-            setPendingSubtasks([...subtasks]);
         }
     };
 
@@ -839,6 +1164,49 @@ const TaskDetails: React.FC = () => {
         }
     };
 
+    const handleSkipOccurrence = async () => {
+        if (!task?.uid) {
+            return;
+        }
+
+        try {
+            taskModifiedRef.current = true;
+            const updatedTaskResponse = await skipTaskOccurrence(task.uid);
+            const mergedTask = {
+                ...task,
+                ...updatedTaskResponse,
+                subtasks: updatedTaskResponse.subtasks || task.subtasks || [],
+            };
+
+            if (uid) {
+                const existingIndex = tasksStore.tasks.findIndex(
+                    (t: Task) => t.uid === uid
+                );
+                if (existingIndex >= 0) {
+                    const updatedTasks = [...tasksStore.tasks];
+                    updatedTasks[existingIndex] = mergedTask;
+                    tasksStore.setTasks(updatedTasks);
+                }
+            }
+
+            await refreshRecurringSetup(mergedTask);
+            setTimelineRefreshKey((prev) => prev + 1);
+            showSuccessToast(t('task.occurrenceSkipped', 'Occurrence skipped'));
+        } catch (error) {
+            console.error('Error skipping occurrence:', error);
+            showErrorToast(
+                t('task.skipOccurrenceError', 'Failed to skip occurrence')
+            );
+        }
+    };
+
+    const canSkipOccurrence =
+        !!task &&
+        !!task.recurrence_type &&
+        task.recurrence_type !== 'none' &&
+        !task.recurring_parent_id &&
+        !isTaskDone(task.status);
+
     const handleStatusUpdate = async (newStatus: number) => {
         if (!task?.uid) return;
 
@@ -931,7 +1299,21 @@ const TaskDetails: React.FC = () => {
 
         try {
             taskModifiedRef.current = true;
-            await updateTask(task.uid, { name: newTitle.trim() });
+            const resolved = await resolveTaskTokens(
+                newTitle.trim(),
+                projectsStore.projects,
+                areasStore.areas,
+                task.tags?.map((tag: any) => tag.name) ?? []
+            );
+            const { changes, newTags } = tokenChanges(
+                newTitle.trim(),
+                resolved,
+                task.tags?.map((tag: any) => tag.name) ?? []
+            );
+            const existing = tagsStore.tags?.map((tag: any) => tag.name) ?? [];
+            const created = newTags.filter((name) => !existing.includes(name));
+            if (created.length > 0) tagsStore.addNewTags(created);
+            await updateTask(task.uid, changes as Partial<Task>);
 
             if (uid) {
                 const updatedTask = await fetchTaskByUid(uid);
@@ -1068,6 +1450,127 @@ const TaskDetails: React.FC = () => {
         }
     };
 
+    const handleAreaSelection = async (area: Area) => {
+        if (!task?.uid) return;
+
+        try {
+            taskModifiedRef.current = true;
+            await updateTask(task.uid, { area_id: area.id });
+
+            if (uid) {
+                const updatedTask = await fetchTaskByUid(uid);
+                tasksStore.updateTaskInStore(updatedTask);
+            }
+
+            showSuccessToast(
+                t('task.areaUpdated', 'Area updated successfully')
+            );
+            setTimelineRefreshKey((prev) => prev + 1);
+        } catch (error) {
+            console.error('Error updating area:', error);
+            showErrorToast(t('task.areaUpdateError', 'Failed to update area'));
+        }
+    };
+
+    const handleClearArea = async () => {
+        if (!task?.uid) return;
+
+        try {
+            taskModifiedRef.current = true;
+            await updateTask(task.uid, { area_id: null });
+
+            if (uid) {
+                const updatedTask = await fetchTaskByUid(uid);
+                tasksStore.updateTaskInStore(updatedTask);
+            }
+
+            showSuccessToast(
+                t('task.areaCleared', 'Area cleared successfully')
+            );
+            setTimelineRefreshKey((prev) => prev + 1);
+        } catch (error) {
+            console.error('Error clearing area:', error);
+            showErrorToast(t('task.areaClearError', 'Failed to clear area'));
+        }
+    };
+
+    const handleGoalSelection = async (goal: any) => {
+        if (!task?.uid) return;
+        try {
+            taskModifiedRef.current = true;
+            await updateTask(task.uid, { goal_id: goal.id });
+            if (uid) {
+                const updatedTask = await fetchTaskByUid(uid);
+                tasksStore.updateTaskInStore(updatedTask);
+            }
+            showSuccessToast(t('task.goalUpdated', 'Goal updated'));
+            setTimelineRefreshKey((prev) => prev + 1);
+        } catch (error) {
+            console.error('Error updating goal:', error);
+            showErrorToast(t('task.goalUpdateError', 'Failed to update goal'));
+        }
+    };
+
+    const handleClearGoal = async () => {
+        if (!task?.uid) return;
+        try {
+            taskModifiedRef.current = true;
+            await updateTask(task.uid, { goal_id: null });
+            if (uid) {
+                const updatedTask = await fetchTaskByUid(uid);
+                tasksStore.updateTaskInStore(updatedTask);
+            }
+            showSuccessToast(t('task.goalCleared', 'Goal cleared'));
+            setTimelineRefreshKey((prev) => prev + 1);
+        } catch (error) {
+            console.error('Error clearing goal:', error);
+            showErrorToast(t('task.goalClearError', 'Failed to clear goal'));
+        }
+    };
+
+    const handleEstimateChange = async (minutes: number | null) => {
+        if (!task?.uid) return;
+        try {
+            taskModifiedRef.current = true;
+            await updateTask(task.uid, { estimated_minutes: minutes });
+            if (uid) {
+                const updatedTask = await fetchTaskByUid(uid);
+                tasksStore.updateTaskInStore(updatedTask);
+            }
+        } catch (error) {
+            console.error('Error updating estimate:', error);
+            showErrorToast(
+                t('task.estimateError', 'Failed to update the estimate')
+            );
+        }
+    };
+
+    const handleAssignPerson = async (personUid: string | null) => {
+        if (!task?.uid) return;
+        try {
+            taskModifiedRef.current = true;
+            await updateTask(task.uid, { assigned_to: personUid });
+            if (uid) {
+                const updatedTask = await fetchTaskByUid(uid);
+                tasksStore.updateTaskInStore(updatedTask);
+            }
+        } catch (error) {
+            console.error('Error assigning person:', error);
+            showErrorToast('Failed to update assignment');
+        }
+    };
+
+    const getAreaLink = (area: Area) => {
+        if (area.uid) {
+            const slug = area.name
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-|-$/g, '');
+            return `/area/${area.uid}-${slug}`;
+        }
+        return `/area/${area.id}`;
+    };
+
     const handleTagsUpdate = async (tags: string[]) => {
         if (!task?.uid) {
             return;
@@ -1177,7 +1680,7 @@ const TaskDetails: React.FC = () => {
     }
 
     return (
-        <div className="px-4 lg:px-6 pt-4">
+        <div className="px-2 sm:px-4 lg:px-6 pt-4">
             <div className="w-full">
                 <TaskDetailsHeader
                     task={task}
@@ -1185,6 +1688,9 @@ const TaskDetails: React.FC = () => {
                     onStatusUpdate={handleStatusUpdate}
                     onPriorityUpdate={handlePriorityUpdate}
                     onDelete={handleDeleteClick}
+                    onSkipOccurrence={
+                        canSkipOccurrence ? handleSkipOccurrence : undefined
+                    }
                     getProjectLink={getProjectLink}
                     getTagLink={getTagLink}
                     activePill={activePill}
@@ -1195,10 +1701,31 @@ const TaskDetails: React.FC = () => {
                     isOverdueAlertVisible={isOverdue && isOverdueBubbleVisible}
                     onDismissOverdueAlert={handleDismissOverdueAlert}
                     onQuickStatusToggle={handleCompletionToggle}
+                    onAiInsightsClick={
+                        aiAssistantEnabled ? handleAiInsightsClick : undefined
+                    }
+                    aiInsightsActive={aiInsightsActive}
                     attachmentCount={attachmentCount}
-                    subtasksCount={subtasks.length}
+                    commentCount={commentCount}
                     autoEditTitle={isNewTask}
+                    ancestorChain={ancestorChain}
+                    onEdit={() => setIsTaskPanelOpen(true)}
                 />
+
+                {aiAssistantEnabled && (
+                    <div className="mb-4 mt-6">
+                        <TaskAIInsights
+                            ref={aiInsightsRef}
+                            task={task}
+                            project={
+                                projectsStore.projects.find(
+                                    (p: any) => p.id === task.project_id
+                                ) || null
+                            }
+                            onActiveChange={setAiInsightsActive}
+                        />
+                    </div>
+                )}
 
                 <div className="mb-6 mt-6">
                     {activePill === 'overview' && (
@@ -1209,18 +1736,67 @@ const TaskDetails: React.FC = () => {
                                     taskUid={task.uid}
                                     onUpdate={handleContentUpdate}
                                 />
+                                <TaskSubtasksCard
+                                    subtasks={subtasks}
+                                    projects={projectsStore.projects}
+                                    onSubtaskUpdate={handleSubtaskUpdate}
+                                    onSubtaskDelete={handleSubtaskDelete}
+                                    onQuickAdd={handleQuickAddSubtask}
+                                />
+                                <TaskRelationsCard
+                                    taskUid={task.uid}
+                                    onRelationsChange={handleRelationsChange}
+                                />
+                                <TaskRecurrenceCard
+                                    task={task}
+                                    parentTask={parentTask}
+                                    loadingParent={loadingParent}
+                                    isEditing={isEditingRecurrence}
+                                    recurrenceForm={recurrenceForm}
+                                    onStartEdit={handleStartRecurrenceEdit}
+                                    onChange={handleRecurrenceChange}
+                                    onSave={handleSaveRecurrence}
+                                    onCancel={handleCancelRecurrenceEdit}
+                                    loadingIterations={loadingIterations}
+                                    nextIterations={nextIterations}
+                                    canEdit={!task.recurring_parent_id}
+                                />
                             </div>
 
                             <div className="space-y-6">
                                 <TaskProjectCard
                                     task={task}
-                                    projects={projectsStore.projects}
+                                    projects={projectsStore.projects.filter(
+                                        (p: Project) =>
+                                            p.status !== 'done' &&
+                                            p.status !== 'cancelled'
+                                    )}
                                     onProjectSelect={handleProjectSelection}
                                     onProjectClear={handleClearProject}
                                     onProjectCreate={
                                         handleProjectCreateInlineWrapper
                                     }
                                     getProjectLink={getProjectLink}
+                                />
+
+                                <TaskAreaCard
+                                    task={task}
+                                    areas={areasStore.areas}
+                                    onAreaSelect={handleAreaSelection}
+                                    onAreaClear={handleClearArea}
+                                    getAreaLink={getAreaLink}
+                                />
+
+                                <TaskGoalCard
+                                    task={task}
+                                    goals={goalsStore.goals}
+                                    onGoalSelect={handleGoalSelection}
+                                    onGoalClear={handleClearGoal}
+                                />
+
+                                <TaskAssignedToCard
+                                    task={task}
+                                    onAssign={handleAssignPerson}
                                 />
 
                                 <TaskTagsCard
@@ -1238,11 +1814,25 @@ const TaskDetails: React.FC = () => {
                                     onUpdate={handleWorkHoursUpdate}
                                 />
 
+                                <TaskStartDateCard
+                                    task={task}
+                                    isEditing={isEditingStartDate}
+                                    editedStartDate={editedStartDate}
+                                    onChangeDate={setEditedStartDate}
+                                    editedStartTime={editedStartTime}
+                                    onChangeTime={setEditedStartTime}
+                                    onStartEdit={handleStartStartDateEdit}
+                                    onSave={handleSaveStartDate}
+                                    onCancel={handleCancelStartDateEdit}
+                                />
+
                                 <TaskDueDateCard
                                     task={task}
                                     isEditing={isEditingDueDate}
                                     editedDueDate={editedDueDate}
                                     onChangeDate={setEditedDueDate}
+                                    editedDueTime={editedDueTime}
+                                    onChangeTime={setEditedDueTime}
                                     onStartEdit={handleStartDueDateEdit}
                                     onSave={handleSaveDueDate}
                                     onCancel={handleCancelDueDateEdit}
@@ -1257,37 +1847,12 @@ const TaskDetails: React.FC = () => {
                                     onSave={handleSaveDeferUntil}
                                     onCancel={handleCancelDeferUntilEdit}
                                 />
+
+                                <TaskEstimateCard
+                                    task={task}
+                                    onChange={handleEstimateChange}
+                                />
                             </div>
-                        </div>
-                    )}
-
-                    {activePill === 'recurrence' && (
-                        <div className="grid grid-cols-1">
-                            <TaskRecurrenceCard
-                                task={task}
-                                parentTask={parentTask}
-                                loadingParent={loadingParent}
-                                isEditing={isEditingRecurrence}
-                                recurrenceForm={recurrenceForm}
-                                onStartEdit={handleStartRecurrenceEdit}
-                                onChange={handleRecurrenceChange}
-                                onSave={handleSaveRecurrence}
-                                onCancel={handleCancelRecurrenceEdit}
-                                loadingIterations={loadingIterations}
-                                nextIterations={nextIterations}
-                                canEdit={!task.recurring_parent_id}
-                            />
-                        </div>
-                    )}
-
-                    {activePill === 'subtasks' && (
-                        <div className="grid grid-cols-1">
-                            <TaskSubtasksCard
-                                task={task}
-                                subtasks={pendingSubtasks}
-                                onSubtasksChange={setPendingSubtasks}
-                                onSave={handleSaveSubtasks}
-                            />
                         </div>
                     )}
 
@@ -1296,6 +1861,15 @@ const TaskDetails: React.FC = () => {
                             <TaskAttachmentsCard
                                 taskUid={task.uid}
                                 onAttachmentsCountChange={setAttachmentCount}
+                            />
+                        </div>
+                    )}
+
+                    {activePill === 'comments' && (
+                        <div className="rounded-lg shadow-sm bg-white dark:bg-gray-900 border-2 border-gray-50 dark:border-gray-800 p-6">
+                            <TaskComments
+                                task={task}
+                                onCommentCountChange={setCommentCount}
                             />
                         </div>
                     )}
@@ -1309,6 +1883,14 @@ const TaskDetails: React.FC = () => {
                         </div>
                     )}
                 </div>
+
+                {task && (
+                    <TaskModal
+                        isOpen={isTaskPanelOpen}
+                        onClose={() => setIsTaskPanelOpen(false)}
+                        task={task}
+                    />
+                )}
 
                 {isConfirmDialogOpen && taskToDelete && (
                     <ConfirmDialog

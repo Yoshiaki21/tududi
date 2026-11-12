@@ -33,11 +33,16 @@ const getCronExpression = (frequency) => {
         deferred_tasks: '*/5 * * * *',
         due_tasks: '*/15 * * * *',
         due_projects: '*/15 * * * *',
+        task_reminders: '* * * * *',
+        habit_reminders: '*/5 * * * *',
+        account_lifecycle: '0 3 * * *',
+        webhook_deliveries: '* * * * *',
+        webhook_summaries: '*/5 * * * *',
     };
     return expressions[frequency];
 };
 
-const createJobHandler = (frequency) => async () => {
+const runJob = async (frequency) => {
     if (frequency === 'cleanup_tokens') {
         await cleanupExpiredTokens();
     } else if (frequency === 'deferred_tasks') {
@@ -46,9 +51,35 @@ const createJobHandler = (frequency) => async () => {
         await processDueTasks();
     } else if (frequency === 'due_projects') {
         await processDueProjects();
+    } else if (frequency === 'account_lifecycle') {
+        const {
+            runAccountLifecycle,
+        } = require('../../services/trialLifecycleService');
+        await runAccountLifecycle();
+    } else if (frequency === 'task_reminders') {
+        const { checkTaskReminders } = require('./taskReminderService');
+        await checkTaskReminders();
+    } else if (frequency === 'habit_reminders') {
+        const {
+            checkHabitReminders,
+        } = require('../habits/habitReminderService');
+        await checkHabitReminders();
+    } else if (frequency === 'webhook_deliveries') {
+        const { processDue } = require('../webhooks/dispatcher');
+        await processDue();
+    } else if (frequency === 'webhook_summaries') {
+        const { sendDueSummaries } = require('../webhooks/summary');
+        await sendDueSummaries();
     } else {
         await processSummariesForFrequency(frequency);
     }
+};
+
+// Each tick takes a per-job lock so that with several app processes only
+// one of them sends the summaries or notifications for that tick.
+const createJobHandler = (frequency) => async () => {
+    const { withJobLock } = require('../../services/jobLock');
+    await withJobLock(`task-scheduler:${frequency}`, () => runJob(frequency));
 };
 
 const createJobEntries = () => {
@@ -65,6 +96,11 @@ const createJobEntries = () => {
         'deferred_tasks',
         'due_tasks',
         'due_projects',
+        'task_reminders',
+        'habit_reminders',
+        'account_lifecycle',
+        'webhook_deliveries',
+        'webhook_summaries',
     ];
 
     return frequencies.map((frequency) => {
@@ -134,15 +170,19 @@ const processSummariesForFrequency = async (frequency) => {
 };
 
 const cleanupExpiredTokens = async () => {
-    try {
-        const {
-            cleanupExpiredTokens: cleanup,
-        } = require('./registrationService');
-        const count = await cleanup();
-        return count;
-    } catch (error) {
-        throw error;
-    }
+    const {
+        cleanupExpiredTokens: cleanup,
+    } = require('../auth/registrationService');
+    const count = await cleanup();
+
+    const {
+        cleanupExpiredRateLimits,
+    } = require('../../middleware/rateLimitStore');
+    await cleanupExpiredRateLimits();
+
+    await require('../../services/visitService').prune();
+
+    return count;
 };
 
 const processDeferredTasks = async () => {

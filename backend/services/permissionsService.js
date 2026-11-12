@@ -1,44 +1,182 @@
 const { Op } = require('sequelize');
-const { Project, Task, Note, Permission } = require('../models');
+const { Project, Task, Note, Area, Goal, Person } = require('../models');
 const { isAdmin } = require('./rolesService');
+const permissionSources = require('./permissionSources');
 
 const ACCESS = { NONE: 'none', RO: 'ro', RW: 'rw', ADMIN: 'admin' };
 
 async function getSharedUidsForUser(resourceType, userId) {
-    const rows = await Permission.findAll({
-        where: { user_id: userId, resource_type: resourceType },
-        attributes: ['resource_uid'],
-        raw: true,
-    });
+    const rows = await permissionSources.findAccepted(
+        { user_id: userId, resource_type: resourceType },
+        ['resource_uid']
+    );
     const set = new Set(rows.map((r) => r.resource_uid));
     return Array.from(set);
 }
 
+const RESOURCE_MODELS = {
+    project: Project,
+    task: Task,
+    note: Note,
+    area: Area,
+    goal: Goal,
+};
+
+// The uids of every Person record that points at this user's account (normally
+// just their self-person). A task assigned to any of these is "assigned to me".
+async function getMyPersonUids(userId) {
+    const rows = await Person.findAll({
+        where: { linked_user_id: userId },
+        attributes: ['uid'],
+        raw: true,
+    });
+    return rows.map((r) => r.uid);
+}
+
+// Ids of the areas the user owns, and of the areas shared with them that they
+// accepted. The owner of an area reaches every project in it (restricted ones
+// too); both reach the tasks filed straight into the area without a project.
+async function getOwnedAreaIds(userId) {
+    const rows = await Area.findAll({
+        where: { user_id: userId },
+        attributes: ['id'],
+        raw: true,
+    });
+    return rows.map((r) => r.id);
+}
+
+async function getAccessibleAreaIds(userId) {
+    const [ownedIds, sharedUids] = await Promise.all([
+        getOwnedAreaIds(userId),
+        getSharedUidsForUser('area', userId),
+    ]);
+    if (sharedUids.length === 0) return ownedIds;
+    const shared = await Area.findAll({
+        where: { uid: { [Op.in]: sharedUids } },
+        attributes: ['id'],
+        raw: true,
+    });
+    return Array.from(new Set([...ownedIds, ...shared.map((a) => a.id)]));
+}
+
+// Access to a task filed straight into an area, without a project: the area
+// owner has full access, anyone the area is shared with gets their level.
+async function looseAreaAccess(userId, areaId) {
+    if (!areaId) return ACCESS.NONE;
+    const area = await Area.findOne({
+        where: { id: areaId },
+        attributes: ['uid', 'user_id'],
+        raw: true,
+    });
+    if (!area) return ACCESS.NONE;
+    if (area.user_id === userId) return ACCESS.RW;
+    const level = await permissionSources.findAcceptedAccessLevel(
+        userId,
+        'area',
+        area.uid
+    );
+    return level || ACCESS.NONE;
+}
+
+// The tasks that are the user's own work: ones they own and ones assigned to
+// them. Personal views (Today, Upcoming, the plan and its suggestions, the
+// brief) AND this with the visible-tasks where, so everything else in a shared
+// project or area stays on its own page instead of filling everyone's day.
+async function myWorkWhere(userId) {
+    const myPersonUids = await getMyPersonUids(userId);
+    const conditions = [{ user_id: userId }];
+    if (myPersonUids.length > 0) {
+        conditions.push({ assigned_to: { [Op.in]: myPersonUids } });
+    }
+    return { [Op.or]: conditions };
+}
+
+// Whether the resource row still exists, regardless of who may read it.
+// Used to tell "gone" apart from "not yours" when access is denied.
+async function resourceExists(resourceType, resourceUid) {
+    const model = RESOURCE_MODELS[resourceType];
+    if (!model || !resourceUid) return false;
+
+    const row = await model.findOne({
+        where: { uid: resourceUid },
+        attributes: ['id'],
+        raw: true,
+    });
+    return !!row;
+}
+
 async function getAccess(userId, resourceType, resourceUid) {
-    if (await isAdmin(userId)) return ACCESS.ADMIN;
+    // A loose task's access through its area, kept so a direct share can
+    // still raise it below.
+    let looseAccess = ACCESS.NONE;
+
+    // Admins get no blanket access to other users' resources: they are scoped
+    // like regular users and use the dedicated admin endpoints instead (same
+    // rule as ownershipOrPermissionWhere below).
 
     // ownership via model
     if (resourceType === 'project') {
         const proj = await Project.findOne({
             where: { uid: resourceUid },
-            attributes: ['user_id'],
+            attributes: ['user_id', 'area_id'],
             raw: true,
         });
         if (!proj) return ACCESS.NONE;
         if (proj.user_id === userId) return ACCESS.RW;
+        if (proj.area_id) {
+            const area = await Area.findOne({
+                where: { id: proj.area_id },
+                attributes: ['user_id'],
+                raw: true,
+            });
+            if (area && area.user_id === userId) return ACCESS.RW;
+        }
     } else if (resourceType === 'task') {
         const t = await Task.findOne({
             where: { uid: resourceUid },
-            attributes: ['user_id', 'project_id'],
+            attributes: [
+                'user_id',
+                'project_id',
+                'area_id',
+                'parent_task_id',
+                'assigned_to',
+            ],
             raw: true,
         });
         if (!t) return ACCESS.NONE;
         if (t.user_id === userId) return ACCESS.RW;
 
+        // A task assigned to the caller is theirs to act on, wherever it lives.
+        if (t.assigned_to) {
+            const myPersonUids = await getMyPersonUids(userId);
+            if (myPersonUids.includes(t.assigned_to)) return ACCESS.RW;
+        }
+
+        // Subtasks don't always carry their own project_id, so walk up the
+        // parent chain to find the project (or an owning ancestor) they
+        // belong to (#1425).
+        let projectId = t.project_id;
+        let current = t;
+        while (!projectId && current.parent_task_id) {
+            current = await Task.findOne({
+                where: { id: current.parent_task_id },
+                attributes: [
+                    'user_id',
+                    'project_id',
+                    'area_id',
+                    'parent_task_id',
+                ],
+                raw: true,
+            });
+            if (!current) break;
+            if (current.user_id === userId) return ACCESS.RW;
+            projectId = current.project_id;
+        }
+
         // Check if user has access through the parent project
-        if (t.project_id) {
+        if (projectId) {
             const project = await Project.findOne({
-                where: { id: t.project_id },
+                where: { id: projectId },
                 attributes: ['uid'],
                 raw: true,
             });
@@ -52,6 +190,11 @@ async function getAccess(userId, resourceType, resourceUid) {
                     return projectAccess; // Inherit access from project
                 }
             }
+        } else if (current) {
+            // No project anywhere up the chain: a task filed straight into an
+            // area is shared with that area.
+            looseAccess = await looseAreaAccess(userId, current.area_id);
+            if (looseAccess === ACCESS.RW) return ACCESS.RW;
         }
     } else if (resourceType === 'note') {
         const n = await Note.findOne({
@@ -80,19 +223,32 @@ async function getAccess(userId, resourceType, resourceUid) {
                 }
             }
         }
+    } else if (resourceType === 'area') {
+        const area = await Area.findOne({
+            where: { uid: resourceUid },
+            attributes: ['user_id'],
+            raw: true,
+        });
+        if (!area) return ACCESS.NONE;
+        if (area.user_id === userId) return ACCESS.RW;
+    } else if (resourceType === 'goal') {
+        const goal = await Goal.findOne({
+            where: { uid: resourceUid },
+            attributes: ['user_id'],
+            raw: true,
+        });
+        if (!goal) return ACCESS.NONE;
+        if (goal.user_id === userId) return ACCESS.RW;
     }
 
     // shared
-    const perm = await Permission.findOne({
-        where: {
-            user_id: userId,
-            resource_type: resourceType,
-            resource_uid: resourceUid,
-        },
-        attributes: ['access_level'],
-        raw: true,
-    });
-    return perm ? perm.access_level : ACCESS.NONE;
+    const level = await permissionSources.findAcceptedAccessLevel(
+        userId,
+        resourceType,
+        resourceUid
+    );
+    if (level === ACCESS.RW) return ACCESS.RW;
+    return level || looseAccess;
 }
 
 async function ownershipOrPermissionWhere(resourceType, userId, cache = null) {
@@ -128,11 +284,20 @@ async function ownershipOrPermissionWhere(resourceType, userId, cache = null) {
     if (resourceType === 'task' || resourceType === 'note') {
         const sharedProjectUids = await getSharedUidsForUser('project', userId);
 
-        // Get the project IDs for shared projects
-        let sharedProjectIds = [];
+        // Get the project IDs for shared projects, and for every project
+        // kept in an area the user owns
+        const ownedAreaIds = await getOwnedAreaIds(userId);
+        const projectWhere = [];
         if (sharedProjectUids.length > 0) {
+            projectWhere.push({ uid: { [Op.in]: sharedProjectUids } });
+        }
+        if (ownedAreaIds.length > 0) {
+            projectWhere.push({ area_id: { [Op.in]: ownedAreaIds } });
+        }
+        let sharedProjectIds = [];
+        if (projectWhere.length > 0) {
             const projects = await Project.findAll({
-                where: { uid: { [Op.in]: sharedProjectUids } },
+                where: { [Op.or]: projectWhere },
                 attributes: ['id'],
                 raw: true,
             });
@@ -151,20 +316,44 @@ async function ownershipOrPermissionWhere(resourceType, userId, cache = null) {
             conditions.push({ project_id: { [Op.in]: sharedProjectIds } }); // Items in shared projects
         }
 
+        // Tasks assigned to the caller show up even when they own nothing else
+        // in the task's project.
+        if (resourceType === 'task') {
+            const myPersonUids = await getMyPersonUids(userId);
+            if (myPersonUids.length > 0) {
+                conditions.push({ assigned_to: { [Op.in]: myPersonUids } });
+            }
+
+            // Tasks filed straight into an area the user owns or shares
+            const areaIds = await getAccessibleAreaIds(userId);
+            if (areaIds.length > 0) {
+                conditions.push({
+                    project_id: null,
+                    area_id: { [Op.in]: areaIds },
+                });
+            }
+        }
+
         const result = { [Op.or]: conditions };
         if (cache) cache.set(cacheKey, result);
         return result;
     }
 
     // For other resource types (projects, etc.), use the original logic
-    const result = {
-        [Op.or]: [
-            { user_id: userId },
-            sharedUids.length
-                ? { uid: { [Op.in]: sharedUids } }
-                : { uid: null },
-        ],
-    };
+    const conditions = [
+        { user_id: userId },
+        sharedUids.length ? { uid: { [Op.in]: sharedUids } } : { uid: null },
+    ];
+
+    // The owner of an area sees every project kept in it
+    if (resourceType === 'project') {
+        const ownedAreaIds = await getOwnedAreaIds(userId);
+        if (ownedAreaIds.length > 0) {
+            conditions.push({ area_id: { [Op.in]: ownedAreaIds } });
+        }
+    }
+
+    const result = { [Op.or]: conditions };
     if (cache) cache.set(cacheKey, result);
     return result;
 }
@@ -172,6 +361,11 @@ async function ownershipOrPermissionWhere(resourceType, userId, cache = null) {
 module.exports = {
     ACCESS,
     getAccess,
+    getOwnedAreaIds,
+    getAccessibleAreaIds,
+    myWorkWhere,
+    resourceExists,
     ownershipOrPermissionWhere,
     getSharedUidsForUser,
+    getMyPersonUids,
 };

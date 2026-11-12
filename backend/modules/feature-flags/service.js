@@ -5,16 +5,16 @@ class FeatureFlagsService {
      * Get all feature flags.
      */
     getAll() {
+        const { getConfig } = require('../../config/config');
+        const hosted = getConfig().hosted || {};
         return {
-            backups: process.env.FF_ENABLE_BACKUPS === 'true',
-            calendar: process.env.FF_ENABLE_CALENDAR === 'true',
-            caldav:
-                process.env.FF_ENABLE_CALDAV === 'true' ||
-                process.env.CALDAV_ENABLED === 'true',
-            habits: process.env.FF_ENABLE_HABITS === 'true',
-            mcp: process.env.FF_ENABLE_MCP === 'true',
+            hosted: hosted.enabled === true,
+            billing: require('../billing/providers').isBillingConfigured(),
+            telegram: getConfig().telegramEnabled === true,
         };
     }
 }
 
-module.exports = new FeatureFlagsService();
+const featureFlagsService = new FeatureFlagsService();
+
+module.exports = featureFlagsService;

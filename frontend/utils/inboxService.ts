@@ -1,8 +1,110 @@
 import { InboxItem } from '../entities/InboxItem';
+import { InboxAttachment } from '../entities/Attachment';
+import { Task, RecurrenceType } from '../entities/Task';
 import { useStore } from '../store/useStore';
 import { handleAuthResponse, getPostHeadersWithCsrf } from './authUtils';
 import { getApiPath } from '../config/paths';
 import { getCsrfToken } from './csrfService';
+import { createArea } from './areasService';
+
+export interface InboxRecurrence {
+    recurrence_type: RecurrenceType;
+    recurrence_interval?: number;
+    recurrence_weekday?: number;
+    recurrence_weekdays?: number[];
+    recurrence_month_day?: number;
+    recurrence_week_of_month?: number;
+}
+
+export interface InboxAnalysis {
+    parsed_tags: string[];
+    parsed_projects: string[];
+    cleaned_content: string;
+    parsed_due_date: string | null;
+    parsed_due_time: string | null;
+    parsed_reminder_at: string | null;
+    parsed_date_text: string | null;
+    parsed_recurrence: InboxRecurrence | null;
+    parsed_person: string | null;
+    parsed_assignee: { uid: string; name: string } | null;
+    // A ~Area in the text. uid is null for a name that is no area yet; it
+    // is created when the item is saved (see ensureAnalysisArea).
+    parsed_area: { uid: string | null; name: string } | null;
+    suggested_type: 'task' | 'note' | null;
+    suggested_reason: string | null;
+}
+
+// Relative dates in an older inbox item ("tomorrow") resolve against
+// referenceDate, so pass the item's created_at when converting it.
+export const analyzeInboxText = async (
+    content: string,
+    options: { referenceDate?: string; parseDates?: boolean } = {}
+): Promise<InboxAnalysis> => {
+    const response = await fetch(getApiPath('inbox/analyze-text'), {
+        method: 'POST',
+        credentials: 'include',
+        headers: await getPostHeadersWithCsrf(),
+        body: JSON.stringify({
+            content,
+            reference_date: options.referenceDate,
+            parse_dates: options.parseDates,
+        }),
+    });
+    await handleAuthResponse(response, 'Failed to analyze text.');
+    return response.json();
+};
+
+// An unknown ~Name is created when the item is saved, the way a new #tag
+// or +project is, so the task can be put in it.
+export const ensureAnalysisArea = async (
+    analysis: InboxAnalysis | null
+): Promise<InboxAnalysis | null> => {
+    const ref = analysis?.parsed_area;
+    if (!analysis || !ref || ref.uid) return analysis;
+    const created = await createArea({ name: ref.name });
+    const { areasStore } = useStore.getState();
+    areasStore.setAreas([...(areasStore.areas ?? []), created]);
+    return {
+        ...analysis,
+        parsed_area: { uid: created.uid, name: created.name },
+    };
+};
+
+// Copy the parsed due date, recurrence, assignee and ~area onto a task draft.
+export const applyAnalysisToTask = (
+    task: Task,
+    analysis: InboxAnalysis | null | undefined
+): Task => {
+    if (!analysis) return task;
+    const next: Task = { ...task };
+    if (analysis.parsed_due_date) {
+        next.due_date = analysis.parsed_due_date;
+        if (analysis.parsed_due_time) {
+            next.due_time = analysis.parsed_due_time;
+            next.due_has_time = true;
+        }
+    }
+    if (analysis.parsed_reminder_at) {
+        next.reminder_at = analysis.parsed_reminder_at;
+    }
+    if (analysis.parsed_recurrence) {
+        Object.assign(next, analysis.parsed_recurrence);
+    }
+    if (analysis.parsed_assignee) {
+        next.assigned_to = analysis.parsed_assignee.uid;
+    }
+    if (analysis.parsed_area?.uid) {
+        // The task modal edits the area by id; the API accepts either.
+        const area = useStore
+            .getState()
+            .areasStore?.areas?.find(
+                (entry) => entry.uid === analysis.parsed_area?.uid
+            );
+        next.area_uid = analysis.parsed_area.uid;
+        if (area?.id !== undefined) next.area_id = area.id;
+    }
+    return next;
+};
 
 // API functions
 export const fetchInboxItems = async (
@@ -83,14 +185,24 @@ export const updateInboxItem = async (
     return await response.json();
 };
 
-export const processInboxItem = async (itemUid: string): Promise<InboxItem> => {
+// What an item became when it was processed. The item's files move onto it.
+export type ProcessedInto =
+    { task_uid: string } | { project_uid: string } | { note_uid: string };
+
+export const processInboxItem = async (
+    itemUid: string,
+    into?: ProcessedInto
+): Promise<InboxItem> => {
     const response = await fetch(getApiPath(`inbox/${itemUid}/process`), {
         method: 'PATCH',
         credentials: 'include',
-        headers: {
-            Accept: 'application/json',
-            'x-csrf-token': await getCsrfToken(),
-        },
+        headers: into
+            ? await getPostHeadersWithCsrf()
+            : {
+                  Accept: 'application/json',
+                  'x-csrf-token': await getCsrfToken(),
+              },
+        body: into ? JSON.stringify(into) : undefined,
     });
 
     await handleAuthResponse(response, 'Failed to process inbox item.');
@@ -128,7 +240,8 @@ export const loadInboxItemsToStore = async (
 
     try {
         // Load the requested number of items (for pagination preservation)
-        const { items, pagination } = await fetchInboxItems(requestedCount, 0);
+        const result = await fetchInboxItems(requestedCount, 0);
+        const { items, pagination } = result;
 
         // Check for new items since last check (only for non-initial loads)
         if (!isInitialLoad) {
@@ -244,12 +357,13 @@ export const updateInboxItemWithStore = async (
 };
 
 export const processInboxItemWithStore = async (
-    itemUid: string
+    itemUid: string,
+    into?: ProcessedInto
 ): Promise<InboxItem> => {
     const inboxStore = useStore.getState().inboxStore;
 
     try {
-        const processedItem = await processInboxItem(itemUid);
+        const processedItem = await processInboxItem(itemUid, into);
         inboxStore.removeInboxItemByUid(itemUid);
         return processedItem;
     } catch (error) {
@@ -271,3 +385,30 @@ export const deleteInboxItemWithStore = async (
         throw error;
     }
 };
+
+export const uploadInboxAttachment = async (
+    itemUid: string,
+    file: File
+): Promise<InboxAttachment> => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(getApiPath(`inbox/${itemUid}/attachments`), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'x-csrf-token': await getCsrfToken() },
+        body: formData,
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to upload attachment');
+    }
+    return await response.json();
+};
+
+export const getInboxAttachmentDownloadUrl = (
+    itemUid: string,
+    attachmentUid: string
+): string =>
+    getApiPath(`inbox/${itemUid}/attachments/${attachmentUid}/download`);

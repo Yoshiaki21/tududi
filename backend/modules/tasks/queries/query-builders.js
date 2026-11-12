@@ -1,17 +1,34 @@
-const { Task, Tag, Project, sequelize } = require('../../../models');
+const {
+    Task,
+    Tag,
+    Project,
+    Area,
+    Person,
+    sequelize,
+} = require('../../../models');
 const { Op, QueryTypes } = require('sequelize');
 const permissionsService = require('../../../services/permissionsService');
+const scopeService = require('../../../services/scopeService');
+const { blockedCondition } = require('../relations/service');
+const { customOrderClause } = require('../order/service');
 const {
     getSafeTimezone,
     getUpcomingRangeInUTC,
     getTodayBoundsInUTC,
 } = require('../../../utils/timezone-utils');
 
+// `page` ({ limit, offset }) switches to database pagination: the result is
+// then { rows, count } instead of an array. Callers that post-process the
+// list in memory (today, upcoming by day) must not pass it.
+// `scope` is an already-resolved scopeService scope; without it the
+// area_uid / project_uid / tags params are resolved here.
 async function filterTasksByParams(
     params,
     userId,
     userTimezone,
-    permissionCache = null
+    permissionCache = null,
+    page = null,
+    scope = undefined
 ) {
     const ownedOrShared = await permissionsService.ownershipOrPermissionWhere(
         'task',
@@ -22,43 +39,16 @@ async function filterTasksByParams(
         params = { ...params };
         delete params.search;
     }
+    const includeSubtasks =
+        params.include_subtasks === true || params.include_subtasks === 'true';
     let whereClause = {
-        parent_task_id: null,
+        ...(includeSubtasks ? {} : { parent_task_id: null }),
     };
 
     whereClause[Op.or] = [
-        {
-            [Op.and]: [
-                {
-                    [Op.or]: [
-                        { recurrence_type: 'none' },
-                        { recurrence_type: null },
-                        { recurrence_type: '' },
-                    ],
-                },
-                { recurring_parent_id: null },
-            ],
-        },
-        {
-            [Op.and]: [
-                { recurrence_type: { [Op.ne]: 'none' } },
-                { recurrence_type: { [Op.ne]: null } },
-                { recurrence_type: { [Op.ne]: '' } },
-                { recurring_parent_id: null },
-                {
-                    [Op.or]: [
-                        { due_date: null },
-                        {
-                            due_date: {
-                                [Op.gte]: new Date(
-                                    new Date().setHours(0, 0, 0, 0)
-                                ),
-                            },
-                        },
-                    ],
-                },
-            ],
-        },
+        // Recurring parents keep their due date until completed, so a missed
+        // one stays listed as overdue instead of dropping out the next day.
+        { recurring_parent_id: null },
         {
             [Op.and]: [
                 { recurring_parent_id: { [Op.ne]: null } },
@@ -80,7 +70,7 @@ async function filterTasksByParams(
     let includeClause = [
         {
             model: Tag,
-            attributes: ['id', 'name', 'uid'],
+            attributes: ['id', 'name', 'uid', 'color'],
             through: { attributes: [] },
         },
         {
@@ -89,12 +79,17 @@ async function filterTasksByParams(
             required: false,
         },
         {
+            model: Area,
+            attributes: ['id', 'name', 'uid', 'color'],
+            required: false,
+        },
+        {
             model: Task,
             as: 'Subtasks',
             include: [
                 {
                     model: Tag,
-                    attributes: ['id', 'name', 'uid'],
+                    attributes: ['id', 'name', 'uid', 'color'],
                     through: { attributes: [] },
                     required: false,
                 },
@@ -102,9 +97,15 @@ async function filterTasksByParams(
             required: false,
             separate: true, // Required for order to work with associations
             order: [
-                ['order', 'ASC'],
+                ['order', 'ASC NULLS FIRST'],
                 ['created_at', 'ASC'],
             ],
+        },
+        {
+            model: Person,
+            as: 'AssignedTo',
+            attributes: ['uid', 'name', 'color', 'relationship_type'],
+            required: false,
         },
     ];
 
@@ -119,9 +120,6 @@ async function filterTasksByParams(
                 Task.STATUS.IN_PROGRESS,
                 Task.STATUS.WAITING,
                 Task.STATUS.PLANNED,
-                'in_progress',
-                'waiting',
-                'planned',
             ];
 
             // Exclude tasks deferred to the future
@@ -182,7 +180,7 @@ async function filterTasksByParams(
             const upcomingRange = getUpcomingRangeInUTC(safeTimezone, 7);
 
             whereClause = {
-                parent_task_id: null,
+                ...(includeSubtasks ? {} : { parent_task_id: null }),
                 [Op.or]: [
                     {
                         // Non-recurring tasks with due dates in the next 7 days
@@ -237,40 +235,34 @@ async function filterTasksByParams(
 
             if (params.status === 'done' || params.status === 'completed') {
                 whereClause.status = {
-                    [Op.in]: [
-                        Task.STATUS.DONE,
-                        Task.STATUS.ARCHIVED,
-                        'done',
-                        'archived',
-                    ],
+                    [Op.in]: [Task.STATUS.DONE, Task.STATUS.ARCHIVED],
                 };
             } else if (params.status === 'active') {
                 whereClause.status = {
                     [Op.notIn]: [
                         Task.STATUS.DONE,
                         Task.STATUS.ARCHIVED,
-                        'done',
-                        'archived',
+                        Task.STATUS.CANCELLED,
                     ],
                 };
             } else if (!params.client_side_filtering) {
-                whereClause.status = { [Op.notIn]: [Task.STATUS.DONE, 'done'] };
+                whereClause.status = { [Op.notIn]: [Task.STATUS.DONE] };
             }
             break;
         }
         case 'next':
             whereClause.due_date = null;
             whereClause.project_id = null;
-            whereClause.status = { [Op.notIn]: [Task.STATUS.DONE, 'done'] };
+            whereClause.status = { [Op.notIn]: [Task.STATUS.DONE] };
             break;
         case 'inbox':
             whereClause[Op.or] = [{ due_date: null }, { project_id: null }];
-            whereClause.status = { [Op.notIn]: [Task.STATUS.DONE, 'done'] };
+            whereClause.status = { [Op.notIn]: [Task.STATUS.DONE] };
             break;
         case 'someday':
             whereClause.recurring_parent_id = null;
             whereClause.due_date = null;
-            whereClause.status = { [Op.notIn]: [Task.STATUS.DONE, 'done'] };
+            whereClause.status = { [Op.notIn]: [Task.STATUS.DONE] };
             break;
         case 'waiting':
             whereClause.status = Task.STATUS.WAITING;
@@ -278,24 +270,20 @@ async function filterTasksByParams(
         case 'all':
             if (params.status === 'done' || params.status === 'completed') {
                 whereClause.status = {
-                    [Op.in]: [
-                        Task.STATUS.DONE,
-                        Task.STATUS.ARCHIVED,
-                        'done',
-                        'archived',
-                    ],
+                    [Op.in]: [Task.STATUS.DONE, Task.STATUS.ARCHIVED],
                 };
             } else if (params.status === 'active') {
                 whereClause.status = {
                     [Op.notIn]: [
                         Task.STATUS.DONE,
                         Task.STATUS.ARCHIVED,
-                        'done',
-                        'archived',
+                        Task.STATUS.CANCELLED,
                     ],
                 };
+            } else if (params.status === 'all') {
+                // No status filter - return tasks of all statuses
             } else if (!params.client_side_filtering) {
-                whereClause.status = { [Op.notIn]: [Task.STATUS.DONE, 'done'] };
+                whereClause.status = { [Op.notIn]: [Task.STATUS.DONE] };
             }
             break;
         default:
@@ -304,26 +292,20 @@ async function filterTasksByParams(
             }
             if (params.status === 'done' || params.status === 'completed') {
                 whereClause.status = {
-                    [Op.in]: [
-                        Task.STATUS.DONE,
-                        Task.STATUS.ARCHIVED,
-                        'done',
-                        'archived',
-                    ],
+                    [Op.in]: [Task.STATUS.DONE, Task.STATUS.ARCHIVED],
                 };
             } else if (params.status === 'active') {
                 whereClause.status = {
                     [Op.notIn]: [
                         Task.STATUS.DONE,
                         Task.STATUS.ARCHIVED,
-                        'done',
-                        'archived',
+                        Task.STATUS.CANCELLED,
                     ],
                 };
             } else if (params.status === 'all') {
-                // No status filter — return tasks of all statuses
+                // No status filter - return tasks of all statuses
             } else if (!params.client_side_filtering) {
-                whereClause.status = { [Op.notIn]: [Task.STATUS.DONE, 'done'] };
+                whereClause.status = { [Op.notIn]: [Task.STATUS.DONE] };
             }
     }
 
@@ -343,6 +325,7 @@ async function filterTasksByParams(
         const [orderColumn, orderDirection = 'asc'] =
             params.order_by.split(':');
         const allowedColumns = [
+            'custom',
             'created_at',
             'updated_at',
             'name',
@@ -356,15 +339,12 @@ async function filterTasksByParams(
             throw new Error('Invalid order column specified.');
         }
 
-        if (orderColumn === 'due_date') {
+        if (orderColumn === 'custom') {
+            orderClause = customOrderClause(userId);
+        } else if (orderColumn === 'due_date') {
+            // Undated tasks always sort after dated ones, whichever direction
             orderClause = [
-                [
-                    sequelize.literal(
-                        'CASE WHEN Task.due_date IS NULL THEN 1 ELSE 0 END'
-                    ),
-                    'ASC',
-                ],
-                ['due_date', orderDirection.toUpperCase()],
+                ['due_date', `${orderDirection.toUpperCase()} NULLS LAST`],
             ];
         } else {
             orderClause = [[orderColumn, orderDirection.toUpperCase()]];
@@ -397,13 +377,91 @@ async function filterTasksByParams(
         };
     }
 
+    // Opt-in only: a task is blocked while any task that blocks it is still
+    // open. Default lists are unaffected.
+    if (params.blocked !== undefined && params.blocked !== '') {
+        const wantBlocked =
+            params.blocked === true || params.blocked === 'true';
+        whereClause[Op.and] = [
+            ...(Array.isArray(whereClause[Op.and]) ? whereClause[Op.and] : []),
+            blockedCondition(wantBlocked),
+        ];
+    }
+
+    // area_uid / project_uid / tags narrow the list to a scope (see
+    // scopeService): an area includes the tasks of its projects, a project
+    // must sit in the area, tags must all be present. The numeric id params
+    // keep their plain column match.
+    const resolvedScope =
+        scope === undefined
+            ? await scopeService.resolveScope(params, userId)
+            : scope;
+    const scopeWhere = await scopeService.taskScopeWhere(resolvedScope);
+    if (scopeWhere) {
+        whereClause[Op.and] = [
+            ...(Array.isArray(whereClause[Op.and]) ? whereClause[Op.and] : []),
+            scopeWhere,
+        ];
+    }
+    if (!params.project_uid && params.project_id) {
+        whereClause.project_id = params.project_id;
+    }
+    if (!params.area_uid && params.area_id) {
+        whereClause.area_id = params.area_id;
+    }
+
+    if (params.assigned_to) {
+        if (params.assigned_to === 'me') {
+            const myPersonUids =
+                await permissionsService.getMyPersonUids(userId);
+            if (myPersonUids.length === 0) {
+                return page ? { rows: [], count: 0 } : [];
+            }
+            whereClause.assigned_to = { [Op.in]: myPersonUids };
+        } else {
+            whereClause.assigned_to = params.assigned_to;
+        }
+    }
+
     const finalWhereClause = {
         [Op.and]: [ownedOrShared, whereClause],
     };
+    if (params.type === 'today' || params.type === 'upcoming') {
+        finalWhereClause[Op.and].push(
+            await permissionsService.myWorkWhere(userId)
+        );
+    }
+
+    // CAST keeps the count numeric on PostgreSQL, where COUNT(*) is a bigint
+    // that the driver would otherwise return as a string (matches the
+    // tags_count pattern in modules/tags/repository.js). Deleted comments
+    // are tombstones, not removed, so they are excluded here the same way
+    // the client excludes them from its own "N comments" badge.
+    const commentsCountAttribute = [
+        sequelize.literal(
+            'CAST((SELECT COUNT(*) FROM comments WHERE comments.task_id = "Task"."id" AND comments.deleted_at IS NULL) AS INTEGER)'
+        ),
+        'comments_count',
+    ];
+
+    if (page) {
+        const { rows, count } = await Task.findAndCountAll({
+            where: finalWhereClause,
+            include: includeClause,
+            attributes: { include: [commentsCountAttribute] },
+            order: orderClause,
+            distinct: true,
+            col: 'id',
+            limit: page.limit,
+            offset: page.offset,
+        });
+        return { rows, count };
+    }
 
     return await Task.findAll({
         where: finalWhereClause,
         include: includeClause,
+        attributes: { include: [commentsCountAttribute] },
         order: orderClause,
         distinct: true,
     });
@@ -413,7 +471,7 @@ function getTaskIncludeConfig() {
     return [
         {
             model: Tag,
-            attributes: ['id', 'name', 'uid'],
+            attributes: ['id', 'name', 'uid', 'color'],
             through: { attributes: [] },
             required: false,
         },
@@ -423,12 +481,17 @@ function getTaskIncludeConfig() {
             required: false,
         },
         {
+            model: Area,
+            attributes: ['id', 'name', 'uid', 'color'],
+            required: false,
+        },
+        {
             model: Task,
             as: 'Subtasks',
             include: [
                 {
                     model: Tag,
-                    attributes: ['id', 'name', 'uid'],
+                    attributes: ['id', 'name', 'uid', 'color'],
                     through: { attributes: [] },
                     required: false,
                 },
@@ -436,9 +499,15 @@ function getTaskIncludeConfig() {
             required: false,
             separate: true, // Required for order to work with associations
             order: [
-                ['order', 'ASC'],
+                ['order', 'ASC NULLS FIRST'],
                 ['created_at', 'ASC'],
             ],
+        },
+        {
+            model: Person,
+            as: 'AssignedTo',
+            attributes: ['uid', 'name', 'color', 'relationship_type'],
+            required: false,
         },
     ];
 }
@@ -448,13 +517,18 @@ function getTaskIncludeConfigLight() {
     return [
         {
             model: Tag,
-            attributes: ['id', 'name', 'uid'],
+            attributes: ['id', 'name', 'uid', 'color'],
             through: { attributes: [] },
             required: false,
         },
         {
             model: Project,
             attributes: ['id', 'name', 'status', 'uid'],
+            required: false,
+        },
+        {
+            model: Area,
+            attributes: ['id', 'name', 'uid', 'color'],
             required: false,
         },
     ];

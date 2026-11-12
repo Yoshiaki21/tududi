@@ -1,0 +1,170 @@
+import React from 'react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import '@testing-library/jest-dom';
+import { MemoryRouter } from 'react-router-dom';
+import CandidateList from '../CandidateList';
+import { PlanCandidates } from '../../../utils/dailyPlanService';
+import { useTaskPanel } from '../../../store/taskPanelStore';
+
+jest.mock('react-i18next', () => {
+    const t = (
+        _key: string,
+        fallback: string | Record<string, unknown>,
+        values?: Record<string, unknown>
+    ) => {
+        const options = typeof fallback === 'object' ? fallback : values;
+        const text =
+            typeof fallback === 'string'
+                ? fallback
+                : String(fallback?.defaultValue ?? _key);
+        return text.replace(/{{(\w+)}}/g, (_m, name) =>
+            String(options?.[name] ?? '')
+        );
+    };
+    const value = { t, i18n: { language: 'en' } };
+    return { useTranslation: () => value };
+});
+
+const task = (uid: string, name: string, extra = {}) =>
+    ({ uid, name, status: 'not_started', ...extra }) as any;
+
+const candidates: PlanCandidates = {
+    tagged_today: [],
+    overdue: [task('t-late', 'Renew insurance', { due_date: '2026-09-20' })],
+    due_today: [task('t-today', 'Pay rent')],
+    in_progress: [task('t-started', 'Draft report')],
+    suggested: [task('t-idea', 'Sort photos')],
+    inbox: [],
+    inbox_count: 0,
+};
+
+const renderList = (
+    list: PlanCandidates = candidates,
+    extra: Partial<React.ComponentProps<typeof CandidateList>> = {}
+) =>
+    render(
+        <MemoryRouter initialEntries={['/today/plan']}>
+            <CandidateList
+                {...extra}
+                candidates={list}
+                planned={new Map()}
+                filter="all"
+                onFilterChange={jest.fn()}
+                durations={{}}
+                onDurationChange={jest.fn()}
+                onAdd={jest.fn()}
+                onRemove={jest.fn()}
+                onReschedule={jest.fn()}
+                onDrop={jest.fn()}
+                onAddInbox={jest.fn()}
+                today="2026-09-25"
+            />
+        </MemoryRouter>
+    );
+
+describe('CandidateList', () => {
+    it('shows overdue, due today, in progress, then the rest', () => {
+        renderList();
+        const names = screen
+            .getAllByTestId(/^candidate-open-/)
+            .map((link) => link.textContent);
+        expect(names).toEqual([
+            'Renew insurance',
+            'Pay rent',
+            'Draft report',
+            'Sort photos',
+        ]);
+    });
+
+    it('follows the ranking order from the server', () => {
+        renderList({
+            ...candidates,
+            ranked: ['t-idea', 't-late', 't-started', 't-today'],
+        });
+        const names = screen
+            .getAllByTestId(/^candidate-open-/)
+            .map((link) => link.textContent);
+        expect(names).toEqual([
+            'Sort photos',
+            'Renew insurance',
+            'Draft report',
+            'Pay rent',
+        ]);
+    });
+
+    it('puts tasks tagged #today first, labelled as such', () => {
+        renderList({
+            ...candidates,
+            tagged_today: [task('t-tagged', 'Call the bank')],
+        });
+        const names = screen
+            .getAllByTestId(/^candidate-open-/)
+            .map((link) => link.textContent);
+        expect(names[0]).toBe('Call the bank');
+        expect(screen.getByTestId('candidate-t-tagged')).toHaveTextContent(
+            'Tagged #today'
+        );
+    });
+
+    it('shows five at a time and keeps asking the server for more', () => {
+        const onLoadMore = jest.fn();
+        const suggested = Array.from({ length: 8 }, (_, i) =>
+            task(`t-s${i}`, `Idea ${i}`)
+        );
+        renderList(
+            { ...candidates, suggested, suggested_total: 30 },
+            { onLoadMore }
+        );
+        expect(screen.getAllByTestId(/^candidate-open-/)).toHaveLength(5);
+        const more = screen.getByTestId('candidates-show-more');
+        expect(more).toHaveTextContent('Show 5 more');
+
+        fireEvent.click(more);
+        expect(screen.getAllByTestId(/^candidate-open-/)).toHaveLength(10);
+        // One page left locally, so the next page is fetched ahead of time.
+        expect(onLoadMore).toHaveBeenCalledTimes(1);
+
+        // Eleven loaded, 19 still on the server: the button stays.
+        fireEvent.click(screen.getByTestId('candidates-show-more'));
+        expect(screen.getAllByTestId(/^candidate-open-/)).toHaveLength(11);
+        expect(screen.getByTestId('candidates-show-more')).toHaveTextContent(
+            'Show 5 more'
+        );
+        expect(onLoadMore).toHaveBeenCalledTimes(2);
+    });
+
+    it('hides Show more once everything has loaded and been shown', () => {
+        const onLoadMore = jest.fn();
+        const suggested = Array.from({ length: 3 }, (_, i) =>
+            task(`t-s${i}`, `Idea ${i}`)
+        );
+        renderList(
+            { ...candidates, suggested, suggested_total: 3 },
+            { onLoadMore }
+        );
+        fireEvent.click(screen.getByTestId('candidates-show-more'));
+        expect(screen.getAllByTestId(/^candidate-open-/)).toHaveLength(6);
+        expect(
+            screen.queryByTestId('candidates-show-more')
+        ).not.toBeInTheDocument();
+        expect(onLoadMore).not.toHaveBeenCalled();
+    });
+
+    it('shows Loading while the next page is on its way', () => {
+        renderList(
+            { ...candidates, suggested_total: 40 },
+            { onLoadMore: jest.fn(), loadingMore: true }
+        );
+        const more = screen.getByTestId('candidates-show-more');
+        expect(more).toBeDisabled();
+        expect(more).toHaveTextContent('Loading...');
+    });
+
+    it('opens the task in the side panel when its name is clicked', () => {
+        renderList();
+        fireEvent.click(
+            screen.getByRole('button', { name: 'Renew insurance' })
+        );
+        expect(useTaskPanel.getState().uid).toBe('t-late');
+    });
+});

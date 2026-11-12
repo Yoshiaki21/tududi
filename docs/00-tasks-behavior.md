@@ -33,6 +33,14 @@ This document explains how tasks work in tududi from a user behavior perspective
    - Telegram bot
    - API
 
+### Opening a Task
+
+- Clicking a task anywhere in the app (lists, Today and the plan, search, notifications, the calendar, the Everyone board, parent links) opens it in the side panel over the current page. Habits still open their own page.
+- A task link, `/task/:uid`, opens all tasks with that task in the side panel. The link icon next to a task's title copies it.
+- The panel form saves name, description, status, priority, project, area, start, due, tags, assignee, defer until and recurrence together on Update. Subtasks, attachments and comments save as soon as they change. Relations stay on the full task page, which is at `/task/:uid/details`.
+- The description is Markdown, with Edit and Preview buttons; a written note opens in preview.
+- With a dropdown open, Escape or a click outside closes the dropdown; the panel stays open.
+
 ---
 
 ## **Task Fields & Properties**
@@ -46,7 +54,7 @@ This document explains how tasks work in tududi from a user behavior perspective
 
 6. **Task note is for detailed information**
    - Optional text field for longer descriptions
-   - Supports plain text (no markdown formatting)
+   - Supports Markdown, with Edit and Preview buttons
    - Useful for context, instructions, or reference materials
 
 ### Status Lifecycle
@@ -94,6 +102,14 @@ This document explains how tasks work in tududi from a user behavior perspective
     - Overdue tasks appear in "Overdue" section on Today page
     - Due today tasks appear in "Suggested" section (if not in Planned status)
     - No automatic status changes when due date passes
+
+### Start Date
+
+- **Start date is optional:** when work on the task begins. Pick a day, and optionally a time.
+- **Whole-day starts** are stored as the start of that day in the user's timezone; a time is stored as that moment.
+- **API:** `start_date` (YYYY-MM-DD) and `start_time` (HH:mm), both in the user's timezone. Changing `start_date` alone drops the time; sending `start_time` alone keeps the day. `start_date: null` clears it.
+- **Start cannot be after the due date** in the web UI (a whole-day due date lasts until the end of its day). The API does not enforce this.
+- **Different from Defer Until:** the start does not hide the task. It places the task on timelines.
 
 ### Defer Until
 
@@ -151,6 +167,43 @@ This document explains how tasks work in tududi from a user behavior perspective
 
 ---
 
+## **Task Relations**
+
+### Linking Tasks
+
+Any task can be linked to another task, in a different project or none, from the **Relations** card on the task detail page (search for a task, pick a type, add).
+
+| You choose | The other task shows |
+|------------|----------------------|
+| Blocks | Blocked by |
+| Blocked by | Blocks |
+| Related to | Related to |
+| Duplicates | Duplicated by |
+| Duplicated by | Duplicates |
+
+- One row is stored per link and the other side is derived, so removing a link from either task removes it for both
+- A task cannot be linked to itself, the same link cannot be added twice, and a circular blocking chain (A blocks B blocks A) is refused
+- You need edit access to both tasks. Linked tasks you cannot read are not shown, and never reveal their name
+- Deleting a task removes its links. Link changes appear in the activity timeline of both tasks
+
+### Blocked Tasks
+
+- A task is **blocked** while any task that blocks it is still open (not done, archived or cancelled). This is derived on read: completing the blocker unblocks the task, with nothing to clear
+- Blocked tasks show a "Blocked" badge in lists
+- Completing a blocked task is allowed. The UI asks for confirmation first, and the MCP `complete_task` result carries a warning
+- Blocked state never hides a task: Today, Upcoming, Next and Inbox are unchanged
+- To list them, open `/tasks?type=all&blocked=true`, or `blocked=false` for tasks with no open blocker. The API (`GET /api/tasks?blocked=true`) and the MCP `list_tasks` tool accept the same filter
+
+### API
+
+- `GET /api/task/:uid/relations`
+- `POST /api/task/:uid/relations` with `{ "target_uid": "...", "type": "blocks" }`
+- `DELETE /api/task/:uid/relations/:relationUid`
+
+Task responses include `is_blocked` and `blocked_by_count`. Names of blockers come only from the relations endpoint, which checks the viewer's access.
+
+---
+
 ## **Attachments**
 
 ### File Uploads
@@ -161,11 +214,9 @@ This document explains how tasks work in tududi from a user behavior perspective
     - Stored in `/uploads/tasks/` directory
 
 23. **Allowed file types:**
-    - Images: jpg, jpeg, png, gif, webp, svg
-    - Documents: pdf, doc, docx, xls, xlsx, ppt, pptx
-    - Text: txt, md, csv
-    - Archives: zip, tar, gz
-    - Other common formats
+    - Any file type can be attached
+    - Images (jpg, jpeg, png, gif, webp) and PDFs can be previewed inline, and text files are previewed as plain text
+    - Types other than jpg, jpeg, png, gif, webp, pdf, doc, docx, xls, xlsx, txt, md, csv and zip are stored with a neutral `.bin` extension and always served as downloads, so a browser never renders them (e.g. an uploaded `.html` or `.svg` can't run scripts). They keep their original name when downloaded.
 
 24. **Attachment metadata:**
     - Original filename is preserved in database
@@ -178,6 +229,7 @@ This document explains how tasks work in tududi from a user behavior perspective
     - Can be downloaded by anyone with read access to the task
     - Deleting attachment removes file from disk
     - Deleting task removes all attachments and their files
+    - Files on an Inbox item move onto the task when the item is converted to a task
 
 ---
 
@@ -201,6 +253,19 @@ This document explains how tasks work in tududi from a user behavior perspective
     - Can remove task from project (makes it standalone)
     - Subtasks inherit parent task's project
     - Changing parent's project doesn't automatically update subtasks
+
+### Goal Assignment
+
+29. **Tasks can be directly assigned to a goal:**
+    - Optional `goal_id` field links the task to a specific goal
+    - Independent of any project — a task's goal and its project's goal are separate fields
+    - Set via the **Goal** card in the Task detail page sidebar (below the Area card)
+    - When a goal is deleted, `goal_id` is set to `null` on all tasks that referenced it
+
+30. **Goal assignment effects:**
+    - The task appears in the Goal detail page's Tasks section
+    - Useful for tracking work-toward-a-goal that doesn't fit inside a project
+    - No permission changes — goal access follows the task's normal permissions
 
 ---
 
@@ -265,6 +330,25 @@ This document explains how tasks work in tududi from a user behavior perspective
 
 ---
 
+## **Comments**
+
+1. **Anyone who can read the task can comment** - Read-only collaborators included; no access answers 404
+2. **Body** - Plain text, trimmed, up to 10,000 characters. Pasted images show inside the comment and are not listed under Attachments
+3. **Replies are one level deep** - You can reply to a comment but not to a reply (`Cannot reply to a reply`)
+4. **@mentions** - The composer inserts people you can assign to; mentioned people are stored as person uids and resolved to names when comments are listed
+5. **Reactions** - One reaction per person per comment, `like` or `dislike`; sending `null` removes yours. Counts come back as `likes_count` / `dislikes_count` with your own `my_reaction`
+6. **Deleting is soft and author-only** - Only the author can delete; the row keeps its place with `deleted_at` set and the body and mentions cleared, and the UI shows a "Comment deleted" placeholder so replies stay in context. Deleted comments cannot be replied to or reacted to
+7. **Notifications** (`comment_added`, `mention`, subject to each person's notification preferences, optionally also sent to Telegram):
+   - The author of the parent comment gets "replied to your comment"
+   - The task owner and the assignee get "commented on <task>"
+   - Each mentioned person gets "mentioned you"
+   - Nobody is notified twice for one comment, and never for their own comment
+   - A failed notification never fails the comment
+
+**Endpoints:** `GET`/`POST /api/task/:uid/comments` (post takes `body`, optional `mentioned_person_uids` and `parent_comment_uid`), `DELETE /api/comment/:uid`, `POST /api/comment/:uid/reaction` (takes `type`), `POST /api/task/:uid/comments/images` (multipart `file`).
+
+---
+
 ## **Task Events & History**
 
 ### Activity Tracking
@@ -301,27 +385,23 @@ This document explains how tasks work in tududi from a user behavior perspective
     - Different from recurring tasks (habits focus on streak tracking)
     - Example: "Exercise 3 times per week"
 
-41. **Habit properties:**
-    - **Target count:** How many times per period (e.g., 3 times)
-    - **Frequency period:** daily, weekly, or monthly
-    - **Streak mode:**
-      - Calendar: Count consecutive days
-      - Scheduled: Count consecutive completions on scheduled days
-    - **Flexibility mode:**
-      - Strict: Must complete on exact schedule
-      - Flexible: Can complete within the period
+41. **Habit properties:** see [Habits](21-habits.md) for the full rules.
+    - **Type:** build (do it) or quit (avoid it, e.g. "no sugar")
+    - **Goal:** a count per period, or an amount with a unit ("20 pages a day")
+    - **Frequency:** daily (optionally on chosen weekdays), weekly, monthly, or every N days
+    - **Time of day** and an optional **reminder time**
 
 42. **Habit tracking:**
-    - `habit_current_streak`: Current consecutive completions
-    - `habit_best_streak`: Longest streak ever achieved
-    - `habit_total_completions`: Total times completed
-    - `habit_last_completion_at`: When last completed
+    - `habit_current_streak` / `habit_best_streak`: consecutive periods that met the goal
+    - `habit_strength`: 0-100 score that rises with repetition and dips slowly after a miss
+    - `habit_total_completions`: total check-ins (slips for quit habits)
+    - `habit_last_completion_at`: when last checked in
+    - These are caches, rebuilt from the check-in history in the user's timezone
 
 43. **Habit completion:**
-    - Completing a habit increments counters
-    - Streak breaks if missed according to mode rules
-    - Habit widgets show progress toward target count
-    - Visual indicators for streak status (on track, at risk, broken)
+    - Check-ins can carry an amount and a note; a day can be skipped without breaking the streak
+    - The current period never breaks a streak while it can still be met
+    - Archiving hides a habit and keeps its history
 
 ---
 
@@ -389,6 +469,17 @@ This document explains how tasks work in tududi from a user behavior perspective
     - Created date
     - Updated date
     - Manual order (drag-and-drop, for subtasks)
+    - Custom (drag-and-drop, see below)
+
+54. **Custom order (drag and drop):**
+    - Drag a task row to move it on **All Tasks** (`/tasks`), inside a **project**, and among the **Anytime** tasks on **Today**
+    - Dragging under any other sort switches the list to **Custom**, starting from the order that was on screen
+    - Each list keeps its own order, per user: moving a task on All Tasks does not move it inside its project, and a shared project can be ordered differently by each member
+    - Tasks that were never placed (new ones) show first, newest first
+    - With filters, search or paging, only the shown tasks move; the rest keep their places
+    - On Today, timed tasks follow the clock; only **Anytime** tasks are dragged, and their order is the day plan's own item order
+    - Storage: `user_task_orders` (`user_id`, `task_id`, `scope`, `position`), scope `all` or `project:<project id>`
+    - API: `GET /api/tasks/order?scope=all|project&project_uid=...` returns the saved uids; `PUT /api/tasks/order` with `{ scope, project_uid?, task_uids, base_order_by? }` saves a drag; `GET /api/tasks?order_by=custom:asc` sorts All Tasks by it
 
 53. **Grouping options:**
     - By project
@@ -407,7 +498,18 @@ This document explains how tasks work in tududi from a user behavior perspective
     - Task due soon (based on due date)
     - Task overdue
     - Defer Until time reached
-    - Task assigned to you (shared via project)
+    - **Task assigned to you** — when someone sets `assigned_to` to a person
+      linked to your account, you get a `task_assigned` notification (channels
+      configurable under the "Task Assigned" preference). An assigned task also
+      shows up in your task lists and the "Assigned to me" sidebar view, and you
+      can open and complete it, even if you don't otherwise have access to its
+      project.
+
+54b. **Who a task can be assigned to:**
+    - A task in a project can be assigned to your own people, the project owner and everyone the project is shared with (directly, through an area or goal, or through a group)
+    - A task that is not in a project can be assigned to your own people and everyone you share with, are in a group with, or created
+    - Assigning to a member notifies them and gives them access to that task. Assigning to a contact (someone without an account) is only a label
+    - See [People, Members and Roles](19-people-and-roles.md)
 
 55. **Notification channels:**
     - In-app notifications (navbar indicator)
@@ -440,13 +542,10 @@ This document explains how tasks work in tududi from a user behavior perspective
     - Overdue count shows in navbar and project metrics
     - No automatic status change occurs
 
-### Task Intelligence
+### Task Suggestions
 
-59. **Task intelligence features (optional, can be disabled):**
-    - Auto-suggest next actions based on task context
+59. **Suggested tasks:**
     - Smart suggestions for tasks to work on (Today page "Suggested" section)
-    - Productivity insights and patterns
-    - Next task recommendation based on priority, due date, and context
 
 60. **Suggestion algorithm considers:**
     - Due dates (tasks due soon ranked higher)
@@ -509,6 +608,6 @@ A mode that transforms a task into a habit tracker with streak counting, target 
 
 ---
 
-**Document Version:** 1.0.0
-**Last Updated:** 2026-03-15
+**Document Version:** 1.1.0
+**Last Updated:** 2026-09-22
 **Audience:** Developers, AI assistants, and end users

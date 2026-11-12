@@ -2,6 +2,7 @@ const request = require('supertest');
 const app = require('../../app');
 const { Task, Project, Area, Note, Tag, User } = require('../../models');
 const { createTestUser } = require('../helpers/testUtils');
+const { isPostgres } = require('../../utils/db-dialect');
 const moment = require('moment-timezone');
 
 describe('Universal Search Routes', () => {
@@ -246,6 +247,168 @@ describe('Universal Search Routes', () => {
             });
         });
 
+        describe('Filter by Status', () => {
+            beforeEach(async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Not started task',
+                    status: 0,
+                });
+
+                await Task.create({
+                    user_id: user.id,
+                    name: 'In progress task',
+                    status: 1,
+                });
+
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Done task',
+                    status: 2,
+                });
+
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Archived task',
+                    status: 3,
+                });
+
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Cancelled task',
+                    status: 5,
+                });
+            });
+
+            it('should exclude done, archived, and cancelled tasks when status is active', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    status: 'active',
+                });
+
+                expect(response.status).toBe(200);
+                const names = response.body.results
+                    .filter((r) => r.type === 'Task')
+                    .map((t) => t.name);
+                expect(names).toContain('Not started task');
+                expect(names).toContain('In progress task');
+                expect(names).not.toContain('Done task');
+                expect(names).not.toContain('Archived task');
+                expect(names).not.toContain('Cancelled task');
+            });
+
+            it('should only return done, archived, and cancelled tasks when status is completed', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    status: 'completed',
+                });
+
+                expect(response.status).toBe(200);
+                const names = response.body.results
+                    .filter((r) => r.type === 'Task')
+                    .map((t) => t.name);
+                expect(names).toContain('Done task');
+                expect(names).toContain('Archived task');
+                expect(names).toContain('Cancelled task');
+                expect(names).not.toContain('Not started task');
+                expect(names).not.toContain('In progress task');
+            });
+
+            it('should return tasks of every status when status is all', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    status: 'all',
+                });
+
+                expect(response.status).toBe(200);
+                const names = response.body.results
+                    .filter((r) => r.type === 'Task')
+                    .map((t) => t.name);
+                expect(names).toContain('Not started task');
+                expect(names).toContain('Done task');
+                expect(names).toContain('Cancelled task');
+            });
+
+            it('should return tasks of every status when status is omitted, for backward compatibility', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                });
+
+                expect(response.status).toBe(200);
+                const names = response.body.results
+                    .filter((r) => r.type === 'Task')
+                    .map((t) => t.name);
+                expect(names).toContain('Cancelled task');
+            });
+
+            it('should ignore an invalid status value and return tasks of every status', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    status: 'bogus',
+                });
+
+                expect(response.status).toBe(200);
+                const names = response.body.results
+                    .filter((r) => r.type === 'Task')
+                    .map((t) => t.name);
+                expect(names).toContain('Cancelled task');
+            });
+
+            it('should not decrease the active total count until a task is deleted, only excludes it once cancelled', async () => {
+                const activeResponse = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    status: 'active',
+                    limit: 20,
+                    offset: 0,
+                });
+
+                expect(activeResponse.status).toBe(200);
+                // Not started + in progress only; done/archived/cancelled excluded
+                expect(activeResponse.body.pagination.total).toBe(2);
+            });
+
+            it('should only return tasks with the given task_status', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    task_status: 'in_progress',
+                });
+
+                expect(response.status).toBe(200);
+                const names = response.body.results
+                    .filter((r) => r.type === 'Task')
+                    .map((t) => t.name);
+                expect(names).toEqual(['In progress task']);
+            });
+
+            it('should let task_status override a contradicting status filter', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    status: 'active',
+                    task_status: 'done',
+                    limit: 20,
+                    offset: 0,
+                });
+
+                expect(response.status).toBe(200);
+                const names = response.body.results.map((t) => t.name);
+                expect(names).toEqual(['Done task']);
+                expect(response.body.pagination.total).toBe(1);
+            });
+
+            it('should ignore an invalid task_status value', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    task_status: 'bogus',
+                });
+
+                expect(response.status).toBe(200);
+                const names = response.body.results
+                    .filter((r) => r.type === 'Task')
+                    .map((t) => t.name);
+                expect(names).toHaveLength(5);
+            });
+        });
+
         describe('Filter by Priority', () => {
             beforeEach(async () => {
                 await Task.create({
@@ -272,8 +435,7 @@ describe('Universal Search Routes', () => {
                 await Project.create({
                     user_id: user.id,
                     name: 'High priority project',
-                    priority: 'high',
-                    state: 'active',
+                    priority: 2,
                 });
             });
 
@@ -330,7 +492,7 @@ describe('Universal Search Routes', () => {
                     (r) => r.type === 'Project'
                 );
                 expect(projects.length).toBeGreaterThanOrEqual(1);
-                expect(projects.every((p) => p.priority === 'high')).toBe(true);
+                expect(projects.every((p) => p.priority === 2)).toBe(true);
             });
         });
 
@@ -512,7 +674,7 @@ describe('Universal Search Routes', () => {
                 expect(tasks.length).toBe(2); // Work task and Urgent work task
             });
 
-            it('should filter by multiple tags', async () => {
+            it('should filter by multiple tags using AND semantics', async () => {
                 const response = await agent.get('/api/search').query({
                     tags: 'work,urgent',
                     filters: 'Task',
@@ -522,8 +684,23 @@ describe('Universal Search Routes', () => {
                 const tasks = response.body.results.filter(
                     (r) => r.type === 'Task'
                 );
-                // Should return tasks that have either work OR urgent tag
-                expect(tasks.length).toBeGreaterThanOrEqual(1);
+                // Only tasks that have BOTH work AND urgent should be returned
+                expect(tasks.length).toBe(1);
+                expect(tasks[0].name).toBe('Urgent work task');
+            });
+
+            it('should exclude tasks that only have some of the requested tags', async () => {
+                const response = await agent.get('/api/search').query({
+                    tags: 'work,personal',
+                    filters: 'Task',
+                });
+
+                expect(response.status).toBe(200);
+                const tasks = response.body.results.filter(
+                    (r) => r.type === 'Task'
+                );
+                // No task in the fixture has both work AND personal
+                expect(tasks.length).toBe(0);
             });
 
             it('should filter projects by tag', async () => {
@@ -554,6 +731,64 @@ describe('Universal Search Routes', () => {
                 expect(notes[0].title).toBe('Personal note');
             });
 
+            it('should filter projects by multiple tags using AND semantics', async () => {
+                const soloProject = await Project.create({
+                    user_id: user.id,
+                    name: 'Personal only project',
+                    state: 'active',
+                });
+                await soloProject.addTag(personalTag);
+
+                const bothProject = await Project.create({
+                    user_id: user.id,
+                    name: 'Work and personal project',
+                    state: 'active',
+                });
+                await bothProject.addTag(workTag);
+                await bothProject.addTag(personalTag);
+
+                const response = await agent.get('/api/search').query({
+                    tags: 'work,personal',
+                    filters: 'Project',
+                });
+
+                expect(response.status).toBe(200);
+                const projects = response.body.results.filter(
+                    (r) => r.type === 'Project'
+                );
+                expect(projects.length).toBe(1);
+                expect(projects[0].name).toBe('Work and personal project');
+            });
+
+            it('should filter notes by multiple tags using AND semantics', async () => {
+                const soloNote = await Note.create({
+                    user_id: user.id,
+                    title: 'Urgent only note',
+                    content: 'Content',
+                });
+                await soloNote.addTag(urgentTag);
+
+                const bothNote = await Note.create({
+                    user_id: user.id,
+                    title: 'Personal and urgent note',
+                    content: 'Content',
+                });
+                await bothNote.addTag(personalTag);
+                await bothNote.addTag(urgentTag);
+
+                const response = await agent.get('/api/search').query({
+                    tags: 'personal,urgent',
+                    filters: 'Note',
+                });
+
+                expect(response.status).toBe(200);
+                const notes = response.body.results.filter(
+                    (r) => r.type === 'Note'
+                );
+                expect(notes.length).toBe(1);
+                expect(notes[0].title).toBe('Personal and urgent note');
+            });
+
             it('should return empty results for non-existent tag', async () => {
                 const response = await agent.get('/api/search').query({
                     tags: 'nonexistent',
@@ -561,6 +796,46 @@ describe('Universal Search Routes', () => {
 
                 expect(response.status).toBe(200);
                 expect(response.body.results).toEqual([]);
+            });
+
+            it('should restrict Tag results to the requested tags, not every tag in the account', async () => {
+                const response = await agent.get('/api/search').query({
+                    tags: 'work',
+                    filters: 'Tag',
+                });
+
+                expect(response.status).toBe(200);
+                const tags = response.body.results.filter(
+                    (r) => r.type === 'Tag'
+                );
+                expect(tags.length).toBe(1);
+                expect(tags[0].name).toBe('work');
+            });
+
+            it('should restrict Tag results to all requested tags when multiple are given', async () => {
+                const response = await agent.get('/api/search').query({
+                    tags: 'work,personal',
+                    filters: 'Tag',
+                });
+
+                expect(response.status).toBe(200);
+                const tagNames = response.body.results
+                    .filter((r) => r.type === 'Tag')
+                    .map((r) => r.name)
+                    .sort();
+                expect(tagNames).toEqual(['personal', 'work']);
+            });
+
+            it('should count only the requested tags in pagination.total when filtering Tag by tags', async () => {
+                const response = await agent.get('/api/search').query({
+                    tags: 'work',
+                    filters: 'Tag',
+                    limit: 20,
+                    offset: 0,
+                });
+
+                expect(response.status).toBe(200);
+                expect(response.body.pagination.total).toBe(1);
             });
         });
 
@@ -830,6 +1105,151 @@ describe('Universal Search Routes', () => {
                 expect(names).not.toContain('Regular Task');
             });
 
+            it('should return only non-recurring tasks when extras include not_recurring', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    extras: 'not_recurring',
+                });
+
+                expect(response.status).toBe(200);
+                const names = getTaskNames(response);
+                expect(names).toContain('Regular Task');
+                expect(names).not.toContain('Recurring Template');
+                expect(names).not.toContain('Recurring Instance');
+            });
+
+            it('should return only tasks without a note when extras include no_content', async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Blank Note Task',
+                    note: '   ',
+                    status: 0,
+                });
+
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    extras: 'no_content',
+                });
+
+                expect(response.status).toBe(200);
+                const names = getTaskNames(response);
+                expect(names).toContain('Regular Task');
+                expect(names).toContain('Blank Note Task');
+                expect(names).not.toContain('Content Task');
+            });
+
+            it('should return only tasks that are not deferred when extras include not_deferred', async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Past Defer Task',
+                    defer_until: moment().subtract(1, 'day').toDate(),
+                    status: 0,
+                });
+
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    extras: 'not_deferred',
+                });
+
+                expect(response.status).toBe(200);
+                const names = getTaskNames(response);
+                expect(names).toContain('Regular Task');
+                expect(names).toContain('Past Defer Task');
+                expect(names).not.toContain('Deferred Task');
+            });
+
+            it('should return only tasks without a project when extras include no_project', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    extras: 'no_project',
+                });
+
+                expect(response.status).toBe(200);
+                const names = getTaskNames(response);
+                expect(names).toContain('Regular Task');
+                expect(names).not.toContain('Project Task');
+            });
+
+            it('should return only tasks without tags when extras include no_tags', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    extras: 'no_tags',
+                });
+
+                expect(response.status).toBe(200);
+                const names = getTaskNames(response);
+                expect(names).toContain('Regular Task');
+                expect(names).not.toContain('Tagged Task');
+            });
+
+            it('should return only tasks without a due date when extras include no_due_date', async () => {
+                const response = await agent.get('/api/search').query({
+                    filters: 'Task',
+                    extras: 'no_due_date',
+                });
+
+                expect(response.status).toBe(200);
+                const names = getTaskNames(response);
+                expect(names).toContain('Regular Task');
+                expect(names).not.toContain('Overdue Task');
+            });
+
+            it('should return only projects without tags when extras include no_tags', async () => {
+                const taggedProject = await Project.create({
+                    user_id: user.id,
+                    name: 'Untagged Check Tagged Project',
+                    state: 'active',
+                });
+                const plainProject = await Project.create({
+                    user_id: user.id,
+                    name: 'Untagged Check Plain Project',
+                    state: 'active',
+                });
+                const projectTag = await Tag.create({
+                    user_id: user.id,
+                    name: 'no-tags-project-tag',
+                });
+                await taggedProject.addTag(projectTag);
+
+                const response = await agent.get('/api/search').query({
+                    filters: 'Project',
+                    extras: 'no_tags',
+                });
+
+                expect(response.status).toBe(200);
+                const names = response.body.results
+                    .filter((r) => r.type === 'Project')
+                    .map((p) => p.name);
+                expect(names).toContain(plainProject.name);
+                expect(names).not.toContain(taggedProject.name);
+            });
+
+            it('should return only projects without a due date when extras include no_due_date', async () => {
+                const datedProject = await Project.create({
+                    user_id: user.id,
+                    name: 'Dated Check Project',
+                    state: 'active',
+                    due_date_at: moment().add(3, 'days').toDate(),
+                });
+                const undatedProject = await Project.create({
+                    user_id: user.id,
+                    name: 'Undated Check Project',
+                    state: 'active',
+                });
+
+                const response = await agent.get('/api/search').query({
+                    filters: 'Project',
+                    extras: 'no_due_date',
+                });
+
+                expect(response.status).toBe(200);
+                const names = response.body.results
+                    .filter((r) => r.type === 'Project')
+                    .map((p) => p.name);
+                expect(names).toContain(undatedProject.name);
+                expect(names).not.toContain(datedProject.name);
+            });
+
             it('should return only projects that have tags when extras include has_tags', async () => {
                 const taggedProject = await Project.create({
                     user_id: user.id,
@@ -935,8 +1355,7 @@ describe('Universal Search Routes', () => {
                     user_id: user.id,
                     name: 'Test project',
                     description: 'Project description',
-                    state: 'active',
-                    priority: 'medium',
+                    priority: 1,
                 });
 
                 await Note.create({
@@ -982,7 +1401,7 @@ describe('Universal Search Routes', () => {
                 expect(project.uid).toBeDefined();
                 expect(project.name).toBe('Test project');
                 expect(project.description).toBe('Project description');
-                expect(project.priority).toBe('medium');
+                expect(project.priority).toBe(1);
                 expect(project.status).toBe('not_started');
             });
 
@@ -1210,7 +1629,8 @@ describe('Universal Search Routes', () => {
                     status: 0,
                 });
 
-                // Lowercase search will NOT find uppercase Cyrillic (limitation)
+                // Lowercase search will NOT find uppercase Cyrillic on SQLite
+                // (limitation); PostgreSQL's LOWER() is Unicode-aware and does.
                 const response4 = await agent.get('/api/search').query({
                     q: 'тест uppercase',
                     filters: 'Task',
@@ -1219,9 +1639,8 @@ describe('Universal Search Routes', () => {
                 const tasks4 = response4.body.results.filter(
                     (r) => r.type === 'Task'
                 );
-                // Won't find it because JavaScript lowercased query doesn't match uppercase Cyrillic in DB
                 expect(tasks4.some((t) => t.name.includes('UPPERCASE'))).toBe(
-                    false
+                    isPostgres()
                 );
             });
         });

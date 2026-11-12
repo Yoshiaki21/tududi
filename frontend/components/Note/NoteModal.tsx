@@ -10,13 +10,13 @@ import { Project } from '../../entities/Project';
 import { useToast } from '../Shared/ToastContext';
 import TagInput from '../Tag/TagInput';
 import MarkdownRenderer from '../Shared/MarkdownRenderer';
+import MarkdownEditor from './MarkdownEditor';
 import { Tag } from '../../entities/Tag';
 import { useStore } from '../../store/useStore';
 import { useTranslation } from 'react-i18next';
 import ProjectDropdown from '../Shared/ProjectDropdown';
 import ConfirmDialog from '../Shared/ConfirmDialog';
 import DiscardChangesDialog from '../Shared/DiscardChangesDialog';
-import MarkdownEditor from '../Shared/MarkdownEditor';
 import {
     EyeIcon,
     PencilIcon,
@@ -48,6 +48,7 @@ const NoteModal: React.FC<NoteModalProps> = ({
     const { tagsStore } = useStore();
     const availableTagsStore = tagsStore.getTags();
     const { addNewTags } = tagsStore;
+
     const [formData, setFormData] = useState<Note>(
         note || {
             title: '',
@@ -577,20 +578,20 @@ const NoteModal: React.FC<NoteModalProps> = ({
                                                     </div>
 
                                                     {activeTab === 'edit' ? (
-                                                        <MarkdownEditor
-                                                            value={formData.content || ''}
-                                                            onChange={(val) =>
-                                                                setFormData((prev) => ({ ...prev, content: val }))
-                                                            }
-                                                            uploadContext={{
-                                                                type: 'note',
-                                                                uid: formData.uid || null,
-                                                            }}
-                                                            minHeight={200}
-                                                            className="flex-1"
-                                                        />
+                                                        <div className="block w-full min-h-[200px] sm:border sm:border-gray-300 sm:dark:border-gray-600 sm:rounded-md shadow-sm py-2 sm:py-3 px-3 text-sm bg-white dark:bg-gray-900">
+                                                            <MarkdownEditor
+                                                                noteUid={formData.uid}
+                                                                value={formData.content || ''}
+                                                                onChange={(val) =>
+                                                                    setFormData((prev) => ({ ...prev, content: val }))
+                                                                }
+                                                                placeholder={t('notes.contentPlaceholderMarkdown')}
+                                                                minHeight="200px"
+                                                                data-testid="note-content-textarea"
+                                                            />
+                                                        </div>
                                                     ) : (
-                                                        <div className="block w-full h-full min-h-0 sm:border sm:border-gray-300 sm:dark:border-gray-600 sm:rounded-md shadow-sm py-2 px-3 sm:py-3 sm:px-3 text-sm bg-gray-50 dark:bg-gray-800 overflow-y-auto">
+                                                        <div className="block w-full min-h-[200px] sm:border sm:border-gray-300 sm:dark:border-gray-600 sm:rounded-md shadow-sm py-2 sm:py-3 px-3 text-sm bg-white dark:bg-gray-900">
                                                             {formData.content ? (
                                                                 <MarkdownRenderer
                                                                     content={

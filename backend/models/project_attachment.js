@@ -52,27 +52,28 @@ module.exports = (sequelize) => {
                 type: DataTypes.STRING,
                 allowNull: false,
             },
+            // Optional name shown instead of the file name
+            title: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
         },
         {
             tableName: 'project_attachments',
             indexes: [
-                { fields: ['project_id'] },
-                { fields: ['user_id'] },
-                { fields: ['uid'], unique: true },
+                {
+                    fields: ['project_id'],
+                },
+                {
+                    fields: ['user_id'],
+                },
+                {
+                    fields: ['uid'],
+                    unique: true,
+                },
             ],
         }
     );
-
-    ProjectAttachment.associate = function (models) {
-        ProjectAttachment.belongsTo(models.Project, {
-            foreignKey: 'project_id',
-            as: 'Project',
-        });
-        ProjectAttachment.belongsTo(models.User, {
-            foreignKey: 'user_id',
-            as: 'User',
-        });
-    };
 
     return ProjectAttachment;
 };

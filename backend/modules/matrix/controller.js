@@ -10,7 +10,10 @@ const matrixController = {
     async saveSettings(req, res) {
         try {
             const userId = getAuthenticatedUserId(req);
-            if (!userId) return res.status(401).json({ error: 'Authentication required' });
+            if (!userId)
+                return res
+                    .status(401)
+                    .json({ error: 'Authentication required' });
 
             const {
                 matrix_homeserver_url,
@@ -45,7 +48,10 @@ const matrixController = {
     async getSettings(req, res) {
         try {
             const userId = getAuthenticatedUserId(req);
-            if (!userId) return res.status(401).json({ error: 'Authentication required' });
+            if (!userId)
+                return res
+                    .status(401)
+                    .json({ error: 'Authentication required' });
 
             const user = await User.findByPk(userId);
             if (!user) return res.status(404).json({ error: 'User not found' });
@@ -55,7 +61,11 @@ const matrixController = {
                 matrix_access_token: user.matrix_access_token ? '***' : '',
                 matrix_room_id: user.matrix_room_id || '',
                 matrix_bot_user_id: user.matrix_bot_user_id || '',
-                configured: !!(user.matrix_homeserver_url && user.matrix_access_token && user.matrix_bot_user_id),
+                configured: !!(
+                    user.matrix_homeserver_url &&
+                    user.matrix_access_token &&
+                    user.matrix_bot_user_id
+                ),
             });
         } catch (error) {
             logError('Matrix: error getting settings:', error);
@@ -66,7 +76,10 @@ const matrixController = {
     async startPolling(req, res) {
         try {
             const userId = getAuthenticatedUserId(req);
-            if (!userId) return res.status(401).json({ error: 'Authentication required' });
+            if (!userId)
+                return res
+                    .status(401)
+                    .json({ error: 'Authentication required' });
 
             const user = await User.findByPk(userId);
             if (!user || !user.matrix_access_token) {
@@ -84,7 +97,10 @@ const matrixController = {
     async stopPolling(req, res) {
         try {
             const userId = getAuthenticatedUserId(req);
-            if (!userId) return res.status(401).json({ error: 'Authentication required' });
+            if (!userId)
+                return res
+                    .status(401)
+                    .json({ error: 'Authentication required' });
 
             await matrixPoller.stop(userId);
             res.json({ success: true, status: matrixPoller.getStatus() });
@@ -106,25 +122,47 @@ const matrixController = {
     async testConnection(req, res) {
         try {
             const userId = getAuthenticatedUserId(req);
-            if (!userId) return res.status(401).json({ error: 'Authentication required' });
+            if (!userId)
+                return res
+                    .status(401)
+                    .json({ error: 'Authentication required' });
 
             const user = await User.findByPk(userId);
-            if (!user || !user.matrix_homeserver_url || !user.matrix_access_token) {
-                return res.status(400).json({ error: 'Matrix integration is not configured' });
+            if (
+                !user ||
+                !user.matrix_homeserver_url ||
+                !user.matrix_access_token
+            ) {
+                return res
+                    .status(400)
+                    .json({ error: 'Matrix integration is not configured' });
             }
 
             const { MatrixClient } = require('matrix-bot-sdk');
-            const client = new MatrixClient(user.matrix_homeserver_url, user.matrix_access_token);
+            const client = new MatrixClient(
+                user.matrix_homeserver_url,
+                user.matrix_access_token
+            );
             const whoami = await client.getWhoAmI();
 
-            res.json({ success: true, userId: whoami.user_id, homeserver: user.matrix_homeserver_url });
+            res.json({
+                success: true,
+                userId: whoami.user_id,
+                homeserver: user.matrix_homeserver_url,
+            });
         } catch (error) {
             logError('Matrix: connection test failed:', error);
-            const statusCode = error.statusCode === 401 || error.statusCode === 403 ? 401 : 500;
+            const statusCode =
+                error.statusCode === 401 || error.statusCode === 403
+                    ? 401
+                    : 500;
             res.status(statusCode).json({
-                error: error.errcode === 'M_UNKNOWN_TOKEN' || error.statusCode === 401 || error.statusCode === 403
-                    ? 'Access token is invalid or expired. Please regenerate it.'
-                    : `Connection failed: ${error.message}`,
+                error:
+                    error.errcode === 'M_UNKNOWN_TOKEN' ||
+                    error.statusCode === 401 ||
+                    error.statusCode === 403
+                        ? 'Access token is invalid or expired. Please regenerate it.'
+                        : `Connection failed: ${error.message}`,
                 errcode: error.errcode,
             });
         }
@@ -133,13 +171,18 @@ const matrixController = {
     async testSummary(req, res) {
         try {
             const userId = getAuthenticatedUserId(req);
-            if (!userId) return res.status(401).json({ error: 'Authentication required' });
+            if (!userId)
+                return res
+                    .status(401)
+                    .json({ error: 'Authentication required' });
 
             const user = await User.findByPk(userId);
             if (!user) return res.status(404).json({ error: 'User not found' });
 
             if (!user.matrix_access_token || !user.matrix_room_id) {
-                return res.status(400).json({ error: 'Matrix integration is not configured' });
+                return res
+                    .status(400)
+                    .json({ error: 'Matrix integration is not configured' });
             }
 
             await matrixNotificationService.sendMessage(

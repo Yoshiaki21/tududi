@@ -19,6 +19,22 @@
  *         schema:
  *           type: integer
  *         description: Filter by area ID
+ *       - in: query
+ *         name: area_uid
+ *         schema:
+ *           type: string
+ *         description: Focus scope. Only items in this area, including those of its projects
+ *       - in: query
+ *         name: project_uid
+ *         schema:
+ *           type: string
+ *         description: Focus scope. Only items of this project (must sit in area_uid when both are given)
+ *       - in: query
+ *         name: tags
+ *         schema:
+ *           type: string
+ *           example: "urgent,deep"
+ *         description: Focus scope. Comma-separated tag names; items must carry every one
  *     responses:
  *       200:
  *         description: List of projects
@@ -30,6 +46,39 @@
  *                 $ref: '#/components/schemas/Project'
  *       401:
  *         description: Unauthorized
+ */
+
+/**
+ * @swagger
+ * /api/projects/order:
+ *   put:
+ *     summary: Save your custom order of projects
+ *     description: Replaces the current user's custom order. Each project gets its index in the list as its sort_position; projects left out have no position.
+ *     tags: [Projects]
+ *     security:
+ *       - cookieAuth: []
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - project_uids
+ *             properties:
+ *               project_uids:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: Project UIDs in the desired order
+ *     responses:
+ *       200:
+ *         description: Order saved
+ *       400:
+ *         description: Invalid or duplicate UIDs
+ *       404:
+ *         description: A project was not found or is not visible to you
  */
 
 /**
@@ -73,6 +122,14 @@
  *                 type: string
  *                 format: date-time
  *                 description: Project due date
+ *               start_date:
+ *                 type: string
+ *                 format: date
+ *                 description: When the project begins (YYYY-MM-DD, user's timezone)
+ *               start_time:
+ *                 type: string
+ *                 example: "09:30"
+ *                 description: Optional start time (HH:mm, user's timezone); omit for a whole-day start
  *               image_url:
  *                 type: string
  *                 description: Project image URL
@@ -138,6 +195,14 @@
  *                 type: string
  *                 format: date-time
  *                 description: Project due date
+ *               start_date:
+ *                 type: string
+ *                 format: date
+ *                 description: When the project begins (YYYY-MM-DD, user's timezone)
+ *               start_time:
+ *                 type: string
+ *                 example: "09:30"
+ *                 description: Optional start time (HH:mm, user's timezone); omit for a whole-day start
  *               image_url:
  *                 type: string
  *                 description: Project image URL
@@ -193,6 +258,52 @@
  *                   example: "Project deleted successfully."
  *       401:
  *         description: Unauthorized
+ *       404:
+ *         description: Project not found
+ */
+
+/**
+ * @swagger
+ * /api/project/{uid}/complete:
+ *   post:
+ *     summary: Mark a project done
+ *     description: Sets the status to done and records completed_at. With complete_open_tasks, open one-off tasks in the project are marked done first; recurring tasks are left alone.
+ *     tags: [Projects]
+ *     security:
+ *       - cookieAuth: []
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: uid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Project UID
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               complete_open_tasks:
+ *                 type: boolean
+ *                 default: false
+ *     responses:
+ *       200:
+ *         description: Project completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 project:
+ *                   $ref: '#/components/schemas/Project'
+ *                 completed_tasks:
+ *                   type: integer
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: No write access
  *       404:
  *         description: Project not found
  */

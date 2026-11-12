@@ -27,11 +27,23 @@ module.exports = (sequelize) => {
             },
             email: {
                 type: DataTypes.STRING,
-                allowNull: false,
+                allowNull: true,
                 unique: true,
                 validate: {
                     isEmail: true,
                 },
+            },
+            // The email with aliases folded away (see canonicalEmail), so a
+            // hosted instance can tell that two sign-ups are one mailbox.
+            email_canonical: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            // A sign-up that has not verified gets one reminder, with a new
+            // link, a day or so later.
+            verification_reminder_sent_at: {
+                type: DataTypes.DATE,
+                allowNull: true,
             },
             password: {
                 type: DataTypes.VIRTUAL,
@@ -85,6 +97,18 @@ module.exports = (sequelize) => {
             },
             telegram_chat_id: {
                 type: DataTypes.STRING,
+                allowNull: true,
+            },
+            apprise_url: {
+                type: DataTypes.TEXT,
+                allowNull: true,
+            },
+            apprise_key: {
+                type: DataTypes.TEXT,
+                allowNull: true,
+            },
+            apprise_tags: {
+                type: DataTypes.STRING(200),
                 allowNull: true,
             },
             task_summary_enabled: {
@@ -146,38 +170,23 @@ module.exports = (sequelize) => {
                 allowNull: true,
                 comment: 'Comma-separated list of allowed Matrix user IDs',
             },
-            task_intelligence_enabled: {
-                type: DataTypes.BOOLEAN,
-                allowNull: false,
-                defaultValue: true,
-            },
-            auto_suggest_next_actions_enabled: {
-                type: DataTypes.BOOLEAN,
-                allowNull: false,
-                defaultValue: false,
-            },
-            pomodoro_enabled: {
-                type: DataTypes.BOOLEAN,
-                allowNull: false,
-                defaultValue: true,
-            },
-            productivity_assistant_enabled: {
-                type: DataTypes.BOOLEAN,
-                allowNull: false,
-                defaultValue: true,
-            },
-            next_task_suggestion_enabled: {
-                type: DataTypes.BOOLEAN,
-                allowNull: false,
-                defaultValue: true,
+            features: {
+                type: DataTypes.JSON,
+                allowNull: true,
+                defaultValue: {
+                    ai_assistant_enabled: false,
+                    pomodoro_enabled: false,
+                    eisenhower_enabled: false,
+                    kanban_enabled: false,
+                    habits_enabled: true,
+                    calendar_enabled: false,
+                },
             },
             today_settings: {
                 type: DataTypes.JSON,
                 allowNull: true,
                 defaultValue: {
                     showMetrics: false,
-                    showProductivity: false,
-                    showNextTaskSuggestion: false,
                     showSuggestions: false,
                     showDueToday: true,
                     showCompleted: true,
@@ -190,6 +199,11 @@ module.exports = (sequelize) => {
                 allowNull: true,
                 defaultValue: {
                     pinnedViewsOrder: [],
+                    visibleSections: {
+                        upcomingTasks: true,
+                        assignedToMe: true,
+                        everyone: true,
+                    },
                 },
             },
             ui_settings: {
@@ -237,6 +251,24 @@ module.exports = (sequelize) => {
                         push: false,
                         telegram: false,
                     },
+                    taskAssigned: {
+                        inApp: true,
+                        email: false,
+                        push: false,
+                        telegram: false,
+                    },
+                    habitReminders: {
+                        inApp: true,
+                        email: false,
+                        push: false,
+                        telegram: false,
+                    },
+                    comments: {
+                        inApp: true,
+                        email: false,
+                        push: false,
+                        telegram: false,
+                    },
                 },
             },
             keyboard_shortcuts: {
@@ -246,16 +278,75 @@ module.exports = (sequelize) => {
                 comment:
                     'User-configurable keyboard shortcuts for quick actions',
             },
+            ai_daily_brief: {
+                type: DataTypes.JSON,
+                allowNull: true,
+                defaultValue: null,
+            },
+            ai_daily_brief_date: {
+                type: DataTypes.DATEONLY,
+                allowNull: true,
+                defaultValue: null,
+            },
+            ai_profile: {
+                type: DataTypes.TEXT,
+                allowNull: true,
+                defaultValue: null,
+            },
+            ai_api_key: {
+                type: DataTypes.TEXT,
+                allowNull: true,
+                defaultValue: null,
+                comment:
+                    'Encrypted per-user LLM API key, overrides LLM_API_KEY/.env',
+            },
+            ai_base_url: {
+                type: DataTypes.STRING,
+                allowNull: true,
+                defaultValue: null,
+            },
+            ai_model: {
+                type: DataTypes.STRING,
+                allowNull: true,
+                defaultValue: null,
+            },
+            created_by_user_id: {
+                type: DataTypes.INTEGER,
+                allowNull: true,
+                defaultValue: null,
+            },
+            // The hosted account this user belongs to (see models/account.js).
+            account_id: {
+                type: DataTypes.INTEGER,
+                allowNull: true,
+                defaultValue: null,
+            },
             email_verified: {
                 type: DataTypes.BOOLEAN,
                 allowNull: false,
                 defaultValue: true,
+            },
+            onboarded_at: {
+                type: DataTypes.DATE,
+                allowNull: true,
+            },
+            onboarding_starter: {
+                type: DataTypes.STRING,
+                allowNull: true,
             },
             email_verification_token: {
                 type: DataTypes.STRING,
                 allowNull: true,
             },
             email_verification_token_expires_at: {
+                type: DataTypes.DATE,
+                allowNull: true,
+            },
+            password_reset_token_hash: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
+            password_reset_token_expires_at: {
                 type: DataTypes.DATE,
                 allowNull: true,
             },
@@ -267,6 +358,20 @@ module.exports = (sequelize) => {
         },
         {
             tableName: 'users',
+            indexes: [
+                {
+                    fields: ['created_by_user_id'],
+                    name: 'users_created_by_user_id',
+                },
+                {
+                    fields: ['account_id'],
+                    name: 'users_account_id',
+                },
+                {
+                    fields: ['email_canonical'],
+                    name: 'users_email_canonical',
+                },
+            ],
             hooks: {
                 beforeValidate: async (user) => {
                     if (user.email) {
@@ -279,9 +384,22 @@ module.exports = (sequelize) => {
                         );
                     }
                 },
+                // beforeSave rather than beforeValidate: fields a save hook
+                // sets are persisted even by instance.update({ email }).
+                beforeSave: (user) => {
+                    if (user.isNewRecord || user.changed('email')) {
+                        const {
+                            canonicalEmail,
+                        } = require('../services/emailDomainService');
+                        user.email_canonical = user.email
+                            ? canonicalEmail(user.email)
+                            : null;
+                    }
+                },
                 afterCreate: async (user, options) => {
                     // Automatically create a role for every new user
                     const { Role } = require('./index');
+                    const { getConfig } = require('../config/config');
 
                     // Check if any admin users exist
                     const adminCount = await Role.count({
@@ -289,16 +407,30 @@ module.exports = (sequelize) => {
                         transaction: options.transaction,
                     });
 
-                    // First user becomes admin
-                    const isFirstUser = adminCount === 0;
+                    // On a self-hosted instance the first user is the owner
+                    // and becomes admin. On a hosted instance the first user
+                    // is just the first customer; the admin is created
+                    // explicitly by the bootstrap script.
+                    const hosted = getConfig().hosted?.enabled === true;
+                    const isFirstUser = adminCount === 0 && !hosted;
 
                     await Role.create(
                         {
                             user_id: user.id,
                             is_admin: isFirstUser,
+                            role: isFirstUser ? 'admin' : 'user',
                         },
                         { transaction: options.transaction }
                     );
+
+                    // On a hosted instance every account belongs to a customer
+                    // account: its creator's, or a new one it owns.
+                    if (hosted) {
+                        await require('../services/accountsService').ensureAccountId(
+                            user.id,
+                            { transaction: options.transaction }
+                        );
+                    }
                 },
             },
         }

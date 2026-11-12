@@ -1,5 +1,8 @@
 const https = require('https');
 const { User, InboxItem } = require('../../models');
+const { getConfig } = require('../../config/config');
+
+const isTelegramEnabled = () => getConfig().telegramEnabled === true;
 
 // Create poller state
 const createPollerState = () => ({
@@ -152,7 +155,15 @@ const makeHttpGetRequest = (url, timeout = 5000) => {
                 res.on('end', () => {
                     try {
                         const response = JSON.parse(data);
-                        resolve(response);
+                        if (response.ok) {
+                            resolve(response);
+                        } else {
+                            reject(
+                                new Error(
+                                    `Telegram error ${response.error_code}: ${response.description}`
+                                )
+                            );
+                        }
                     } catch (error) {
                         reject(error);
                     }
@@ -176,7 +187,15 @@ const makeHttpPostRequest = (url, postData, options) => {
             res.on('end', () => {
                 try {
                     const response = JSON.parse(data);
-                    resolve(response);
+                    if (response.ok) {
+                        resolve(response);
+                    } else {
+                        reject(
+                            new Error(
+                                `Telegram error ${response.error_code}: ${response.description}`
+                            )
+                        );
+                    }
                 } catch (error) {
                     reject(error);
                 }
@@ -218,6 +237,7 @@ const sendTelegramMessage = async (
     replyToMessageId = null,
     options = {}
 ) => {
+    if (!isTelegramEnabled()) return null;
     try {
         const messageParams = createMessageParams(
             chatId,
@@ -502,17 +522,29 @@ const processUpdates = async (user, updates) => {
     }
 };
 
+// How many bots are polled at the same time. The old loop polled every
+// user one after another, so a few hundred users turned a 5-second tick
+// into a minutes-long serial crawl.
+const POLL_CONCURRENCY = Math.max(
+    1,
+    parseInt(process.env.TELEGRAM_POLL_CONCURRENCY || '10', 10) || 10
+);
+
 // Function to poll updates for all users (contains side effects)
 const pollUpdates = async () => {
-    for (const user of pollerState.usersToPool) {
-        const token = user.telegram_bot_token;
-        if (!token) continue;
+    const dueUsers = pollerState.usersToPool.filter(
+        (user) => user.telegram_bot_token && shouldPollUser(user.id)
+    );
 
-        // Check if we should poll this user based on backoff state
-        if (!shouldPollUser(user.id)) {
-            continue;
-        }
+    for (let i = 0; i < dueUsers.length; i += POLL_CONCURRENCY) {
+        const batch = dueUsers.slice(i, i + POLL_CONCURRENCY);
+        await Promise.all(batch.map((user) => pollUser(user)));
+    }
+};
 
+const pollUser = async (user) => {
+    const token = user.telegram_bot_token;
+    {
         try {
             const lastUpdateId =
                 pollerState.userStatus[user.id]?.lastUpdateId || 0;
@@ -612,7 +644,7 @@ const stopPolling = () => {
 
 // Function to add user (contains side effects)
 const addUser = async (user) => {
-    if (!user || !user.telegram_bot_token) {
+    if (!isTelegramEnabled() || !user || !user.telegram_bot_token) {
         return false;
     }
 
@@ -665,6 +697,19 @@ const getStatus = () => ({
     userStatus: pollerState.userStatus,
 });
 
+// Status as seen by one user: whether their own bot is being polled, plus
+// only their own entry of the per-user status map.
+const getStatusForUser = (userId) => {
+    const polled = userExistsInList(pollerState.usersToPool, userId);
+    const ownStatus = pollerState.userStatus[userId];
+    return {
+        running: pollerState.running && polled,
+        usersCount: polled ? 1 : 0,
+        pollInterval: pollerState.pollInterval,
+        userStatus: ownStatus ? { [userId]: ownStatus } : {},
+    };
+};
+
 // Export functional interface
 module.exports = {
     addUser,
@@ -672,6 +717,7 @@ module.exports = {
     startPolling,
     stopPolling,
     getStatus,
+    getStatusForUser,
     sendTelegramMessage,
     // For testing
     _createPollerState: createPollerState,

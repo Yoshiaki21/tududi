@@ -104,6 +104,28 @@ describe('Views Routes', () => {
             expect(response.body.tags).toEqual([]);
         });
 
+        it('should create a view filtered by task status', async () => {
+            const response = await agent.post('/api/views').send({
+                name: 'In Progress',
+                filters: ['Task'],
+                task_status: 'in_progress',
+            });
+
+            expect(response.status).toBe(201);
+            expect(response.body.task_status).toBe('in_progress');
+        });
+
+        it('should reject an unknown task status', async () => {
+            const response = await agent.post('/api/views').send({
+                name: 'Bad Status',
+                filters: ['Task'],
+                task_status: 'bogus',
+            });
+
+            expect(response.status).toBe(400);
+            expect(response.body.error).toBe('Invalid task status');
+        });
+
         it('should require view name', async () => {
             const response = await agent.post('/api/views').send({
                 name: '',
@@ -233,6 +255,20 @@ describe('Views Routes', () => {
                 'urgent',
                 'high-priority',
             ]);
+        });
+
+        it('should set and clear the task status', async () => {
+            const setResponse = await agent
+                .patch(`/api/views/${viewUid}`)
+                .send({ task_status: 'waiting' });
+            expect(setResponse.status).toBe(200);
+            expect(setResponse.body.task_status).toBe('waiting');
+
+            const clearResponse = await agent
+                .patch(`/api/views/${viewUid}`)
+                .send({ task_status: null });
+            expect(clearResponse.status).toBe(200);
+            expect(clearResponse.body.task_status).toBeNull();
         });
 
         it('should clear tags when set to empty array', async () => {
@@ -422,8 +458,9 @@ describe('Views Routes', () => {
             const tasks = searchResponse.body.results.filter(
                 (r) => r.type === 'Task'
             );
-            // Should find tasks with either work OR urgent tag
-            expect(tasks.length).toBeGreaterThanOrEqual(1);
+            // Should only find tasks that have BOTH work AND urgent
+            expect(tasks.length).toBe(1);
+            expect(tasks[0].name).toBe('Urgent work task');
         });
 
         it('should persist tags correctly after update', async () => {

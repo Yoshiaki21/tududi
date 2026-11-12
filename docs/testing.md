@@ -27,26 +27,23 @@
 │       ├── attachment-utils.test.js
 │       └── migration-utils.test.js
 │
-└── integration/              # Integration tests for API endpoints
-    ├── tasks/
-    │   ├── tasks.test.js
-    │   ├── subtasks.test.js
-    │   └── recurring.test.js
-    ├── projects/
-    │   └── projects.test.js
-    ├── areas/
-    ├── notes/
-    ├── tags/
-    ├── auth/
-    ├── shares/
-    └── ... (47+ test directories)
+├── integration/              # Integration tests for API endpoints (flat, 110+ files)
+│   ├── tasks.test.js
+│   ├── projects.test.js
+│   ├── areas.test.js
+│   ├── comments.test.js
+│   ├── mcp/                  # MCP tool tests
+│   └── ...
+│
+└── upgrade/                  # Legacy database upgrade suite (own Jest config)
 
 /e2e/tests/                   # E2E tests (Playwright)
-├── login.spec.ts
-├── tasks.spec.ts
-├── projects.spec.ts
-├── subtasks.spec.ts
-└── ...
+├── caldav-client.spec.ts
+├── inbox.spec.ts
+├── notes-editor.spec.ts
+├── registration.spec.ts
+├── share-target.spec.ts
+└── today-view.spec.ts
 
 /frontend/__tests__/          # Frontend tests
 ├── setup.ts                 # Test configuration
@@ -74,6 +71,12 @@ npm run test:coverage
 
 # Watch mode (re-run on file changes)
 npm run test:watch
+
+# Upgrade suite: real migrations against legacy SQLite databases + schema parity
+npm run backend:test:upgrade
+
+# Upgrade with the real Docker images (slow; needs Docker, curl, sqlite3)
+npm run test:upgrade:docker
 ```
 
 ### Frontend Tests
@@ -96,7 +99,7 @@ npm run test:ui
 npm run test:ui:headed
 
 # Specific test file
-npx playwright test e2e/tests/tasks.spec.ts
+npx playwright test e2e/tests/inbox.spec.ts
 
 # Debug mode
 npx playwright test --debug
@@ -174,7 +177,7 @@ it('should not return completed tasks in Today view', async () => {
 **Arrange-Act-Assert Pattern:**
 
 ```javascript
-// /backend/tests/integration/tasks/tasks.test.js
+// /backend/tests/integration/tasks.test.js
 const request = require('supertest');
 const app = require('../../../app');
 const { Task, User } = require('../../../models');
@@ -289,7 +292,7 @@ describe('timezone-utils', () => {
 ### Frontend Component Test
 
 ```typescript
-// /frontend/components/Task/__tests__/TaskItem.test.tsx
+// /frontend/components/Task/__tests__/TaskItem.test.tsx (illustrative; see TaskRow.test.tsx for a real one)
 import { render, screen, fireEvent } from '@testing-library/react';
 import { TaskItem } from '../TaskItem';
 import { Task } from '../../../entities/Task';
@@ -354,7 +357,7 @@ describe('TaskItem', () => {
 ### E2E Test (Playwright)
 
 ```typescript
-// /e2e/tests/tasks.spec.ts
+// /e2e/tests/tasks.spec.ts (illustrative; see inbox.spec.ts for a real one)
 import { test, expect } from '@playwright/test';
 
 test.describe('Task Management', () => {
@@ -422,12 +425,32 @@ async function createTask(page, name: string, priority: number) {
 
 ## Test Database
 
-Backend tests use a separate test database:
+Backend tests never touch the development database. `backend/tests/helpers/setup.js` runs once per test file and:
 
-- Automatically created in test environment
-- Migrations run before tests
-- Database cleared between tests (in `afterEach`)
-- Configured in `/backend/config/database.js`
+- **SQLite (default):** points `DB_FILE` at a fresh `/tmp/test-<id>.sqlite3` for that file
+- **PostgreSQL** (`DATABASE_URL` set): uses one database per Jest worker, named `<db>_w<workerId>`, created by `tests/helpers/globalSetup.js`
+- Creates the schema with `sequelize.sync({ force: true })` in `beforeAll` (migrations are not run in tests)
+- Empties all tables between tests in `beforeEach` (`truncateTables` from `utils/db-dialect.js`)
+
+Run the suite against PostgreSQL locally with:
+
+```bash
+docker run -d -p 5432:5432 -e POSTGRES_USER=tududi -e POSTGRES_PASSWORD=tududi -e POSTGRES_DB=tududi_test postgres:16-alpine
+DATABASE_URL=postgres://tududi:tududi@localhost:5432/tududi_test npm run backend:test:pg
+```
+
+CI runs both: `test-sqlite` and `test-postgres` in `.github/workflows/ci.yml`. When a test encodes engine-specific behaviour, branch on `isPostgres()` from `utils/db-dialect.js` rather than skipping the file.
+
+### Upgrade suite
+
+`npm run backend:test:upgrade` runs `backend/tests/upgrade` with its own Jest config (`backend/jest.upgrade.config.js`), because these tests must not use the sync-based setup above:
+
+- `legacy-sqlite-upgrade.test.js` copies every database in `backend/tests/fixtures/legacy` (real files produced by older releases, see the README there), runs `scripts/db-prepare.js` and `sequelize-cli db:migrate` against the copy exactly as `cmd/start.sh` does, and checks: only the pending migrations ran, `SequelizeMeta` lists every migration file, `PRAGMA integrity_check` is ok, no rows were lost, a second run is a no-op, and a fresh process booting the app on the file can log in, read every list endpoint and write through the model hooks (`helpers/smoke-runner.js`).
+- `schema-parity.test.js` snapshots the schema `sequelize.sync()` produces from the models and compares it with a fresh SQLite install, each upgraded legacy fixture and, when `DATABASE_URL` is set, a freshly bootstrapped PostgreSQL database. A model table, column or unique index that a migration never created fails the run. Accepted differences are listed in `known-schema-drift.json` with a reason; `SCHEMA_PARITY_REPORT=1` prints every difference without failing.
+
+Point `LEGACY_FIXTURE_DIR` at a directory with extra `.sqlite3` files (a copy of a real database, for example) to include them in a run without committing them.
+
+`npm run test:upgrade:docker` (`scripts/test-upgrade-docker.sh`) goes one level further: it starts the previous release image on a temporary volume, upgrades that volume with an image built from the current checkout and checks logins, data, the pre-migration backup and a restart. It runs from `.github/workflows/upgrade-docker.yml` on release tags, weekly and on demand.
 
 **Example cleanup:**
 ```javascript
@@ -487,6 +510,22 @@ While not strictly enforced, aim for:
 - **Critical paths:** 80%+ coverage
 - **Business logic:** 70%+ coverage
 - **UI components:** 50%+ coverage
+
+**Authentication and authorization are kept at 100%** (lines and branches):
+`middleware/{auth,authorize,csrf,roles,uploadsAccess,rateLimiter,captcha}.js`,
+`modules/auth`, `modules/oidc`, `modules/users/apiTokenService.js`,
+`modules/mcp/middleware.js`, the admin, members, sign-in link, shares and
+groups services, and `services/{permissions*,permissionSources,roles,accounts,session,workspaceMembers,groupSharing,applyPerms}`.
+Their edge cases live in `*-edge-cases.test.js` files next to the other unit
+tests. Jest maps the ESM-only `jose` package to a stub
+(`tests/mocks/jose.js`), so bearer token signatures are verified for real by
+`tests/helpers/oidcRealTokenCheck.js`, which `service-tokens.test.js` runs
+in a plain Node process. Check a change with:
+
+```bash
+cd backend && NODE_ENV=test npx jest --coverage \
+  --collectCoverageFrom='modules/auth/*.js' --collectCoverageFrom='modules/oidc/*.js' # add the files you touched
+```
 
 **Run coverage report:**
 ```bash

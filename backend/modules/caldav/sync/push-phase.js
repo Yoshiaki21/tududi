@@ -1,11 +1,15 @@
-const axios = require('axios');
-const { AppError } = require('../../../shared/errors/AppError');
+const { safeRequest } = require('../services/safe-request');
+const { AppError } = require('../../../shared/errors');
 const logger = require('../../../services/logService');
 const { Task } = require('../../../models');
 const SyncStateRepository = require('../repositories/sync-state-repository');
 const RemoteCalendarRepository = require('../repositories/remote-calendar-repository');
 const { serializeTaskToVTODO } = require('../icalendar/vtodo-serializer');
 const encryptionService = require('../services/encryption-service');
+const { buildRemoteTaskUrl, normalizeHref } = require('../utils/href-utils');
+const { formatEntityTag } = require('../utils/etag-generator');
+const { CALDAV_TASK_INCLUDES } = require('../task-includes');
+const { getUserTimezone } = require('../utils/user-timezone');
 
 class PushPhase {
     async execute(calendar, userId, options = {}) {
@@ -115,14 +119,18 @@ class PushPhase {
                 continue;
             }
 
-            if (
-                syncState.sync_status === 'conflict' ||
-                syncState.sync_status === 'pending'
-            ) {
+            // A conflict waits for the merge phase to settle it. 'pending' is
+            // what the merge phase leaves when the local version won a
+            // conflict: it has to go out even though it is not newer than the
+            // last sync.
+            if (syncState.sync_status === 'conflict') {
                 continue;
             }
 
-            if (task.updated_at > syncState.last_synced_at) {
+            if (
+                syncState.sync_status === 'pending' ||
+                task.updated_at > syncState.last_synced_at
+            ) {
                 changedTasks.push(task);
             }
         }
@@ -148,16 +156,30 @@ class PushPhase {
             remoteCalendar.password_encrypted
         );
 
-        const baseUrl = remoteCalendar.server_url.replace(/\/$/, '');
-        const calendarPath = remoteCalendar.calendar_path.replace(/^\//, '');
-        const taskUrl = `${baseUrl}/${calendarPath}/${task.uid}.ics`;
-
-        const vtodoString = await serializeTaskToVTODO(task);
-
         const syncState = await SyncStateRepository.findByTaskAndCalendar(
             task.id,
             calendar.id
         );
+
+        // Push to the path the resource actually lives at. Re-deriving it from
+        // the uid would PUT a second copy alongside the original for any task
+        // that was created by another CalDAV client.
+        const taskUrl = buildRemoteTaskUrl(
+            remoteCalendar,
+            syncState?.remote_href,
+            task.uid
+        );
+
+        // Serialize the way the CalDAV server does: with tags, project and
+        // parent loaded, and dates in the user's timezone. Without the timezone
+        // a due date for a user west of UTC went out as the next day.
+        const fullTask =
+            (await Task.findByPk(task.id, {
+                include: CALDAV_TASK_INCLUDES,
+            })) || task;
+        const vtodoString = await serializeTaskToVTODO(fullTask, {
+            userTimezone: await getUserTimezone(task.user_id),
+        });
 
         try {
             const headers = {
@@ -165,10 +187,10 @@ class PushPhase {
             };
 
             if (syncState?.etag) {
-                headers['If-Match'] = syncState.etag;
+                headers['If-Match'] = formatEntityTag(syncState.etag);
             }
 
-            const response = await axios({
+            const response = await safeRequest({
                 method: 'PUT',
                 url: taskUrl,
                 headers,
@@ -187,6 +209,7 @@ class PushPhase {
 
             await SyncStateRepository.createOrUpdate(task.id, calendar.id, {
                 etag: newEtag || syncState?.etag,
+                remote_href: normalizeHref(taskUrl),
                 last_modified: new Date(),
                 last_synced_at: new Date(),
                 sync_status: 'synced',
@@ -206,9 +229,15 @@ class PushPhase {
                     `Precondition failed for task ${task.uid}: ETag mismatch, conflict detected`
                 );
 
-                await SyncStateRepository.createOrUpdate(task.id, calendar.id, {
-                    sync_status: 'conflict',
-                });
+                // The next pull settles the conflict (merge phase). A task the
+                // server has never acknowledged has no sync state to mark.
+                if (syncState) {
+                    await SyncStateRepository.createOrUpdate(
+                        task.id,
+                        calendar.id,
+                        { sync_status: 'conflict' }
+                    );
+                }
 
                 throw new AppError(
                     'Conflict detected: task was modified on server',
@@ -245,12 +274,19 @@ class PushPhase {
             remoteCalendar.password_encrypted
         );
 
-        const baseUrl = remoteCalendar.server_url.replace(/\/$/, '');
-        const calendarPath = remoteCalendar.calendar_path.replace(/^\//, '');
-        const taskUrl = `${baseUrl}/${calendarPath}/${task.uid}.ics`;
+        const syncState = await SyncStateRepository.findByTaskAndCalendar(
+            task.id,
+            calendar.id
+        );
+
+        const taskUrl = buildRemoteTaskUrl(
+            remoteCalendar,
+            syncState?.remote_href,
+            task.uid
+        );
 
         try {
-            await axios({
+            await safeRequest({
                 method: 'DELETE',
                 url: taskUrl,
                 auth: {
@@ -263,7 +299,10 @@ class PushPhase {
                 ),
             });
 
-            await SyncStateRepository.deleteByTaskId(task.id);
+            await SyncStateRepository.deleteByTaskAndCalendar(
+                task.id,
+                calendar.id
+            );
 
             logger.logInfo(`Task ${task.uid} successfully deleted from remote`);
 
@@ -277,7 +316,10 @@ class PushPhase {
                 logger.logInfo(
                     `Task ${task.uid} already deleted from remote, clearing sync state`
                 );
-                await SyncStateRepository.deleteByTaskId(task.id);
+                await SyncStateRepository.deleteByTaskAndCalendar(
+                    task.id,
+                    calendar.id
+                );
                 return {
                     taskId: task.id,
                     uid: task.uid,

@@ -1,8 +1,140 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
+import ReactDOM from 'react-dom';
+import { Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { LockClosedIcon } from '@heroicons/react/24/outline';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import hljs from 'highlight.js';
+import CalloutBlock from './CalloutBlock';
+import MermaidDiagram, { getMermaidSource } from './MermaidDiagram';
+import { detectCallout } from '../../utils/calloutParser';
+import { toggleTaskListItem } from '../../utils/markdownTaskList';
+import { useStore } from '../../store/useStore';
+
+const WIKILINK_PREFIX = '/__wikilink__/';
+
+// Image syntax that points at a video file renders a player instead.
+const VIDEO_SRC = /\.(mp4|webm)(?:[?#]|$)/i;
+
+function preprocessWikilinks(content: string): string {
+    return content.replace(/\[\[([^\][\n]+?)\]\]/g, (_match, title: string) => {
+        const t = title.trim();
+        return `[${t}](${WIKILINK_PREFIX}${encodeURIComponent(t)})`;
+    });
+}
+
+function slugify(text: string): string {
+    return text
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+}
+
+const CodeBlock: React.FC<React.HTMLAttributes<HTMLPreElement>> = ({
+    children,
+    ...props
+}) => {
+    const preRef = useRef<HTMLPreElement>(null);
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        const text = preRef.current?.textContent || '';
+        try {
+            await navigator.clipboard.writeText(text);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        } catch (err) {
+            console.error('Failed to copy code:', err);
+        }
+    };
+
+    return (
+        <div className="relative group mb-4">
+            <pre ref={preRef} className="rounded-lg overflow-x-auto" {...props}>
+                {children}
+            </pre>
+            <button
+                onClick={handleCopy}
+                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-gray-700 dark:bg-gray-600 text-white text-xs px-2 py-1 rounded"
+                aria-label="Copy code"
+            >
+                {copied ? 'Copied!' : 'Copy'}
+            </button>
+        </div>
+    );
+};
+
+// The badge sits on the text's baseline: the outer flex row takes its
+// baseline from the title (the label stretches and the lock centers, so
+// neither takes part), which lines it up with the words around it.
+const NoteBadge: React.FC<{ title: string; locked?: boolean }> = ({
+    title,
+    locked = false,
+}) => (
+    <span className="inline-flex items-baseline align-baseline rounded overflow-hidden mx-0.5 leading-snug">
+        <span className="self-stretch flex items-center px-1.5 text-[0.72em] font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400 bg-gray-200/80 dark:bg-gray-700/80">
+            NOTE:
+        </span>
+        <span className="inline-flex items-baseline gap-1 px-1.5 py-px text-[0.9em] text-gray-800 dark:text-gray-200 bg-gray-100 dark:bg-gray-800">
+            {locked && <LockClosedIcon className="h-3 w-3 self-center" />}
+            {title}
+        </span>
+    </span>
+);
+
+// On a public page, a link to a note the owner has not made public: the
+// reader can click it to learn why it does not open. The message is portaled
+// to the body so the note's content box cannot clip it.
+const NotSharedNoteBadge: React.FC<{ title: string }> = ({ title }) => {
+    const { t } = useTranslation();
+    const [anchor, setAnchor] = useState<DOMRect | null>(null);
+
+    useEffect(() => {
+        if (!anchor) return;
+        const close = () => setAnchor(null);
+        window.addEventListener('scroll', close, true);
+        window.addEventListener('resize', close);
+        return () => {
+            window.removeEventListener('scroll', close, true);
+            window.removeEventListener('resize', close);
+        };
+    }, [anchor]);
+
+    return (
+        <>
+            <button
+                type="button"
+                className="cursor-pointer align-baseline"
+                aria-expanded={!!anchor}
+                onClick={(e) =>
+                    setAnchor((current) =>
+                        current ? null : e.currentTarget.getBoundingClientRect()
+                    )
+                }
+                onBlur={() => setAnchor(null)}
+            >
+                <NoteBadge title={title} locked />
+            </button>
+            {anchor &&
+                ReactDOM.createPortal(
+                    <span
+                        role="status"
+                        className="fixed z-[300] whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-xs text-white shadow-lg dark:bg-gray-700"
+                        style={{ left: anchor.left, top: anchor.bottom + 4 }}
+                    >
+                        {t(
+                            'publicNote.linkedNoteNotShared',
+                            'This note is not shared publicly.'
+                        )}
+                    </span>,
+                    document.body
+                )}
+        </>
+    );
+};
 
 interface MarkdownRendererProps {
     content: string;
@@ -10,7 +142,20 @@ interface MarkdownRendererProps {
     summaryMode?: boolean;
     onContentChange?: (newContent: string) => void;
     noteColor?: string;
+    // On a public note page: the linked notes the reader may open. Any other
+    // [[link]] shows as not shared instead of looking up the reader's notes.
+    publicNoteLinks?: PublicNoteLink[];
+    // Where a public linked note opens; its public link page by default.
+    publicNoteHref?: (link: PublicNoteLink) => string;
 }
+
+export interface PublicNoteLink {
+    title: string;
+    token?: string;
+    slug?: string;
+}
+
+const publicLinkPage = (link: PublicNoteLink) => `/public/notes/${link.token}`;
 
 const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     content,
@@ -18,7 +163,26 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     summaryMode = false,
     onContentChange,
     noteColor,
+    publicNoteLinks,
+    publicNoteHref = publicLinkPage,
 }) => {
+    const storeNotes = useStore((state) => state.notesStore.notes);
+
+    const noteTitleToSlug = useMemo(() => {
+        const map = new Map<string, string>();
+        for (const n of storeNotes) {
+            if (n.uid && n.title) {
+                map.set(n.title.toLowerCase(), `${n.uid}-${slugify(n.title)}`);
+            }
+        }
+        return map;
+    }, [storeNotes]);
+
+    const processedContent = useMemo(
+        () => preprocessWikilinks(content),
+        [content]
+    );
+
     // Determine text color based on background
     const getTextColor = () => {
         if (!noteColor) return undefined;
@@ -71,29 +235,10 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
     // Reset on each render
     checkboxIndexRef.current = -1;
 
-    // Function to toggle checkbox at a specific index
     const toggleCheckbox = (checkboxIndex: number) => {
         if (!onContentChange) return;
-
-        const lines = content.split('\n');
-        let currentCheckboxIndex = -1;
-
-        const newLines = lines.map((line) => {
-            // Match task list items: - [ ] or - [x] or - [X]
-            const match = line.match(/^(\s*-\s*)\[([ xX])\](.*)$/);
-            if (match) {
-                currentCheckboxIndex++;
-                if (currentCheckboxIndex === checkboxIndex) {
-                    const indent = match[1];
-                    const isChecked = match[2].toLowerCase() === 'x';
-                    const rest = match[3];
-                    return `${indent}[${isChecked ? ' ' : 'x'}]${rest}`;
-                }
-            }
-            return line;
-        });
-
-        onContentChange(newLines.join('\n'));
+        const next = toggleTaskListItem(content, checkboxIndex);
+        if (next !== content) onContentChange(next);
     };
 
     return (
@@ -258,13 +403,60 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                         />
                     ),
 
-                    // Customize link styles
-                    a: ({ ...props }) => (
-                        <a
-                            className="text-blue-600 dark:text-blue-400 hover:underline"
-                            {...props}
-                        />
-                    ),
+                    // Customize link styles — wikilinks get a note-chip style
+                    a: ({ href, children, ...props }) => {
+                        if (href?.startsWith(WIKILINK_PREFIX)) {
+                            const title = decodeURIComponent(
+                                href.slice(WIKILINK_PREFIX.length)
+                            );
+                            if (publicNoteLinks) {
+                                const target = publicNoteLinks.find(
+                                    (n) =>
+                                        n.title.toLowerCase() ===
+                                        title.toLowerCase()
+                                );
+                                return target ? (
+                                    <Link
+                                        to={publicNoteHref(target)}
+                                        className="!no-underline hover:!no-underline"
+                                    >
+                                        <NoteBadge title={title} />
+                                    </Link>
+                                ) : (
+                                    <NotSharedNoteBadge title={title} />
+                                );
+                            }
+                            const slug = noteTitleToSlug.get(
+                                title.toLowerCase()
+                            );
+                            const to = slug ? `/note/${slug}` : null;
+                            const badge = <NoteBadge title={title} />;
+                            return to ? (
+                                <Link
+                                    to={to}
+                                    className="!no-underline hover:!no-underline"
+                                >
+                                    {badge}
+                                </Link>
+                            ) : (
+                                <span
+                                    className="cursor-default"
+                                    title="Note not found"
+                                >
+                                    {badge}
+                                </span>
+                            );
+                        }
+                        return (
+                            <a
+                                className="underline underline-offset-2 decoration-gray-400 dark:decoration-gray-500 hover:decoration-current"
+                                href={href}
+                                {...props}
+                            >
+                                {children}
+                            </a>
+                        );
+                    },
 
                     // Customize code styles
                     code: ({ className, children, ...props }) => {
@@ -306,53 +498,75 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                             );
                         }
                     },
-                    pre: ({ children, ...props }) => {
-                        const [copied, setCopied] = useState(false);
-
-                        const handleCopy = () => {
-                            const el = (props as any).ref?.current ?? document.createElement('pre');
-                            // Extract text from children
-                            const getText = (node: React.ReactNode): string => {
-                                if (typeof node === 'string') return node;
-                                if (typeof node === 'number') return String(node);
-                                if (Array.isArray(node)) return node.map(getText).join('');
-                                if (React.isValidElement(node)) {
-                                    return getText((node.props as any).children);
-                                }
-                                return '';
-                            };
-                            const text = getText(children);
-                            navigator.clipboard.writeText(text).then(() => {
-                                setCopied(true);
-                                setTimeout(() => setCopied(false), 2000);
-                            });
-                        };
-
-                        return (
-                            <div className="relative group mb-4">
-                                <pre
-                                    className="rounded-lg overflow-x-auto"
-                                    {...props}
-                                >
-                                    {children}
-                                </pre>
-                                <button
-                                    onClick={handleCopy}
-                                    className="absolute top-2 right-2 px-2 py-1 text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 text-white dark:bg-white/80 dark:text-black"
-                                >
-                                    {copied ? '✓ Copied' : 'Copy'}
-                                </button>
-                            </div>
+                    pre: ({ node, ...props }) => {
+                        const mermaidSource = getMermaidSource(node);
+                        if (mermaidSource === null) {
+                            return <CodeBlock {...props} />;
+                        }
+                        return summaryMode ? (
+                            <span className="text-gray-500 italic">
+                                [Diagram hidden in preview]
+                            </span>
+                        ) : (
+                            <MermaidDiagram code={mermaidSource} />
                         );
                     },
 
-                    // Customize blockquote styles
-                    blockquote: ({ ...props }) => (
-                        <blockquote
-                            className="mb-4 pl-4 border-l-4 border-gray-300 dark:border-gray-600 italic text-gray-600 dark:text-gray-400"
-                            {...props}
-                        />
-                    ),
+                    // Customize blockquote styles — detect Obsidian-style callouts
+                    blockquote: ({ node, children, ...props }) => {
+                        const callout = detectCallout(node);
+                        if (callout) {
+                            const blockChildren =
+                                React.Children.toArray(children);
+                            const markerIndex = blockChildren.findIndex((c) =>
+                                React.isValidElement(c)
+                            );
+                            const contentChildren = blockChildren.slice(
+                                markerIndex + 1
+                            );
+                            const markerParagraph = blockChildren[markerIndex];
+                            if (React.isValidElement(markerParagraph)) {
+                                // Keep soft-wrapped body text that shares the marker's
+                                // paragraph (e.g. "> [!NOTE]\n> body" with no blank line)
+                                const inlineRest = React.Children.toArray(
+                                    (markerParagraph.props as any).children
+                                ).slice(1);
+                                const leadChildren = [
+                                    ...(callout.remainderText
+                                        ? [callout.remainderText]
+                                        : []),
+                                    ...inlineRest,
+                                ];
+                                if (leadChildren.length > 0) {
+                                    contentChildren.unshift(
+                                        React.cloneElement(
+                                            markerParagraph,
+                                            undefined,
+                                            ...leadChildren
+                                        )
+                                    );
+                                }
+                            }
+                            return (
+                                <CalloutBlock
+                                    type={callout.type}
+                                    title={callout.title}
+                                >
+                                    {contentChildren.length > 0
+                                        ? contentChildren
+                                        : null}
+                                </CalloutBlock>
+                            );
+                        }
+                        return (
+                            <blockquote
+                                className="mb-4 pl-4 border-l-4 border-gray-300 dark:border-gray-600 italic text-gray-600 dark:text-gray-400"
+                                {...props}
+                            >
+                                {children}
+                            </blockquote>
+                        );
+                    },
 
                     // Customize table styles - hide tables in summary mode
                     table: ({ ...props }) =>
@@ -397,6 +611,21 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                             {...props}
                         />
                     ),
+
+                    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                    img: ({ node, src, alt, ...props }) =>
+                        src && VIDEO_SRC.test(src) ? (
+                            <video
+                                src={src}
+                                controls
+                                playsInline
+                                preload="metadata"
+                                aria-label={alt || undefined}
+                                className="w-full rounded-lg bg-black"
+                            />
+                        ) : (
+                            <img src={src} alt={alt} {...props} />
+                        ),
 
                     // Customize strong/bold text
                     strong: ({ ...props }) => (
@@ -455,7 +684,7 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                     },
                 }}
             >
-                {content}
+                {processedContent}
             </ReactMarkdown>
         </div>
     );

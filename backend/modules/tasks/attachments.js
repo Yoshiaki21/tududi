@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const crypto = require('crypto');
 const fs = require('fs');
 const { getConfig } = require('../../config/config');
 const config = getConfig();
@@ -8,9 +9,10 @@ const { TaskAttachment, Task } = require('../../models');
 const { uid } = require('../../utils/uid');
 const { logError } = require('../../services/logService');
 const {
-    validateFileType,
+    getExtensionFromMimeType,
     deleteFileFromDisk,
     getFileUrl,
+    decodeUploadFilename,
 } = require('../../utils/attachment-utils');
 const { getAuthenticatedUserId } = require('../../utils/request-utils');
 const permissionsService = require('../../services/permissionsService');
@@ -20,6 +22,8 @@ const {
 } = require('../../middleware/rateLimiter');
 
 const router = express.Router();
+const { requireFeature } = require('../../middleware/entitlements');
+const entitlements = require('../../services/entitlementsService');
 
 // Ensure authenticated
 router.use((req, res, next) => {
@@ -41,8 +45,14 @@ const storage = multer.diskStorage({
         cb(null, uploadDir);
     },
     filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        cb(null, 'task-' + uniqueSuffix + path.extname(file.originalname));
+        const uniqueSuffix =
+            Date.now() + '-' + crypto.randomBytes(12).toString('hex');
+        // Derive the stored extension from the known-types list, never from
+        // the client-supplied original filename, so an attacker can't smuggle
+        // a dangerous extension (e.g. .svg, .html) past a spoofed
+        // Content-Type (GHSA-x24w-9w59-wqhq). Unknown types get .bin.
+        const ext = getExtensionFromMimeType(file.mimetype);
+        cb(null, 'task-' + uniqueSuffix + ext);
     },
 });
 
@@ -51,19 +61,13 @@ const upload = multer({
     limits: {
         fileSize: config.fileUploadLimitMB * 1024 * 1024,
     },
-    fileFilter: function (req, file, cb) {
-        if (validateFileType(file.mimetype)) {
-            return cb(null, true);
-        } else {
-            cb(new Error('File type not allowed'));
-        }
-    },
 });
 
 // Upload attachment to task
 router.post(
     '/upload/task-attachment',
     createResourceLimiter,
+    requireFeature('attachments'),
     upload.single('file'),
     async (req, res) => {
         try {
@@ -107,7 +111,7 @@ router.post(
 
             // Check attachment count limit (20 max)
             const attachmentCount = await TaskAttachment.count({
-                where: { task_id: task.id },
+                where: { task_id: task.id, inline: false },
             });
 
             if (attachmentCount >= 20) {
@@ -124,12 +128,22 @@ router.post(
                 return res.status(400).json({ error: 'No file uploaded' });
             }
 
+            try {
+                await entitlements.assertStorage(userId, req.file.size);
+            } catch (limitError) {
+                await deleteFileFromDisk(req.file.path);
+                if (limitError.statusCode === 402) {
+                    return res.status(402).json(limitError.toJSON());
+                }
+                throw limitError;
+            }
+
             // Create attachment record
             const attachment = await TaskAttachment.create({
                 uid: uid(),
                 task_id: task.id,
                 user_id: userId,
-                original_filename: req.file.originalname,
+                original_filename: decodeUploadFilename(req.file.originalname),
                 stored_filename: req.file.filename,
                 file_size: req.file.size,
                 mime_type: req.file.mimetype,
@@ -153,7 +167,6 @@ router.post(
 
             res.status(500).json({
                 error: 'Failed to upload attachment',
-                details: error.message,
             });
         }
     }
@@ -185,8 +198,9 @@ router.get('/tasks/:taskUid/attachments', async (req, res) => {
         }
 
         // Get attachments
+        // Skip images pasted into comments
         const attachments = await TaskAttachment.findAll({
-            where: { task_id: task.id },
+            where: { task_id: task.id, inline: false },
             order: [['created_at', 'ASC']],
         });
 
@@ -201,7 +215,6 @@ router.get('/tasks/:taskUid/attachments', async (req, res) => {
         logError('Error fetching attachments:', error);
         res.status(500).json({
             error: 'Failed to fetch attachments',
-            details: error.message,
         });
     }
 });
@@ -255,7 +268,6 @@ router.delete(
             logError('Error deleting attachment:', error);
             res.status(500).json({
                 error: 'Failed to delete attachment',
-                details: error.message,
             });
         }
     }
@@ -300,7 +312,6 @@ router.get(
             logError('Error downloading attachment:', error);
             res.status(500).json({
                 error: 'Failed to download attachment',
-                details: error.message,
             });
         }
     }

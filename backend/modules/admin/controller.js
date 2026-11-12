@@ -34,6 +34,113 @@ const adminController = {
      * GET /api/admin/users
      * List all users with roles.
      */
+    async overview(req, res, next) {
+        try {
+            res.json(await adminService.overview(getRequesterId(req)));
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async userStatuses(req, res, next) {
+        try {
+            res.json(await adminService.userStatuses(getRequesterId(req)));
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    // The account emails a user got, and the ones an admin can send.
+    async userEmails(req, res, next) {
+        try {
+            res.json(
+                await adminService.userEmails(
+                    getRequesterId(req),
+                    req.params.id
+                )
+            );
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async previewUserEmail(req, res, next) {
+        try {
+            res.json(
+                await adminService.previewUserEmail(
+                    getRequesterId(req),
+                    req.params.id,
+                    req.params.key
+                )
+            );
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async sendUserEmail(req, res, next) {
+        try {
+            res.json(
+                await adminService.sendUserEmail(
+                    getRequesterId(req),
+                    req.params.id,
+                    req.params.key
+                )
+            );
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async listWaitlist(req, res, next) {
+        try {
+            res.json(
+                await adminService.listWaitlist(getRequesterId(req), {
+                    limit: req.query.limit,
+                    offset: req.query.offset,
+                    q: req.query.q,
+                })
+            );
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async exportWaitlist(req, res, next) {
+        try {
+            const csv = await adminService.exportWaitlist(getRequesterId(req));
+            const day = new Date().toISOString().slice(0, 10);
+            res.type('text/csv').set(
+                'Content-Disposition',
+                `attachment; filename="waitlist-${day}.csv"`
+            );
+            res.send(csv);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async deleteWaitlistEntry(req, res, next) {
+        try {
+            await adminService.deleteWaitlistEntry(
+                getRequesterId(req),
+                req.params.id
+            );
+            res.status(204).send();
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async listRoles(req, res, next) {
+        try {
+            const requesterId = getRequesterId(req);
+            res.json(await adminService.listRoles(requesterId));
+        } catch (error) {
+            next(error);
+        }
+    },
+
     async listUsers(req, res, next) {
         try {
             const requesterId = getRequesterId(req);
@@ -68,9 +175,21 @@ const adminController = {
             const user = await adminService.updateUser(
                 requesterId,
                 req.params.id,
-                req.body
+                req.body,
+                { sessionId: req.sessionID }
             );
             res.json(user);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    async resetUserMfa(req, res, next) {
+        try {
+            const requesterId = getRequesterId(req);
+            res.json(
+                await adminService.resetUserMfa(requesterId, req.params.id, req)
+            );
         } catch (error) {
             next(error);
         }
@@ -102,6 +221,57 @@ const adminController = {
                 req.body
             );
             res.json(result);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * GET /api/admin/oidc-config
+     * Get the OIDC/SSO provider configuration (masked secrets).
+     */
+    async getOidcConfig(req, res, next) {
+        try {
+            const requesterId = getRequesterId(req);
+            const result = await adminService.getOidcConfig(requesterId);
+            res.json(result);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    /**
+     * PUT /api/admin/oidc-config
+     * Replace the OIDC/SSO provider configuration.
+     */
+    async updateOidcConfig(req, res, next) {
+        try {
+            const requesterId = getRequesterId(req);
+            const result = await adminService.updateOidcConfig(
+                requesterId,
+                req.body
+            );
+            res.json(result);
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    // GET /api/admin/blog: the note picked as the blog's front page.
+    async getBlog(req, res, next) {
+        try {
+            res.json(await adminService.getBlog(getRequesterId(req)));
+        } catch (error) {
+            next(error);
+        }
+    },
+
+    // PUT /api/admin/blog: pick the front page note, or clear it.
+    async updateBlog(req, res, next) {
+        try {
+            res.json(
+                await adminService.updateBlog(getRequesterId(req), req.body)
+            );
         } catch (error) {
             next(error);
         }

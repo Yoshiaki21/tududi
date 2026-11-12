@@ -303,32 +303,14 @@ const sendSummaryToUser = async (userId) => {
 
         // Send via Telegram if configured
         if (hasTelegram) {
-            try {
-                await sendTelegramMessage(
-                    user.telegram_bot_token,
-                    user.telegram_chat_id,
-                    summary,
-                    null,
-                    { parseMode: 'MarkdownV2' }
-                );
-            } catch (markdownError) {
-                console.warn(
-                    `MarkdownV2 send failed for user ${userId}, retrying as plain text:`,
-                    markdownError.message
-                );
-                const plainSummary = summary.replace(
-                    /\\([_*\[\]()~`>#+\-=|{}.!\\])/g,
-                    '$1'
-                );
-                await sendTelegramMessage(
-                    user.telegram_bot_token,
-                    user.telegram_chat_id,
-                    plainSummary
-                );
-            }
+            await sendTelegramMessage(
+                user.telegram_bot_token,
+                user.telegram_chat_id,
+                summary
+            );
         }
 
-        // Send via Matrix if configured
+        // Send via Matrix if configured (plain text: strip MarkdownV2 escapes)
         if (hasMatrix) {
             try {
                 const plainSummary = summary.replace(

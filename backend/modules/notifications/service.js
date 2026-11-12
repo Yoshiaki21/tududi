@@ -1,7 +1,7 @@
 'use strict';
 
 const notificationsRepository = require('./repository');
-const { NotFoundError } = require('../../shared/errors');
+const { NotFoundError, ValidationError } = require('../../shared/errors');
 
 class NotificationsService {
     async getAll(userId, options) {
@@ -19,9 +19,9 @@ class NotificationsService {
         return { count };
     }
 
-    async markAsRead(userId, notificationId) {
-        const notification = await notificationsRepository.findByIdAndUser(
-            notificationId,
+    async markAsRead(userId, notificationUid) {
+        const notification = await notificationsRepository.findByUidAndUser(
+            notificationUid,
             userId
         );
         if (!notification) {
@@ -31,9 +31,9 @@ class NotificationsService {
         return { notification, message: 'Notification marked as read' };
     }
 
-    async markAsUnread(userId, notificationId) {
-        const notification = await notificationsRepository.findByIdAndUser(
-            notificationId,
+    async markAsUnread(userId, notificationUid) {
+        const notification = await notificationsRepository.findByUidAndUser(
+            notificationUid,
             userId
         );
         if (!notification) {
@@ -48,9 +48,9 @@ class NotificationsService {
         return { count, message: `Marked ${count} notifications as read` };
     }
 
-    async dismiss(userId, notificationId) {
-        const notification = await notificationsRepository.findByIdAndUser(
-            notificationId,
+    async dismiss(userId, notificationUid) {
+        const notification = await notificationsRepository.findByUidAndUser(
+            notificationUid,
             userId,
             { dismissed_at: null }
         );
@@ -61,115 +61,102 @@ class NotificationsService {
         return { message: 'Notification dismissed successfully' };
     }
 
-    async triggerTestNotification(userId, testType) {
+    // Sends one test through a single channel, so each column of the
+    // Notifications tab can be checked on its own.
+    async triggerTestNotification(userId, channel) {
         const { User, Notification } = require('../../models');
-        const {
-            shouldSendTelegramNotification,
-            shouldSendMatrixNotification,
-            ensureNotificationPreferences,
-        } = require('../../utils/notificationPreferences');
 
-        const user = await User.findByPk(userId, {
-            attributes: [
-                'id',
-                'name',
-                'notification_preferences',
-                'telegram_bot_token',
-                'telegram_chat_id',
-                'matrix_homeserver_url',
-                'matrix_access_token',
-                'matrix_room_id',
-            ],
-        });
-
-        if (!user) {
-            throw new NotFoundError('User not found');
+        if (channel === 'inApp') {
+            await Notification.createNotification({
+                userId,
+                type: 'system',
+                title: 'Test notification',
+                message: 'In-app notifications are working.',
+                sources: [],
+            });
+            return { channel, delivered: true };
         }
 
-        // Ensure notification_preferences are properly initialized
-        // This handles cases where the field might be NULL or incomplete
-        user.notification_preferences = ensureNotificationPreferences(
-            user.notification_preferences
-        );
-
-        const typeMapping = {
-            task_due_soon: {
-                backendType: 'task_due_soon',
-                preferenceKey: 'dueTasks',
-                title: 'Test: Task Due Soon',
-                message:
-                    'This is a test notification for tasks that are due within 24 hours',
-                data: { test: true, taskName: 'Sample Task' },
-            },
-            task_overdue: {
-                backendType: 'task_overdue',
-                preferenceKey: 'overdueTasks',
-                title: 'Test: Task Overdue',
-                message: 'This is a test notification for overdue tasks',
-                data: { test: true, taskName: 'Sample Overdue Task' },
-            },
-            defer_until: {
-                backendType: 'task_due_soon',
-                preferenceKey: 'deferUntil',
-                title: 'Test: Task Now Active',
-                message:
-                    'This is a test notification for tasks that are now available to work on',
-                data: {
-                    test: true,
-                    taskName: 'Sample Deferred Task',
-                    reason: 'defer_until_reached',
-                },
-            },
-            project_due_soon: {
-                backendType: 'project_due_soon',
-                preferenceKey: 'dueProjects',
-                title: 'Test: Project Due Soon',
-                message:
-                    'This is a test notification for projects that are due within 24 hours',
-                data: { test: true, projectName: 'Sample Project' },
-            },
-            project_overdue: {
-                backendType: 'project_overdue',
-                preferenceKey: 'overdueProjects',
-                title: 'Test: Project Overdue',
-                message: 'This is a test notification for overdue projects',
-                data: { test: true, projectName: 'Sample Overdue Project' },
-            },
-        };
-
-        const config = typeMapping[testType];
-        if (!config) {
-            throw new Error(`Invalid test type: ${testType}`);
+        if (channel === 'push') {
+            const pushService = require('../push/service');
+            const sent = await pushService.sendToUser(userId, {
+                title: 'Test notification',
+                body: 'Push notifications are working on this device.',
+                url: '/',
+                tag: 'test',
+            });
+            if (sent === 0) {
+                throw new ValidationError(
+                    'No device received it. Turn on push for this device first.'
+                );
+            }
+            return { channel, delivered: true, devices: sent };
         }
 
-        const sources = [];
-        if (shouldSendTelegramNotification(user, config.preferenceKey)) {
-            sources.push('telegram');
+        if (channel === 'telegram') {
+            const telegramService = require('../telegram/telegramNotificationService');
+            const user = await User.findByPk(userId, {
+                attributes: [
+                    'id',
+                    'name',
+                    'surname',
+                    'telegram_bot_token',
+                    'telegram_chat_id',
+                ],
+            });
+            if (!user) throw new NotFoundError('User not found');
+            const result = await telegramService.sendTelegramNotification(
+                user,
+                {
+                    title: 'Test notification',
+                    message: 'Telegram notifications are working.',
+                    level: 'info',
+                }
+            );
+            if (!result.success) {
+                throw new ValidationError(
+                    result.error || 'Could not send the Telegram message'
+                );
+            }
+            return { channel, delivered: true };
         }
-        if (shouldSendMatrixNotification(user, config.preferenceKey)) {
-            sources.push('matrix');
+        if (channel === 'matrix') {
+            const matrixService = require('../matrix/matrixNotificationService');
+            const user = await User.findByPk(userId, {
+                attributes: [
+                    'id',
+                    'name',
+                    'matrix_homeserver_url',
+                    'matrix_access_token',
+                    'matrix_room_id',
+                ],
+            });
+            if (!user) throw new NotFoundError('User not found');
+            const result = await matrixService.sendMatrixNotification(user, {
+                title: 'Test notification',
+                message: 'Matrix notifications are working.',
+                level: 'info',
+            });
+            if (!result.success) {
+                throw new ValidationError(
+                    result.error || 'Could not send the Matrix message'
+                );
+            }
+            return { channel, delivered: true };
         }
 
-        const notification = await Notification.createNotification({
-            userId: user.id,
-            type: config.backendType,
-            title: config.title,
-            message: config.message,
-            data: config.data,
-            sources,
-            sentAt: new Date(),
-        });
+        if (channel === 'apprise') {
+            const appriseService = require('../apprise/service');
+            return appriseService.sendTest(userId);
+        }
 
-        return {
-            notification: {
-                id: notification.id,
-                type: notification.type,
-                title: notification.title,
-                message: notification.message,
-                sources: notification.sources,
-            },
-            message: 'Test notification created successfully',
-        };
+        if (channel === 'email') {
+            throw new ValidationError(
+                'Email notifications are not available yet'
+            );
+        }
+
+        throw new ValidationError(`Invalid channel: ${channel}`);
     }
 }
 

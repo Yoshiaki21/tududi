@@ -1,23 +1,44 @@
 const bcrypt = require('bcrypt');
 const { User } = require('../../../models');
+const { findValidTokenByValue } = require('../../users/apiTokenService');
+const { caldavAuthLimiter } = require('../../../middleware/rateLimiter');
+const { hasFeature } = require('../../../services/entitlementsService');
+const { isEnabled: isMfaEnabled } = require('../../mfa/service');
+
+// CalDAV is a plan feature on hosted instances. Checked once the account
+// is known, whichever way it authenticated.
+async function planAllows(user, res) {
+    if (await hasFeature(user.id, 'caldav')) return true;
+    res.status(403).json({ error: 'CalDAV is not included in your plan' });
+    return false;
+}
 
 async function caldavAuth(req, res, next) {
     try {
-        if (
-            req.session?.userId ||
-            req.headers.authorization?.startsWith('Bearer ')
-        ) {
-            if (req.session?.userId) {
-                const user = await User.findByPk(req.session.userId);
+        if (req.session?.userId) {
+            const user = await User.findByPk(req.session.userId);
+            if (user) {
+                if (!(await planAllows(user, res))) return;
+                req.currentUser = user;
+                return next();
+            }
+        }
+
+        if (req.headers.authorization?.startsWith('Bearer ')) {
+            const tokenValue = req.headers.authorization.slice(7);
+            const tokenRecord = await findValidTokenByValue(tokenValue);
+            if (tokenRecord) {
+                const user = await User.findByPk(tokenRecord.user_id);
                 if (user) {
+                    if (!(await planAllows(user, res))) return;
                     req.currentUser = user;
                     return next();
                 }
             }
-
-            if (req.headers.authorization?.startsWith('Bearer ')) {
-                return next();
-            }
+            return res
+                .status(401)
+                .set('WWW-Authenticate', 'Basic realm="Tududi CalDAV"')
+                .json({ error: 'Invalid or expired token' });
         }
 
         const authHeader = req.headers.authorization;
@@ -44,25 +65,38 @@ async function caldavAuth(req, res, next) {
         const username = credentials.substring(0, colonIndex);
         const password = credentials.substring(colonIndex + 1);
 
-        const user = await User.findOne({ where: { email: username } });
-        if (!user) {
-            return res
-                .status(401)
-                .set('WWW-Authenticate', 'Basic realm="Tududi CalDAV"')
-                .json({ error: 'Invalid credentials' });
-        }
-
-        const isValidPassword = await bcrypt.compare(
-            password,
-            user.password_digest
+        // Basic auth is a password login outside the /api limiters, so it
+        // gets its own throttle keyed by IP and the attempted username.
+        req.caldavUsername = username;
+        const limited = await new Promise((resolve) =>
+            caldavAuthLimiter(req, res, (err) => resolve(err || null))
         );
-        if (!isValidPassword) {
+        if (res.headersSent) return;
+        if (limited) throw limited;
+
+        const user = await User.findOne({
+            where: { email: String(username).trim().toLowerCase() },
+        });
+        // An API token works as the password, which is how an account with
+        // two-factor sign-in connects a calendar app: the account password
+        // alone is not enough for it.
+        let isValid = false;
+        if (user && password.startsWith('tt_')) {
+            const tokenRecord = await findValidTokenByValue(password);
+            isValid = !!tokenRecord && tokenRecord.user_id === user.id;
+        } else if (user?.password_digest && !(await isMfaEnabled(user.id))) {
+            // Accounts created through SSO have no password; bcrypt.compare
+            // against null would throw and turn a bad login into a 500.
+            isValid = await bcrypt.compare(password, user.password_digest);
+        }
+        if (!user || !isValid) {
             return res
                 .status(401)
                 .set('WWW-Authenticate', 'Basic realm="Tududi CalDAV"')
                 .json({ error: 'Invalid credentials' });
         }
 
+        if (!(await planAllows(user, res))) return;
         req.currentUser = user;
 
         if (req.params.username && req.params.username !== user.email) {

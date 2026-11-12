@@ -11,6 +11,12 @@ import {
 } from '../../utils/profileService';
 import { useTranslation } from 'react-i18next';
 import { resolveUserLocale } from '../../utils/localeUtils';
+import { FORM } from '../../constants/formClasses';
+import {
+    DATE_SHORTCUTS,
+    DateShortcut,
+    shortcutDate,
+} from '../../utils/dateShortcuts';
 
 interface DateTimePickerProps {
     value: string; // ISO string
@@ -18,6 +24,11 @@ interface DateTimePickerProps {
     placeholder?: string;
     disabled?: boolean;
     className?: string;
+    renderTrigger?: (opts: {
+        isOpen: boolean;
+        onClick: () => void;
+        displayValue: string | null;
+    }) => React.ReactNode;
 }
 
 const DateTimePicker: React.FC<DateTimePickerProps> = ({
@@ -26,8 +37,9 @@ const DateTimePicker: React.FC<DateTimePickerProps> = ({
     placeholder = 'Select date and time',
     disabled = false,
     className = '',
+    renderTrigger,
 }) => {
-    const { i18n } = useTranslation();
+    const { t, i18n } = useTranslation();
     const displayLocale = useMemo(
         () => resolveUserLocale(i18n?.language),
         [i18n?.language]
@@ -144,7 +156,7 @@ const DateTimePicker: React.FC<DateTimePickerProps> = ({
             const rect = dropdownRef.current.getBoundingClientRect();
             const spaceBelow = window.innerHeight - rect.bottom;
             const spaceAbove = rect.top;
-            const menuHeight = 420; // Calendar + time picker height
+            const menuHeight = 460; // Shortcuts + calendar + time picker height
             const padding = 16;
 
             const wouldFitBelow = spaceBelow >= menuHeight + padding;
@@ -207,6 +219,25 @@ const DateTimePicker: React.FC<DateTimePickerProps> = ({
         dateTime.setHours(parseInt(hours), parseInt(minutes), 0, 0);
 
         onChange(dateTime.toISOString());
+        setIsOpen(false);
+    };
+
+    const shortcutLabels: Record<DateShortcut, string> = {
+        today: t('datePicker.shortcuts.today', 'Today'),
+        tomorrow: t('datePicker.shortcuts.tomorrow', 'Tomorrow'),
+        weekend: t('datePicker.shortcuts.weekend', 'Weekend'),
+        next_week: t('datePicker.shortcuts.nextWeek', 'Next week'),
+    };
+
+    // Applies at once and keeps the current time, so a whole-day date stays
+    // whole-day instead of picking up the time select's 12:00 default.
+    const handleShortcut = (kind: DateShortcut) => {
+        const date = shortcutDate(kind, new Date(), firstDayOfWeek);
+        const current = value ? new Date(value) : null;
+        if (current && !isNaN(current.getTime())) {
+            date.setHours(current.getHours(), current.getMinutes(), 0, 0);
+        }
+        onChange(date.toISOString());
         setIsOpen(false);
     };
 
@@ -297,48 +328,57 @@ const DateTimePicker: React.FC<DateTimePickerProps> = ({
             ref={dropdownRef}
             data-testid="datetimepicker"
             data-state={isOpen ? 'open' : 'closed'}
-            className={`relative inline-block text-left w-full ${className}`}
+            className={`relative inline-block text-left ${renderTrigger ? '' : 'w-full'} ${className}`}
         >
-            <div className="relative">
-                <button
-                    type="button"
-                    className={`inline-flex justify-between w-full px-3 py-2 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
-                        disabled
-                            ? 'opacity-50 cursor-not-allowed'
-                            : 'hover:bg-gray-50 dark:hover:bg-gray-700'
-                    }`}
-                    onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleToggle();
-                    }}
-                    disabled={disabled}
-                >
-                    <span
-                        className={`truncate ${!value ? 'text-gray-500 dark:text-gray-400' : ''}`}
-                    >
-                        {formatDisplayDateTime(value)}
-                    </span>
-                    <div className="flex items-center space-x-1">
-                        <ClockIcon className="w-5 h-5 text-gray-500 dark:text-gray-300" />
-                    </div>
-                </button>
-                {value && (
+            {renderTrigger ? (
+                renderTrigger({
+                    isOpen,
+                    onClick: handleToggle,
+                    displayValue: value ? formatDisplayDateTime(value) : null,
+                })
+            ) : (
+                <div className="relative">
                     <button
                         type="button"
-                        onClick={handleClear}
-                        className="absolute right-8 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xs w-4 h-4 flex items-center justify-center"
+                        className={`inline-flex justify-between w-full px-3 py-2 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                            disabled
+                                ? 'opacity-50 cursor-not-allowed'
+                                : 'hover:bg-gray-50 dark:hover:bg-gray-700'
+                        }`}
+                        onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleToggle();
+                        }}
+                        disabled={disabled}
                     >
-                        ×
+                        <span
+                            className={`truncate ${!value ? 'text-gray-500 dark:text-gray-400' : ''}`}
+                        >
+                            {formatDisplayDateTime(value)}
+                        </span>
+                        <div className="flex items-center space-x-1">
+                            <ClockIcon className="w-5 h-5 text-gray-500 dark:text-gray-300" />
+                        </div>
                     </button>
-                )}
-            </div>
+                    {value && (
+                        <button
+                            type="button"
+                            onClick={handleClear}
+                            className="absolute right-8 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xs w-4 h-4 flex items-center justify-center"
+                        >
+                            ×
+                        </button>
+                    )}
+                </div>
+            )}
 
             {isOpen &&
                 createPortal(
                     <div
                         ref={menuRef}
-                        className="fixed z-50 bg-white dark:bg-gray-700 shadow-lg rounded-md border border-gray-200 dark:border-gray-600"
+                        data-portal-menu
+                        className="fixed z-[10050] bg-white dark:bg-gray-700 shadow-lg rounded-md border border-gray-200 dark:border-gray-600"
                         style={{
                             top: `${position.top}px`,
                             left: `${position.left}px`,
@@ -346,6 +386,29 @@ const DateTimePicker: React.FC<DateTimePickerProps> = ({
                         }}
                         onClick={(e) => e.stopPropagation()}
                     >
+                        {/* Shortcuts */}
+                        <div className="flex flex-wrap gap-1.5 p-3 pb-0">
+                            {DATE_SHORTCUTS.map((kind) => (
+                                <button
+                                    key={kind}
+                                    type="button"
+                                    onClick={() => handleShortcut(kind)}
+                                    title={shortcutDate(
+                                        kind,
+                                        new Date(),
+                                        firstDayOfWeek
+                                    ).toLocaleDateString(displayLocale, {
+                                        weekday: 'short',
+                                        month: 'short',
+                                        day: 'numeric',
+                                    })}
+                                    className="px-2 py-1 text-xs rounded-md bg-gray-100 dark:bg-gray-600 text-gray-700 dark:text-gray-200 hover:bg-blue-100 hover:text-blue-800 dark:hover:bg-blue-900 dark:hover:text-blue-100 transition-colors"
+                                >
+                                    {shortcutLabels[kind]}
+                                </button>
+                            ))}
+                        </div>
+
                         {/* Calendar Header */}
                         <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-600">
                             <button
@@ -416,7 +479,7 @@ const DateTimePicker: React.FC<DateTimePickerProps> = ({
                                 onChange={(e) =>
                                     setSelectedTime(e.target.value)
                                 }
-                                className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-32"
+                                className={`${FORM.select} w-full`}
                             >
                                 {timeOptions.map((time) => {
                                     const [h, m] = time.split(':');

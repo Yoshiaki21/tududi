@@ -4,6 +4,7 @@ const {
     buildPropstat,
     parsePropfind,
 } = require('../webdav/utils');
+const { perProjectEnabled } = require('../webdav/projects');
 
 function handleWellKnown(req, res) {
     const protocol = req.protocol;
@@ -74,24 +75,56 @@ async function handlePrincipalPropfind(req, res) {
             return res.status(400).json({ error: 'Invalid PROPFIND request' });
         }
 
-        const href = `/caldav/${encodeURIComponent(username)}/`;
+        const depth = parseInt(req.headers.depth || '0', 10);
+        const principalHref = `/caldav/${encodeURIComponent(username)}/`;
+        const perProject = perProjectEnabled();
+
         const props = {
             'D:resourcetype': {
                 'D:collection': '',
                 'D:principal': '',
             },
+            // Point home-set to the principal itself so clients doing a depth-1
+            // PROPFIND on it discover the tasks/ calendar as a child. When
+            // per-project calendars are enabled (CALDAV_PROJECTS_AS_CALENDARS),
+            // point it at projects/ instead, which enumerates one calendar per
+            // project (see webdav/projects.js).
             'C:calendar-home-set': {
-                'D:href': `/caldav/${encodeURIComponent(username)}/tasks/`,
+                'D:href': perProject
+                    ? `${principalHref}projects/`
+                    : principalHref,
             },
             'D:current-user-principal': {
-                'D:href': `/caldav/${encodeURIComponent(username)}/`,
+                'D:href': principalHref,
             },
             'D:displayname': username,
         };
 
         const propstat = buildPropstat(props);
-        const response = buildResponse(href, propstat);
-        const xml = buildMultistatus([response]);
+        const response = buildResponse(principalHref, propstat);
+        const responses = [response];
+
+        // Depth-1: expose the tasks calendar as a child of the home set so
+        // clients like Tasks.org can discover it without creating a new list.
+        // When per-project calendars are enabled the home-set is projects/
+        // (handled in webdav/projects.js), so skip the single tasks/ child here.
+        if (depth >= 1 && !perProject) {
+            const tasksHref = `/caldav/${encodeURIComponent(username)}/tasks/`;
+            const tasksProps = {
+                'D:resourcetype': {
+                    'D:collection': '',
+                    'C:calendar': '',
+                },
+                'D:displayname': 'Tududi Tasks',
+                'C:calendar-description': 'Tasks from Tududi',
+                'C:supported-calendar-component-set': {
+                    'C:comp': { $: { name: 'VTODO' } },
+                },
+            };
+            responses.push(buildResponse(tasksHref, buildPropstat(tasksProps)));
+        }
+
+        const xml = buildMultistatus(responses);
 
         res.status(207)
             .set('Content-Type', 'application/xml; charset=utf-8')

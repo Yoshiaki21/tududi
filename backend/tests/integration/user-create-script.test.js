@@ -1,6 +1,6 @@
 const { execSync, spawn } = require('child_process');
 const path = require('path');
-const { User } = require('../../models');
+const { User, Role } = require('../../models');
 
 describe('User Create Script', () => {
     const scriptPath = path.join(__dirname, '../../scripts/user-create.js');
@@ -71,7 +71,7 @@ describe('User Create Script', () => {
 
         it('should create user with minimum password length', async () => {
             const email = 'testuser2@example.com';
-            const password = '123456'; // Exactly 6 characters
+            const password = '12345678'; // Exactly 8 characters
 
             const result = await runUserCreateScript([email, password]);
 
@@ -141,8 +141,8 @@ describe('User Create Script', () => {
             }
         });
 
-        it('should reject password shorter than 6 characters', async () => {
-            const shortPasswords = ['', '1', '12', '123', '1234', '12345'];
+        it('should reject password shorter than 8 characters', async () => {
+            const shortPasswords = ['', '1', '123', '12345', '1234567'];
 
             for (const password of shortPasswords) {
                 const result = await runUserCreateScript([
@@ -165,17 +165,36 @@ describe('User Create Script', () => {
                 password_digest: await require('bcrypt').hash(password, 10),
             });
 
-            // Try to create same user again (should update password)
-            const result = await runUserCreateScript([email, newPassword]);
+            // Without the flag the existing password must survive: the Docker
+            // entrypoint runs this script on every boot.
+            const untouched = await runUserCreateScript([
+                email,
+                newPassword,
+                'true',
+            ]);
+            expect(untouched.code).toBe(0);
+
+            const bcrypt = require('bcrypt');
+            const unchangedUser = await User.findOne({ where: { email } });
+            expect(
+                await bcrypt.compare(password, unchangedUser.password_digest)
+            ).toBe(true);
+            const role = await Role.findOne({
+                where: { user_id: unchangedUser.id },
+            });
+            expect(role.is_admin).toBe(true);
+
+            // With --update-password the password is replaced
+            const result = await runUserCreateScript([
+                email,
+                newPassword,
+                '--update-password',
+            ]);
 
             expect(result.code).toBe(0);
 
-            // Verify user still exists and password was updated
             const updatedUser = await User.findOne({ where: { email } });
             expect(updatedUser).toBeTruthy();
-
-            // Verify the password was updated
-            const bcrypt = require('bcrypt');
             const isValid = await bcrypt.compare(
                 newPassword,
                 updatedUser.password_digest

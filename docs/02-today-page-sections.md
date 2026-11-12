@@ -1,5 +1,7 @@
 # Today Page Sections - Behavior Rules
 
+> The default Today page is now the day plan (see [Daily Plan](20-daily-plan.md)). The classic page that showed these sections was removed. The section lists below are still computed by the backend and feed the planner's candidates, the AI brief and the MCP tools.
+
 This document explains how the four main sections of the Today page work in tududi. For technical implementation details, see `/backend/modules/tasks/queries/metrics-queries.js` and `/backend/modules/tasks/queries/metrics-computation.js`.
 
 ---
@@ -14,6 +16,10 @@ The Today page is divided into **four main sections** that organize your tasks:
 4. **Completed** - Tasks you finished today
 
 Each section follows specific rules to show the right tasks without duplication.
+
+**Only your own work.** Every section, the Today and Upcoming lists, the planner's suggestions and the AI brief take tasks you own or that are assigned to you. Tasks you can see only because a project or area is shared with you stay on that project or area page, the Tasks page and search, so a shared area does not fill everyone's day with each other's tasks. Assign a task to yourself to bring it into your Today.
+
+Around these sections the page can also show panels that do not own tasks: the AI Daily Brief, the daily quote, metrics, Area Balance, Active Projects and a **today** list of open tasks carrying the `today` system tag (see [Other Panels](#other-panels)).
 
 ---
 
@@ -102,7 +108,7 @@ Same as Planned section:
 
 ### What Appears Here
 
-Up to **10 tasks** automatically selected as good candidates for you to work on next.
+Tasks automatically selected as good candidates to work on next, ordered by relevance.
 
 ### When Suggestions Appear
 
@@ -113,44 +119,71 @@ Suggestions are only shown if:
 
 If none of these are true, no suggestions are shown.
 
-### Selection Rules
+### Eligibility Rules
 
 1. **Excludes tasks already visible elsewhere**
-   - Tasks in Planned, Overdue, Due Today, or In Progress don't appear
+   - Tasks in Planned, Overdue, Due Today, In Progress, or Completed don't appear
    - Avoids duplication across sections
 
-2. **Excludes "someday" tasks by default**
-   - Tasks tagged as "someday" are only included if there aren't enough other suggestions
-   - Prioritizes actionable tasks over future ideas
-
-3. **Excludes deferred tasks**
+2. **Excludes deferred tasks**
    - Tasks with "Defer Until" set to the future don't appear
-   - Only shows tasks available to work on now
+   - Only shows tasks available to work on right now
 
-4. **No subtasks or recurring templates**
-   - Only shows parent tasks you can directly work on
+3. **Excludes far-future tasks**
+   - Tasks with a due date more than 3 days away are not suggested
+   - Tasks due today, tomorrow, or the day after are still eligible (and get a boost)
 
-### How Tasks Are Selected
+4. **Excludes "someday" tasks by default**
+   - Tasks tagged "someday" are only included as a fallback if fewer than 6 suggestions exist
 
-The system picks suggestions in this order:
+5. **One task per project**
+   - The system picks the single best next action per active project
+   - Inactive (done/cancelled) projects are excluded entirely
 
-1. **High-priority tasks without a project** (unscheduled important work)
-2. **High-priority tasks with a project** (project-related important work)
-3. **Medium-priority tasks** (both with and without projects)
-4. **Tasks with upcoming due dates** (time-sensitive work)
-5. **"Someday" tasks** (only if fewer than 6 suggestions found above)
+6. **No subtasks or recurring templates**
+   - Only parent tasks you can directly act on are shown
 
-Within each priority level, tasks with earlier due dates are preferred.
+### Scoring
 
-### Limits
+Every eligible task receives a base score from its priority, then context boosts are added:
 
-- Maximum 10 suggestions shown
-- If you have fewer than 10 qualifying tasks, all are shown
+| Signal | Score added |
+|--------|-------------|
+| High priority | 100 base |
+| Medium priority | 60 base |
+| Low priority | 30 base |
+| No priority | 0 base |
+| Orphan task (no project) | +5 |
+| Due today or overdue | +15 |
+| Advances an active goal | +12 |
+| Matches your current context tag | +10 |
+| Revives a stalled project | +8 |
+| Helps rebalance an under-represented area (balance mode) | +15–30 |
+
+### Display Order
+
+After scoring, tasks are sorted into **9 ordered buckets**. Within each bucket, tasks are ranked by their score:
+
+| Position | Bucket |
+|----------|--------|
+| 1 | Project tasks — **High** priority |
+| 2 | Orphan tasks — **High** priority |
+| 3 | Project tasks — **Medium** priority |
+| 4 | Orphan tasks — **Medium** priority |
+| 5 | Project tasks — **Low** priority |
+| 6 | Orphan tasks — **Low** priority |
+| 7 | Project tasks — **No** priority |
+| 8 | Orphan tasks — **No** priority |
+| 9 | **Aging nudge** — one old null-priority orphan task untouched for 60+ days |
+
+**Orphan tasks** are tasks with no project assigned.
+**Aging nudge** only applies to null-priority orphan tasks that haven't been updated in 60+ days. Tasks with any explicit priority set (high/medium/low) are never demoted to the aging bucket regardless of age.
 
 ### User Control
 
 - Can be hidden entirely via Today Settings (hidden by default)
 - Collapse/expand state is remembered in your browser
+- Shows 5 tasks initially, with "Show more" to load additional suggestions
 
 ---
 
@@ -262,18 +295,29 @@ You can customize what appears on your Today page:
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| Show Overdue/Due Today | On | Shows/hides Overdue section |
-| Show Suggestions | Off | Shows/hides Suggested section |
-| Show Completed | On | Shows/hides Completed section |
-| Show Metrics | Off | Shows/hides task metrics widget |
+| Show AI Daily Brief | On | Shows/hides the AI Daily Brief panel (needs the AI assistant configured) |
 | Show Daily Quote | On | Shows/hides daily motivational quote |
-| Show Progress Bar | On | Shows/hides completion progress bar |
+| Show Metrics | Off | Shows/hides task metrics widget |
+| Show Area Balance | On | Shows/hides the Area Balance panel |
+| Show Active Projects | On | Shows/hides the Active Projects panel |
+| Show Tagged Today | On | Shows/hides the **today** list of tasks tagged `today` |
+| Show Suggested | Off | Shows/hides Suggested section |
+| Show Due Today Tasks | On | Shows/hides Overdue and Due Today tasks |
+| Show Completed Tasks | On | Shows/hides Completed section |
+
+The progress bar is always shown and has no toggle. Settings missing from an account created before a toggle existed default to On for AI Daily Brief, Area Balance, Active Projects and Tagged Today.
 
 ### Where to Change Settings
 
 - Click the settings icon (⚙️) on the Today page
 - Settings auto-save when you toggle them
 - Settings are stored per user account
+
+### Other Panels
+
+- **Tagged today**: open tasks (not done, archived or cancelled, not habits) carrying the `today` system tag, sorted by priority, then due date, then project. Tagging is a way to pin a task to today without changing its status or due date. The list is hidden when empty.
+- **Area Balance** and **Active Projects**: overview panels of how your open work spreads across areas and which projects are in progress.
+- **AI Daily Brief**: see [AI Assistant](13-ai-assistant.md).
 
 ### Collapsible Sections
 
@@ -322,6 +366,10 @@ Each section can be collapsed or expanded:
 - Separate from regular tasks
 - Have their own "Habits completed today" subsection in Completed
 
+### When a Focus is active
+
+With a Focus set from the chip in the top bar (see [Focus](25-focus.md)), every section lists only tasks in the Focus area, project and tags, including the suggested ones. The page sends the Focus as `area_uid`, `project_uid` and `tags` on its requests; nothing is applied on the server from the saved setting. Tasks already in the day's plan stay in it and are dimmed when they fall outside the Focus.
+
 ---
 
 ## Performance & Limits
@@ -352,13 +400,12 @@ The Today page automatically refreshes:
 - [Database & Migrations](database.md) - Data model details
 
 **Technical Implementation Files:**
+- Backend eligibility & sorting: `/backend/modules/tasks/queries/metrics-computation.js`
 - Backend queries: `/backend/modules/tasks/queries/metrics-queries.js`
-- Suggested tasks logic: `/backend/modules/tasks/queries/metrics-computation.js`
-- Frontend component: `/frontend/components/Task/TasksToday.tsx`
 - Task model: `/backend/models/task.js`
 
 ---
 
-**Document Version:** 1.0.0
-**Last Updated:** 2026-03-14
+**Document Version:** 1.1.0
+**Last Updated:** 2026-06-25
 **Audience:** Developers, AI assistants, and end users

@@ -1,0 +1,668 @@
+import React, {
+    useState,
+    useEffect,
+    useCallback,
+    useMemo,
+    useRef,
+} from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import {
+    ExclamationTriangleIcon,
+    BoltIcon,
+    ArrowPathIcon,
+    ClockIcon,
+    ScaleIcon,
+    ArrowRightCircleIcon,
+    SparklesIcon,
+} from '@heroicons/react/24/outline';
+import { Task } from '../../../entities/Task';
+import { Project } from '../../../entities/Project';
+import { useToast } from '../../Shared/ToastContext';
+import ConfirmDialog from '../../Shared/ConfirmDialog';
+import { isTaskCompleted, isTaskDone } from '../../../constants/taskStatus';
+import {
+    toggleTaskCompletion,
+    updateTask,
+    fetchSubtasks,
+    deleteTask,
+    createTask,
+    fetchTaskByUid,
+    TASK_RELATIONS_CHANGED_EVENT,
+    TaskRelationsChangedDetail,
+} from '../../../utils/tasksService';
+import { isTaskOverdueInTodayPlan } from '../../../utils/dateUtils';
+import { getApiPath } from '../../../config/paths';
+import TaskRowCollapsed from './TaskRowCollapsed';
+import TaskRowExpanded from './TaskRowExpanded';
+import { useTaskRowExpansion } from './TaskRowExpansionContext';
+import { useTaskRowSave } from './useTaskRowSave';
+import {
+    openTaskPanel,
+    TASK_PANEL_SAVED_EVENT,
+    TaskPanelSavedDetail,
+} from '../../../store/taskPanelStore';
+
+const getPriorityBorderClassName = (
+    priority?: Task['priority'] | number
+): string => {
+    let p = priority;
+    if (typeof p === 'number') {
+        p = (['low', 'medium', 'high'] as const)[p] || undefined;
+    }
+    switch (p) {
+        case 'high':
+            return 'border-l-[3px] border-l-red-500';
+        case 'medium':
+            return 'border-l-[3px] border-l-yellow-400';
+        case 'low':
+            return 'border-l-[3px] border-l-blue-400';
+        default:
+            return 'border-l-[3px] border-l-transparent';
+    }
+};
+
+export interface TaskRowProps {
+    task: Task;
+    onTaskUpdate: (task: Task) => Promise<void>;
+    onTaskCompletionToggle?: (task: Task) => void;
+    onTaskDelete: (taskUid: string) => void;
+    projects: Project[];
+    hideProjectName?: boolean;
+    // Set on an area's own page, where every row is in that area.
+    hideAreaName?: boolean;
+    onToggleToday?: (taskId: number, task?: Task) => Promise<void>;
+    isUpcomingView?: boolean;
+    showCompletedTasks?: boolean;
+    isInCompletedSection?: boolean;
+    hideStatusControl?: boolean;
+    isKanbanView?: boolean;
+    showSuggestionChips?: boolean;
+    compact?: boolean;
+    // Opt out of inline quick-edit: clicking the row opens the full page.
+    disableExpand?: boolean;
+    // For pages whose onTaskUpdate only updates local state: the row saves a
+    // status picked from its status menu itself.
+    saveStatusChanges?: boolean;
+}
+
+const TaskRow: React.FC<TaskRowProps> = ({
+    task,
+    onTaskUpdate,
+    onTaskCompletionToggle,
+    onTaskDelete,
+    projects,
+    hideProjectName = false,
+    hideAreaName = false,
+    isUpcomingView = false,
+    showCompletedTasks = false,
+    isInCompletedSection = false,
+    hideStatusControl = false,
+    compact = false,
+    showSuggestionChips = false,
+    disableExpand = false,
+    saveStatusChanges = false,
+}) => {
+    const navigate = useNavigate();
+    const location = useLocation();
+    const { t } = useTranslation();
+    const { showErrorToast, showUndoToast } = useToast();
+
+    const [projectList, setProjectList] = useState<Project[]>(projects);
+    const [isConfirmDialogOpen, setIsConfirmDialogOpen] = useState(false);
+    const [isBlockedConfirmOpen, setIsBlockedConfirmOpen] = useState(false);
+    const [isAnimatingOut, setIsAnimatingOut] = useState(false);
+    const [isStatusMenuOpen, setIsStatusMenuOpen] = useState(false);
+    const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
+
+    const [subtasks, setSubtasks] = useState<Task[]>(task.subtasks || []);
+    const [loadingSubtasks, setLoadingSubtasks] = useState(false);
+    const [showSubtasks, setShowSubtasks] = useState(false);
+    // Lifted above TaskRowExpanded (which unmounts on collapse) so the count
+    // survives an expand/collapse cycle instead of resetting to the possibly
+    // stale task.comments_count every time the panel remounts.
+    const [commentCount, setCommentCount] = useState(task.comments_count ?? 0);
+
+    // Blocked flags refetched after a relation change on this or a linked
+    // task. Cleared whenever the parent passes fresh server data.
+    const [blockedOverride, setBlockedOverride] = useState<Pick<
+        Task,
+        'is_blocked' | 'blocked_by_count'
+    > | null>(null);
+    useEffect(() => {
+        setBlockedOverride(null);
+    }, [task.uid, task.is_blocked, task.blocked_by_count]);
+    useEffect(() => {
+        const uid = task.uid;
+        if (!uid) return;
+        const onRelationsChanged = async (event: Event) => {
+            const { taskUids } =
+                (event as CustomEvent<TaskRelationsChangedDetail>).detail || {};
+            if (!taskUids?.includes(uid)) return;
+            try {
+                const fresh = await fetchTaskByUid(uid);
+                setBlockedOverride({
+                    is_blocked: !!fresh.is_blocked,
+                    blocked_by_count: fresh.blocked_by_count || 0,
+                });
+            } catch (error) {
+                console.error('Error refreshing blocked state:', error);
+            }
+        };
+        window.addEventListener(
+            TASK_RELATIONS_CHANGED_EVENT,
+            onRelationsChanged
+        );
+        return () =>
+            window.removeEventListener(
+                TASK_RELATIONS_CHANGED_EVENT,
+                onRelationsChanged
+            );
+    }, [task.uid]);
+    // Saves from the task side panel land here, so the row shows them even
+    // when the page keeps its own copy of the list.
+    const [panelSaved, setPanelSaved] = useState<Task | null>(null);
+    useEffect(() => {
+        setPanelSaved(null);
+    }, [task]);
+    useEffect(() => {
+        const uid = task.uid;
+        if (!uid || task.is_virtual_occurrence) return;
+        const onPanelSaved = (event: Event) => {
+            const saved = (event as CustomEvent<TaskPanelSavedDetail>).detail
+                ?.task;
+            if (saved?.uid === uid) setPanelSaved(saved);
+        };
+        window.addEventListener(TASK_PANEL_SAVED_EVENT, onPanelSaved);
+        return () =>
+            window.removeEventListener(TASK_PANEL_SAVED_EVENT, onPanelSaved);
+    }, [task.uid, task.is_virtual_occurrence]);
+    const displayTask = useMemo(
+        () => ({
+            ...task,
+            ...(panelSaved || {}),
+            ...(blockedOverride || {}),
+        }),
+        [task, panelSaved, blockedOverride]
+    );
+
+    const canExpand = !disableExpand && !task.habit_mode && !!task.uid;
+    // Virtual occurrences of a recurring task share the parent's uid, so
+    // expansion is keyed by the per-occurrence id when there is one.
+    const { isExpanded, toggle, collapse } = useTaskRowExpansion(
+        task.virtual_id ?? task.uid,
+        { disabled: !canExpand }
+    );
+    const setters = useTaskRowSave(task, onTaskUpdate);
+    const rowRootRef = useRef<HTMLDivElement>(null);
+
+    // Keep the quick-edit panel mounted through its collapse animation.
+    const [panelMounted, setPanelMounted] = useState(isExpanded);
+    useEffect(() => {
+        if (isExpanded) setPanelMounted(true);
+    }, [isExpanded]);
+    const handlePanelExited = useCallback(() => setPanelMounted(false), []);
+
+    // Collapse the quick-edit form on Escape or a click outside the row.
+    // Clicks inside portalled overlays (calendars, dropdown menus) render
+    // outside #root, so they are ignored here.
+    useEffect(() => {
+        if (!isExpanded) return;
+        const appRoot = document.getElementById('root');
+        const onPointerDown = (e: MouseEvent) => {
+            const target = e.target as Node;
+            if (appRoot && !appRoot.contains(target)) return;
+            if (rowRootRef.current && !rowRootRef.current.contains(target)) {
+                collapse();
+            }
+        };
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') collapse();
+        };
+        document.addEventListener('mousedown', onPointerDown);
+        document.addEventListener('keydown', onKeyDown);
+        return () => {
+            document.removeEventListener('mousedown', onPointerDown);
+            document.removeEventListener('keydown', onKeyDown);
+        };
+    }, [isExpanded, collapse]);
+
+    useEffect(() => setProjectList(projects), [projects]);
+    useEffect(() => {
+        setSubtasks(task.subtasks || []);
+    }, [task.id, task.subtasks]);
+    useEffect(() => {
+        setCommentCount(task.comments_count ?? 0);
+    }, [task.id, task.comments_count]);
+    useEffect(() => {
+        setShowSubtasks(false);
+    }, [task.id]);
+
+    const fromState = {
+        state: { from: location.pathname + location.search },
+    };
+    // A task created by a CalDAV client keeps the uid that client chose,
+    // which may hold characters the router cannot take unencoded.
+    const encodedUid = encodeURIComponent(task.uid);
+    // Tasks open in the side panel; habits keep their own page.
+    const openTask = () => {
+        if (!task.uid) return;
+        if (task.habit_mode) {
+            navigate(`/habit/${encodedUid}`, fromState);
+        } else {
+            openTaskPanel(task.uid);
+        }
+    };
+
+    const loadSubtasks = useCallback(async () => {
+        if (!task.uid) return;
+        setLoadingSubtasks(true);
+        try {
+            setSubtasks(await fetchSubtasks(task.uid));
+        } catch (error) {
+            console.error('Failed to load subtasks:', error);
+            setSubtasks([]);
+        } finally {
+            setLoadingSubtasks(false);
+        }
+    }, [task.uid]);
+
+    const handleActivate = () => {
+        if (canExpand) {
+            toggle();
+            return;
+        }
+        openTask();
+    };
+
+    const handleSubtasksToggle = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!showSubtasks) {
+            if (subtasks.length === 0) await loadSubtasks();
+            setShowSubtasks(true);
+        } else {
+            setShowSubtasks(false);
+        }
+    };
+
+    const handleAddSubtask = useCallback(
+        async (name: string) => {
+            if (!task.id || !task.uid) return;
+            try {
+                await createTask({
+                    name,
+                    status: 'not_started',
+                    completed_at: null,
+                    parent_task_id: task.id,
+                } as Task);
+                const fresh = await fetchSubtasks(task.uid);
+                setSubtasks(fresh);
+                setShowSubtasks(true);
+                await onTaskUpdate({ ...task, subtasks: fresh });
+            } catch (error) {
+                console.error('Failed to add subtask:', error);
+                showErrorToast(
+                    t('task.subtasksUpdateError', 'Failed to add subtask')
+                );
+            }
+        },
+        [task, onTaskUpdate, showErrorToast, t]
+    );
+
+    const handleDeleteClick = (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsConfirmDialogOpen(true);
+    };
+
+    const handleDelete = async () => {
+        if (!task.uid) return;
+        try {
+            await onTaskDelete(task.uid);
+        } catch (error) {
+            console.error('Task delete failed:', error);
+            showErrorToast(t('errors.permissionDenied', 'Permission denied'));
+        }
+    };
+
+    const handleStatusUpdate = async (updated: Task) => {
+        if (!saveStatusChanges || !task.uid) return onTaskUpdate(updated);
+        try {
+            const response = await updateTask(task.uid, {
+                status: updated.status,
+            });
+            const merged: Task = {
+                ...task,
+                ...response,
+                subtasks: response.subtasks || task.subtasks || [],
+            };
+            // A recurring task comes back reopened for its next date, so a
+            // pick of Done goes through the page's completion handling.
+            if (onTaskCompletionToggle && isTaskDone(updated.status)) {
+                onTaskCompletionToggle(merged);
+            } else {
+                await onTaskUpdate(merged);
+            }
+        } catch (error) {
+            console.error('Task status update failed:', error);
+            showErrorToast(
+                t('task.statusUpdateError', 'Failed to update status')
+            );
+        }
+    };
+
+    // Completing a blocked task is allowed, but asked about first.
+    const handleToggleCompletion = async () => {
+        if (!task.id) return;
+        if (displayTask.is_blocked && !isTaskCompleted(task.status)) {
+            setIsBlockedConfirmOpen(true);
+            return;
+        }
+        await performToggleCompletion();
+    };
+
+    const performToggleCompletion = async () => {
+        try {
+            const isCompletingTask =
+                task.status !== 'done' &&
+                task.status !== 2 &&
+                task.status !== 'archived' &&
+                task.status !== 3;
+            const previousStatus = task.status;
+
+            if (isCompletingTask && isUpcomingView && !showCompletedTasks) {
+                setIsAnimatingOut(true);
+                await new Promise((resolve) => setTimeout(resolve, 300));
+            }
+
+            const response = await toggleTaskCompletion(task.uid!, task);
+
+            if (isCompletingTask) {
+                showUndoToast(
+                    <>
+                        Task{' '}
+                        <span className="font-semibold">
+                            &apos;{task.name}&apos;
+                        </span>{' '}
+                        completed.
+                    </>,
+                    async () => {
+                        try {
+                            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                            const { subtasks: _s, ...taskWithoutSubtasks } =
+                                task;
+                            const reverted = await updateTask(task.uid!, {
+                                ...taskWithoutSubtasks,
+                                status: previousStatus,
+                                completed_at: null,
+                            });
+                            if (onTaskCompletionToggle) {
+                                onTaskCompletionToggle(reverted);
+                            } else {
+                                await onTaskUpdate({
+                                    ...taskWithoutSubtasks,
+                                    ...reverted,
+                                });
+                            }
+                        } catch {
+                            showErrorToast('Failed to undo task completion.');
+                        }
+                    }
+                );
+            }
+
+            if (onTaskCompletionToggle) {
+                onTaskCompletionToggle(response);
+            } else {
+                await onTaskUpdate({
+                    ...task,
+                    ...response,
+                    subtasks: response.subtasks || task.subtasks || [],
+                });
+            }
+
+            if (response.parent_child_logic_executed) {
+                setTimeout(async () => {
+                    try {
+                        const res = await fetch(getApiPath(`task/${task.uid}`));
+                        if (res.ok) await onTaskUpdate(await res.json());
+                    } catch (error) {
+                        console.error(
+                            'Error refetching task after parent-child logic:',
+                            error
+                        );
+                        window.location.reload();
+                    }
+                }, 200);
+            }
+        } catch (error) {
+            console.error('Error toggling task completion:', error);
+            setIsAnimatingOut(false);
+        }
+    };
+
+    let project =
+        task.Project || projectList.find((p) => p.id === task.project_id);
+    if (project && !project.id && task.project_id) {
+        project = { ...project, id: task.project_id };
+    }
+
+    void isTaskOverdueInTodayPlan;
+
+    const priorityBorderClass =
+        isInCompletedSection || isTaskCompleted(task.status)
+            ? 'border-l-[3px] border-l-green-500'
+            : getPriorityBorderClassName(task.priority);
+
+    const hasInitialSubtasks = !!(task.subtasks && task.subtasks.length > 0);
+    const shouldShowSubtasksIcon =
+        hasInitialSubtasks || subtasks.length > 0 || loadingSubtasks;
+
+    return (
+        <div
+            ref={rowRootRef}
+            data-task-expanded={isExpanded || undefined}
+            className={`relative ${
+                isStatusMenuOpen || isActionsMenuOpen
+                    ? 'z-[10001]'
+                    : isExpanded
+                      ? 'z-30'
+                      : ''
+            }`}
+        >
+            <div
+                className={`rounded-lg shadow-sm bg-white dark:bg-gray-900 relative overflow-visible transition-colors duration-200 ease-in-out hover:ring-1 hover:ring-gray-200 dark:hover:ring-gray-700 [.task-sheet_&]:rounded-[10px] [.task-sheet_&]:bg-transparent [.task-sheet_&]:shadow-none [.task-sheet_&]:border-l-0 [.task-sheet_&]:ring-0 [.task-sheet_&]:hover:ring-0 dark:[.task-sheet_&]:bg-transparent ${priorityBorderClass} ${
+                    isExpanded
+                        ? 'ring-1 ring-blue-400/70 dark:ring-blue-600/70'
+                        : ''
+                } ${isAnimatingOut ? 'opacity-0' : 'opacity-100'}`}
+            >
+                <TaskRowCollapsed
+                    task={displayTask}
+                    project={project}
+                    hideProjectName={hideProjectName}
+                    hideAreaName={hideAreaName}
+                    hideStatusControl={hideStatusControl}
+                    condenseStatusControl={isUpcomingView}
+                    compact={compact}
+                    onActivate={handleActivate}
+                    onToggleCompletion={handleToggleCompletion}
+                    onTaskUpdate={handleStatusUpdate}
+                    onMenuOpenChange={setIsStatusMenuOpen}
+                    hasSubtasks={shouldShowSubtasksIcon}
+                    showSubtasks={showSubtasks}
+                    onSubtasksToggle={
+                        shouldShowSubtasksIcon
+                            ? handleSubtasksToggle
+                            : undefined
+                    }
+                    commentCount={commentCount}
+                    editable={isExpanded}
+                    onSaveTitle={setters.setTitle}
+                    onEscape={collapse}
+                    onEdit={task.uid ? openTask : undefined}
+                    onDelete={task.uid ? handleDeleteClick : undefined}
+                    onActionsMenuOpenChange={setIsActionsMenuOpen}
+                />
+
+                {panelMounted && (
+                    <TaskRowExpanded
+                        task={displayTask}
+                        projects={projectList}
+                        setters={setters}
+                        open={isExpanded}
+                        onExited={handlePanelExited}
+                        onDelete={handleDeleteClick}
+                        onOpenPanel={() => {
+                            collapse();
+                            openTask();
+                        }}
+                        subtasksOpen={showSubtasks}
+                        onToggleSubtasks={() => {
+                            void handleSubtasksToggle({
+                                stopPropagation: () => {},
+                            } as React.MouseEvent);
+                        }}
+                        onAddSubtask={handleAddSubtask}
+                        commentCount={commentCount}
+                        onCommentCountChange={setCommentCount}
+                    />
+                )}
+            </div>
+
+            {showSuggestionChips &&
+                task._suggestionMeta &&
+                (() => {
+                    const { reason, reasonLabel, reasonColor } =
+                        task._suggestionMeta;
+                    const iconProps = {
+                        className: 'h-3.5 w-3.5 flex-shrink-0',
+                    };
+                    const icon =
+                        reason === 'due' ? (
+                            <ExclamationTriangleIcon {...iconProps} />
+                        ) : reason === 'goal' ? (
+                            <ArrowRightCircleIcon {...iconProps} />
+                        ) : reason === 'high' ? (
+                            <BoltIcon {...iconProps} />
+                        ) : reason === 'revive' ? (
+                            <ArrowPathIcon {...iconProps} />
+                        ) : reason === 'aging_review' ? (
+                            <ClockIcon {...iconProps} />
+                        ) : reason === 'area_balance' ? (
+                            <ScaleIcon {...iconProps} />
+                        ) : reason === 'fits_now' ? (
+                            <SparklesIcon {...iconProps} />
+                        ) : (
+                            <ArrowRightCircleIcon {...iconProps} />
+                        );
+                    return (
+                        <div
+                            className="flex items-center gap-2 ml-4 px-3 py-1.5 rounded-b-lg text-[11px] select-none"
+                            style={{
+                                backgroundColor: `${reasonColor}12`,
+                                color: `${reasonColor}cc`,
+                            }}
+                        >
+                            {icon}
+                            <span className="font-light leading-tight">
+                                {reasonLabel}
+                            </span>
+                        </div>
+                    );
+                })()}
+
+            {showSubtasks &&
+                (subtasks.length > 0 || loadingSubtasks) &&
+                !(task.status === 'archived' || task.status === 3) && (
+                    <div className="mt-1 ml-4 space-y-1 relative z-0">
+                        {loadingSubtasks ? (
+                            <div className="text-sm text-gray-500 dark:text-gray-400 px-3 py-2">
+                                {t('loading.subtasks', 'Loading subtasks...')}
+                            </div>
+                        ) : (
+                            subtasks.map((subtask) => (
+                                <TaskRow
+                                    key={subtask.id ?? subtask.uid}
+                                    task={subtask}
+                                    onTaskUpdate={async (updated) => {
+                                        setSubtasks((prev) =>
+                                            prev.map((st) =>
+                                                st.id === updated.id
+                                                    ? updated
+                                                    : st
+                                            )
+                                        );
+                                    }}
+                                    onTaskDelete={(subtaskUid) => {
+                                        deleteTask(subtaskUid)
+                                            .then(() =>
+                                                setSubtasks((prev) =>
+                                                    prev.filter(
+                                                        (st) =>
+                                                            st.uid !==
+                                                            subtaskUid
+                                                    )
+                                                )
+                                            )
+                                            .catch((err) =>
+                                                console.error(
+                                                    'Error deleting subtask:',
+                                                    err
+                                                )
+                                            );
+                                    }}
+                                    projects={projects}
+                                    hideProjectName
+                                    // The handler above only updates this
+                                    // list, so the row saves its own status.
+                                    saveStatusChanges
+                                    compact
+                                />
+                            ))
+                        )}
+                    </div>
+                )}
+
+            {isBlockedConfirmOpen && (
+                <ConfirmDialog
+                    title={t(
+                        'relations.completeBlockedTitle',
+                        'Task is blocked'
+                    )}
+                    message={t(
+                        'relations.completeBlockedMessage',
+                        'This task is blocked by {{count}} open task(s). Complete it anyway?',
+                        { count: displayTask.blocked_by_count || 1 }
+                    )}
+                    confirmButtonText={t(
+                        'relations.completeAnyway',
+                        'Complete anyway'
+                    )}
+                    onConfirm={() => {
+                        setIsBlockedConfirmOpen(false);
+                        void performToggleCompletion();
+                    }}
+                    onCancel={() => setIsBlockedConfirmOpen(false)}
+                />
+            )}
+
+            {isConfirmDialogOpen && (
+                <ConfirmDialog
+                    title={t('tasks.deleteConfirmTitle', 'Delete Task')}
+                    message={t(
+                        'tasks.deleteConfirmMessage',
+                        `Are you sure you want to delete "${task.name}"? This action cannot be undone.`
+                    )}
+                    onConfirm={() => {
+                        setIsConfirmDialogOpen(false);
+                        void handleDelete();
+                    }}
+                    onCancel={() => setIsConfirmDialogOpen(false)}
+                />
+            )}
+        </div>
+    );
+};
+
+export default React.memo(TaskRow);

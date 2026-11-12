@@ -1,13 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import {
-    TrashIcon,
-    MagnifyingGlassIcon,
-    PencilSquareIcon,
-} from '@heroicons/react/24/solid';
+import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import ConfirmDialog from './Shared/ConfirmDialog';
+import NewItemButton from './Shared/NewItemButton';
 import TagModal from './Tag/TagModal';
+import TagRow from './Tag/TagRow';
+import { TASK_SHEET_CLASS } from './Task/taskSheet';
 import { Tag } from '../entities/Tag';
 import {
     deleteTag as apiDeleteTag,
@@ -27,11 +25,9 @@ const Tags: React.FC = () => {
     const [tagToDelete, setTagToDelete] = useState<Tag | null>(null);
     const [searchQuery, setSearchQuery] = useState<string>('');
     const [isSearchExpanded, setIsSearchExpanded] = useState(false);
-    const [hoveredTagUid, setHoveredTagUid] = useState<string | null>(null);
     const [isTagModalOpen, setIsTagModalOpen] = useState<boolean>(false);
     const [selectedTag, setSelectedTag] = useState<Tag | null>(null);
 
-    // Load tags when component mounts
     useEffect(() => {
         if (!hasLoaded && !isLoading && !isError) {
             loadTags();
@@ -55,12 +51,19 @@ const Tags: React.FC = () => {
         setIsTagModalOpen(true);
     };
 
+    const handleNewTag = () => {
+        setSelectedTag(null);
+        setIsTagModalOpen(true);
+    };
+
     const handleSaveTag = async (tagData: Tag) => {
         try {
             if (tagData.uid) {
                 await updateTag(tagData.uid, tagData);
                 setTags(
-                    tags.map((tag) => (tag.uid === tagData.uid ? tagData : tag))
+                    tags.map((tag) =>
+                        tag.uid === tagData.uid ? { ...tag, ...tagData } : tag
+                    )
                 );
             } else {
                 const newTag = await createTag(tagData);
@@ -70,7 +73,6 @@ const Tags: React.FC = () => {
             setSelectedTag(null);
         } catch (error) {
             console.error('Error saving tag:', error);
-            // Re-throw the error so TagModal knows the operation failed
             throw error;
         }
     };
@@ -89,7 +91,6 @@ const Tags: React.FC = () => {
         tag.name.toLowerCase().includes(searchQuery.toLowerCase())
     );
 
-    // Group tags alphabetically by first letter
     const groupedTags = filteredTags.reduce(
         (groups, tag) => {
             const firstLetter = tag.name.charAt(0).toUpperCase();
@@ -102,7 +103,6 @@ const Tags: React.FC = () => {
         {} as Record<string, typeof tags>
     );
 
-    // Sort the groups by letter and sort tags within each group
     const sortedGroupKeys = Object.keys(groupedTags).sort();
     sortedGroupKeys.forEach((letter) => {
         groupedTags[letter].sort((a, b) =>
@@ -114,57 +114,63 @@ const Tags: React.FC = () => {
         return (
             <div className="flex items-center justify-center h-screen bg-gray-100 dark:bg-gray-900">
                 <div className="text-xl font-semibold text-gray-700 dark:text-gray-200">
-                    Loading tags...
+                    {t('tags.loadingTags', 'Loading tags...')}
                 </div>
             </div>
         );
     }
 
     if (isError) {
-        return <div className="text-red-500 p-4">Error loading tags.</div>;
+        return (
+            <div className="text-red-500 p-4">
+                {t('tags.errorLoadingTags', 'Error loading tags.')}
+            </div>
+        );
     }
 
     return (
-        <div className="w-full px-2 sm:px-4 lg:px-6 pt-4 pb-8">
-            <div className="w-full">
-                {/* Tags Header */}
-                <div className="flex items-center justify-between mb-8">
+        <div className="w-full px-4 sm:px-6 lg:px-8 pt-4 pb-8">
+            <div className="w-full max-w-7xl mx-auto">
+                {/* Header */}
+                <div className="flex items-center justify-between gap-2 mb-8">
                     <h2 className="text-2xl font-light">
                         {t('tags.title', 'Tags')}
                     </h2>
-                    <button
-                        type="button"
-                        onClick={() => setIsSearchExpanded(!isSearchExpanded)}
-                        className={`flex items-center transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset rounded-lg p-2 ${
-                            isSearchExpanded
-                                ? 'bg-blue-50/70 dark:bg-blue-900/20'
-                                : 'bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'
-                        }`}
-                        aria-expanded={isSearchExpanded}
-                        aria-label={
-                            isSearchExpanded
-                                ? t(
-                                      'common.hideSearch',
-                                      'Collapse search panel'
-                                  )
-                                : t('common.showSearch', 'Show search input')
-                        }
-                        title={
-                            isSearchExpanded
-                                ? t('common.hideSearch', 'Hide search')
-                                : t('common.search', 'Search tags')
-                        }
-                    >
-                        <MagnifyingGlassIcon className="h-5 w-5 text-gray-600 dark:text-gray-200" />
-                        <span className="sr-only">
-                            {isSearchExpanded
-                                ? t('common.hideSearch', 'Hide search')
-                                : t('common.search', 'Search tags')}
-                        </span>
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() =>
+                                setIsSearchExpanded(!isSearchExpanded)
+                            }
+                            className={`flex items-center transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-inset rounded-lg p-2 ${
+                                isSearchExpanded
+                                    ? 'bg-blue-50/70 dark:bg-blue-900/20'
+                                    : 'bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'
+                            }`}
+                            aria-expanded={isSearchExpanded}
+                            aria-label={
+                                isSearchExpanded
+                                    ? t(
+                                          'common.hideSearch',
+                                          'Collapse search panel'
+                                      )
+                                    : t(
+                                          'common.showSearch',
+                                          'Show search input'
+                                      )
+                            }
+                        >
+                            <MagnifyingGlassIcon className="h-5 w-5 text-gray-600 dark:text-gray-200" />
+                        </button>
+                        <NewItemButton
+                            label={t('tags.new', 'New Tag')}
+                            onClick={handleNewTag}
+                            testId="new-tag-button"
+                        />
+                    </div>
                 </div>
 
-                {/* Search input section, collapsible */}
+                {/* Collapsible search */}
                 <div
                     className={`transition-all duration-300 ease-in-out ${
                         isSearchExpanded
@@ -187,7 +193,7 @@ const Tags: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Tags List */}
+                {/* Tags grid, grouped alphabetically */}
                 {filteredTags.length === 0 ? (
                     <p className="text-gray-700 dark:text-gray-300">
                         {t('tags.noTagsFound', 'No tags found.')}
@@ -196,93 +202,23 @@ const Tags: React.FC = () => {
                     <div className="space-y-8">
                         {sortedGroupKeys.map((letter) => (
                             <div key={letter}>
-                                {/* Alphabetical Group Header */}
-                                <div className="mb-4">
-                                    <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                                        {letter}
-                                    </h3>
-                                    <hr className="border-gray-300 dark:border-gray-600" />
-                                </div>
+                                <h3 className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">
+                                    {letter}
+                                </h3>
 
-                                {/* Tags in this group */}
-                                <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                <div
+                                    className={`task-list-container overflow-visible ${TASK_SHEET_CLASS} task-sheet-rails`}
+                                >
                                     {groupedTags[letter].map((tag) => (
-                                        <li
-                                            key={tag.uid || tag.id}
-                                            className="bg-white dark:bg-gray-900 shadow rounded-lg p-4"
-                                            onMouseEnter={() =>
-                                                setHoveredTagUid(
-                                                    tag.uid || null
-                                                )
-                                            }
-                                            onMouseLeave={() =>
-                                                setHoveredTagUid(null)
-                                            }
-                                        >
-                                            <div className="flex items-center justify-between gap-2">
-                                                {/* Tag Name - truncated */}
-                                                <Link
-                                                    to={
-                                                        tag.uid
-                                                            ? `/tag/${tag.uid}-${tag.name
-                                                                  .toLowerCase()
-                                                                  .replace(
-                                                                      /[^a-z0-9]+/g,
-                                                                      '-'
-                                                                  )
-                                                                  .replace(
-                                                                      /^-|-$/g,
-                                                                      ''
-                                                                  )}`
-                                                            : `/tag/${encodeURIComponent(tag.name)}`
-                                                    }
-                                                    className="text-md font-semibold text-gray-900 dark:text-gray-100 hover:underline truncate min-w-0 flex-1"
-                                                    title={tag.name}
-                                                >
-                                                    {tag.name}
-                                                </Link>
-
-                                                {/* Action buttons */}
-                                                <div className="flex space-x-2 flex-shrink-0">
-                                                    <button
-                                                        onClick={() =>
-                                                            handleEditTag(tag)
-                                                        }
-                                                        className={`text-gray-500 hover:text-blue-700 dark:hover:text-blue-300 focus:outline-none transition-opacity duration-200 ${
-                                                            hoveredTagUid ===
-                                                            tag.uid
-                                                                ? 'opacity-100'
-                                                                : 'opacity-0 pointer-events-none'
-                                                        }`}
-                                                        aria-label={`Edit ${tag.name}`}
-                                                        title={`Edit ${tag.name}`}
-                                                        data-testid={`tag-edit-${tag.uid || tag.id}`}
-                                                    >
-                                                        <PencilSquareIcon className="h-4 w-4" />
-                                                    </button>
-                                                    <button
-                                                        onClick={() =>
-                                                            openConfirmDialog(
-                                                                tag
-                                                            )
-                                                        }
-                                                        className={`text-gray-500 hover:text-red-700 dark:hover:text-red-300 focus:outline-none transition-opacity duration-200 ${
-                                                            hoveredTagUid ===
-                                                            tag.uid
-                                                                ? 'opacity-100'
-                                                                : 'opacity-0 pointer-events-none'
-                                                        }`}
-                                                        aria-label={`Delete ${tag.name}`}
-                                                        title={`Delete ${tag.name}`}
-                                                        data-testid={`tag-delete-${tag.uid || tag.id}`}
-                                                    >
-                                                        <TrashIcon className="h-4 w-4" />
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        </li>
+                                        <div key={tag.uid || tag.id}>
+                                            <TagRow
+                                                tag={tag}
+                                                onEdit={handleEditTag}
+                                                onDelete={openConfirmDialog}
+                                            />
+                                        </div>
                                     ))}
-                                </ul>
+                                </div>
                             </div>
                         ))}
                     </div>
@@ -316,7 +252,7 @@ const Tags: React.FC = () => {
                 {/* ConfirmDialog */}
                 {isConfirmDialogOpen && tagToDelete && (
                     <ConfirmDialog
-                        title="Delete Tag"
+                        title={t('modals.deleteTag.title')}
                         message={`Are you sure you want to delete the tag "${tagToDelete.name}"?`}
                         onConfirm={handleDeleteTag}
                         onCancel={closeConfirmDialog}

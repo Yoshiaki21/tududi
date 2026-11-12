@@ -11,17 +11,18 @@ This document explains how areas work in tududi from a user behavior perspective
 **Key characteristics:**
 - Represent broad life domains (Work, Personal, Health, Finance, etc.)
 - Sit at the top of the organizational hierarchy
-- Provide high-level grouping for projects
-- Simple structure with just name and description
+- Contain Goals (outcome-level intentions) and Projects
+- Simple structure: name, optional description, optional color
 - User-specific (each user has their own areas)
 - Optional organizational layer (projects can exist without areas)
 
 **Hierarchy Position:**
 ```
 Areas (highest level - life domains)
-  └── Projects (mid level - specific goals)
-        └── Tasks (actionable items)
-              └── Subtasks
+  └── Goals (season/year-scale outcomes)
+        └── Projects (specific initiatives)
+              └── Tasks (actionable items)
+                    └── Subtasks
 ```
 
 **URL:** `/areas`
@@ -109,10 +110,24 @@ Area: "Health"
    - Used in URLs and API calls
    - Cannot be changed
 
-4. **User ID** (system-managed)
+4. **Color** (optional)
+   - Hex color applied to the area header card background
+   - Text and icons adapt to white-on-color when set
+   - Set via AreaModal color picker
+
+5. **User ID** (system-managed)
    - Links area to the user who created it
-   - Areas are private to each user
-   - Cannot be shared between users
+   - The area container itself stays with its owner (it is not listed for
+     collaborators), but an area **can be shared**: the share cascades to every
+     project the owner keeps in the area (and their tasks and notes), through
+     the same invite-and-accept flow as project sharing. Projects added to the
+     area later are shared automatically, and a project moved out of the area
+     stops being shared through it (a share made on the project itself stays).
+     Tasks filed straight into a shared area, without a project, are shared
+     with it too. A project marked **Restricted** is left out: only its
+     owner, the area owner and people the project itself is shared with see
+     it. The area owner sees every project kept in their area, restricted or
+     not. See [Projects](06-projects.md#project-sharing-and-collaboration).
 
 ---
 
@@ -603,7 +618,8 @@ No Area
 ### "Can't delete an area"
 
 **Possible reasons:**
-1. You're not the owner (areas can't be shared)
+1. You're not the owner (only the owner manages the area; a shared area's
+   projects appear for collaborators but the area itself does not)
 2. Network error
 3. Permission issue
 
@@ -733,8 +749,35 @@ At year end, review each area:
 
 ---
 
+## Area Detail Page
+
+Clicking an area card navigates to `/area/:uid-slug`, the Area detail page. This is a two-column layout:
+
+**Left column - Goals spine:**
+- Lists active goals, each with their linked project cards underneath
+- Goal titles are clickable links that navigate to the Goal detail page (`/goal/:uid-slug`)
+- "Add goal" button opens GoalModal (area pre-filled) to create a new goal
+- Deleting a goal opens a ConfirmDialog before proceeding
+- A "Maintenance" bucket for projects flagged as maintenance work
+- An "Unlinked" bucket for projects not yet assigned to a goal
+- A collapsed "Inactive goals" section
+- Warning banner if there are more than 5 active goals (scarcity nudge)
+
+**Right column - Tasks:**
+- All tasks directly assigned to this area (not inside projects)
+- Split into active and completed sections
+
+**Area header card:**
+- Displays "AREA" label, area name, description, and stats (projects / tasks / active goals)
+- Background uses the area's color if set; edit button opens AreaModal
+
+For full Goals behavior, see [Goals System](12-goals-system.md).
+
+---
+
 ## Related Documentation
 
+- [Goals System](12-goals-system.md) - Goals that live inside areas
 - [Projects Behavior](06-projects.md) - How areas relate to projects
 - [Today Page Sections](02-today-page-sections.md) - How area filtering affects Today view
 - [Architecture Overview](architecture.md) - Technical architecture

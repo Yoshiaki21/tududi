@@ -17,7 +17,10 @@ router.post('/cleanup/orphaned-attachments', async (req, res) => {
         res.json(result);
     } catch (error) {
         logError('Error running orphaned attachment cleanup:', error);
-        res.status(500).json({ error: 'Cleanup failed', details: error.message });
+        res.status(500).json({
+            error: 'Cleanup failed',
+            details: error.message,
+        });
     }
 });
 

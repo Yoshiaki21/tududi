@@ -13,6 +13,7 @@ const PROFILE_ATTRIBUTES = [
     'timezone',
     'first_day_of_week',
     'avatar_image',
+    'password_digest',
     'has_password',
     'telegram_bot_token',
     'telegram_chat_id',
@@ -24,15 +25,15 @@ const PROFILE_ATTRIBUTES = [
     'matrix_allowed_users',
     'task_summary_enabled',
     'task_summary_frequency',
-    'task_intelligence_enabled',
-    'auto_suggest_next_actions_enabled',
-    'pomodoro_enabled',
+    'features',
     'today_settings',
     'sidebar_settings',
-    'productivity_assistant_enabled',
-    'next_task_suggestion_enabled',
+    'ui_settings',
     'notification_preferences',
     'keyboard_shortcuts',
+    'ai_profile',
+    'onboarded_at',
+    'onboarding_starter',
     'default_unit_price',
 ];
 
@@ -53,15 +54,13 @@ const PROFILE_UPDATE_ATTRIBUTES = [
     'matrix_room_id',
     'matrix_bot_user_id',
     'matrix_allowed_users',
-    'task_intelligence_enabled',
     'task_summary_enabled',
     'task_summary_frequency',
-    'auto_suggest_next_actions_enabled',
-    'productivity_assistant_enabled',
-    'next_task_suggestion_enabled',
-    'pomodoro_enabled',
+    'features',
+    'ui_settings',
     'notification_preferences',
     'keyboard_shortcuts',
+    'ai_profile',
     'default_unit_price',
 ];
 
@@ -121,6 +120,15 @@ class UsersRepository extends BaseRepository {
         return ApiToken.findAll({
             where: { user_id: userId },
             order: [['created_at', 'DESC']],
+        });
+    }
+
+    /**
+     * Find per-user AI provider settings, including the encrypted API key.
+     */
+    async findAiSettings(userId) {
+        return this.model.findByPk(userId, {
+            attributes: ['id', 'ai_api_key', 'ai_base_url', 'ai_model'],
         });
     }
 }

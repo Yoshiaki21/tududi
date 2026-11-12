@@ -22,7 +22,10 @@ function extractCleanText(event) {
 
     if (formattedBody && event.content?.format === 'org.matrix.custom.html') {
         const cleaned = formattedBody
-            .replace(/<a href="https:\/\/matrix\.to\/#\/@[^"]*">[^<]*<\/a>/g, '')
+            .replace(
+                /<a href="https:\/\/matrix\.to\/#\/@[^"]*">[^<]*<\/a>/g,
+                ''
+            )
             .replace(/<[^>]*>/g, '')
             .replace(/^[:\s]+/, '')
             .trim();
@@ -41,11 +44,16 @@ function isBotMentioned(event, botUserId) {
 
     // Fallback: formatted_body HTML pill
     const formattedBody = event.content?.formatted_body;
-    if (formattedBody && formattedBody.includes(`https://matrix.to/#/${botUserId}`)) return true;
+    if (
+        formattedBody &&
+        formattedBody.includes(`https://matrix.to/#/${botUserId}`)
+    )
+        return true;
 
     // Last resort: plain body contains the bot user ID
     const body = event.content?.body;
-    if (body && body.toLowerCase().includes(botUserId.toLowerCase())) return true;
+    if (body && body.toLowerCase().includes(botUserId.toLowerCase()))
+        return true;
 
     return false;
 }
@@ -65,7 +73,13 @@ async function createInboxItem(content, userId) {
     return InboxItem.create({ content, source: 'matrix', user_id: userId });
 }
 
-async function sendMatrixMessage(homeserverUrl, accessToken, roomId, message, userId = null) {
+async function sendMatrixMessage(
+    homeserverUrl,
+    accessToken,
+    roomId,
+    message,
+    userId = null
+) {
     // userId が指定されている場合、E2EE対応のアクティブクライアントを使用する
     if (userId != null) {
         const activeClient = activeClients.get(Number(userId));
@@ -99,7 +113,7 @@ async function handleBotCommand(command, user, roomId) {
                 homeserverUrl,
                 accessToken,
                 roomId,
-                'Welcome to tududi!\n\nSend me any text and I\'ll add it to your inbox.\n\nCommands:\n/help - Show this message',
+                "Welcome to tududi!\n\nSend me any text and I'll add it to your inbox.\n\nCommands:\n/help - Show this message",
                 user.id
             );
             break;
@@ -120,7 +134,8 @@ async function requestMissingRoomKey(client, user, roomId, encryptedEvent) {
     const algorithm = encryptedEvent.content?.algorithm;
 
     if (!sender || !sessionId || !algorithm) return false;
-    if (user.matrix_bot_user_id && sender === user.matrix_bot_user_id) return false;
+    if (user.matrix_bot_user_id && sender === user.matrix_bot_user_id)
+        return false;
 
     let userSessions = requestedSessions.get(user.id);
     if (!userSessions) {
@@ -160,7 +175,9 @@ async function requestMissingRoomKey(client, user, roomId, encryptedEvent) {
         }
         await client.sendToDevices('m.room_key_request', recipients);
 
-        console.log(`Matrix: sent key request for session ${sessionId} to ${sender} and ${botUserId}`);
+        console.log(
+            `Matrix: sent key request for session ${sessionId} to ${sender} and ${botUserId}`
+        );
         return true;
     } catch (error) {
         console.error(`Matrix: key request failed:`, error.message);
@@ -188,7 +205,10 @@ async function processMessage(user, { roomId, text, sender, eventId }) {
 
         console.log(`Matrix: processed message for user ${user.id}: "${text}"`);
     } catch (error) {
-        console.error(`Matrix: error processing message for user ${user.id}:`, error.message);
+        console.error(
+            `Matrix: error processing message for user ${user.id}:`,
+            error.message
+        );
         await sendMatrixMessage(
             user.matrix_homeserver_url,
             user.matrix_access_token,
@@ -229,18 +249,27 @@ async function start(userId) {
                 if (!currentUser) return;
 
                 // Ignore own messages
-                if (currentUser.matrix_bot_user_id && event.sender === currentUser.matrix_bot_user_id) return;
+                if (
+                    currentUser.matrix_bot_user_id &&
+                    event.sender === currentUser.matrix_bot_user_id
+                )
+                    return;
 
                 // Ignore non-text messages
                 if (event.type !== 'm.room.message') return;
                 if (event.content?.msgtype !== 'm.text') return;
 
                 // Only process messages that mention the bot
-                if (!isBotMentioned(event, currentUser.matrix_bot_user_id)) return;
+                if (!isBotMentioned(event, currentUser.matrix_bot_user_id))
+                    return;
 
                 // Log which room the message came from to aid E2EE diagnostics
-                const isConfiguredRoom = currentUser.matrix_room_id && roomId === currentUser.matrix_room_id;
-                console.log(`Matrix: message received in ${roomId}${isConfiguredRoom ? ' [configured room]' : ''} from ${event.sender}`);
+                const isConfiguredRoom =
+                    currentUser.matrix_room_id &&
+                    roomId === currentUser.matrix_room_id;
+                console.log(
+                    `Matrix: message received in ${roomId}${isConfiguredRoom ? ' [configured room]' : ''} from ${event.sender}`
+                );
 
                 // Deduplicate
                 if (seen.has(event.event_id)) return;
@@ -262,7 +291,10 @@ async function start(userId) {
                     eventId: event.event_id,
                 });
             } catch (err) {
-                console.error(`Matrix: event handler error for user ${user.id}:`, err.message);
+                console.error(
+                    `Matrix: event handler error for user ${user.id}:`,
+                    err.message
+                );
             }
         });
 
@@ -271,15 +303,30 @@ async function start(userId) {
                 const currentUser = await User.findByPk(user.id);
                 if (!currentUser) return;
 
-                console.log(`Matrix: decryption failed in ${roomId} event ${event.event_id} from ${event.sender}: ${_err?.message}`);
+                console.log(
+                    `Matrix: decryption failed in ${roomId} event ${event.event_id} from ${event.sender}: ${_err?.message}`
+                );
 
                 // 設定済みルーム以外は無視
-                if (!currentUser.matrix_room_id || roomId !== currentUser.matrix_room_id) return;
+                if (
+                    !currentUser.matrix_room_id ||
+                    roomId !== currentUser.matrix_room_id
+                )
+                    return;
 
                 // 自分自身のメッセージは無視
-                if (currentUser.matrix_bot_user_id && event.sender === currentUser.matrix_bot_user_id) return;
+                if (
+                    currentUser.matrix_bot_user_id &&
+                    event.sender === currentUser.matrix_bot_user_id
+                )
+                    return;
 
-                const isNewRequest = await requestMissingRoomKey(client, currentUser, roomId, event);
+                const isNewRequest = await requestMissingRoomKey(
+                    client,
+                    currentUser,
+                    roomId,
+                    event
+                );
                 if (isNewRequest) {
                     await sendMatrixMessage(
                         currentUser.matrix_homeserver_url,
@@ -290,7 +337,10 @@ async function start(userId) {
                     );
                 }
             } catch (err) {
-                console.error(`Matrix: failed_decryption handler error for user ${user.id}:`, err.message);
+                console.error(
+                    `Matrix: failed_decryption handler error for user ${user.id}:`,
+                    err.message
+                );
             }
         });
 
@@ -299,15 +349,21 @@ async function start(userId) {
         activeClients.set(user.id, client);
         console.log(`Matrix: started client for user ${user.id}`);
     } catch (error) {
-        console.error(`Matrix: failed to start client for user ${user.id}:`, error.message);
+        console.error(
+            `Matrix: failed to start client for user ${user.id}:`,
+            error.message
+        );
         // クリーンアップ
         processedEvents.delete(user.id);
 
         // 一時的なサーバーエラー（5xx）の場合は60秒後にリトライ
-        const isTransient = error.statusCode >= 500 || error.errcode === 'M_UNKNOWN';
+        const isTransient =
+            error.statusCode >= 500 || error.errcode === 'M_UNKNOWN';
         if (isTransient && !pendingRetries.has(user.id)) {
             pendingRetries.add(user.id);
-            console.log(`Matrix: will retry start for user ${user.id} in 60 seconds`);
+            console.log(
+                `Matrix: will retry start for user ${user.id} in 60 seconds`
+            );
             setTimeout(async () => {
                 pendingRetries.delete(user.id);
                 await start(user.id);

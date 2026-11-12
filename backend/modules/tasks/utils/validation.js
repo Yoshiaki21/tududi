@@ -1,12 +1,34 @@
-const { Project, Task } = require('../../../models');
+const { Project, Task, Area, Goal, Person } = require('../../../models');
 const permissionsService = require('../../../services/permissionsService');
+const { getWorkspaceUserIds } = require('../../../services/workspaceMembers');
+const peopleRepository = require('../../people/repository');
 
-async function validateProjectAccess(projectId, userId) {
-    if (!projectId || !projectId.toString().trim()) {
+function isUid(value) {
+    const str = value.toString().trim();
+    return isNaN(Number(str)) || !Number.isInteger(Number(str));
+}
+
+const MAX_TASK_UID_LENGTH = 255;
+
+// Tasks created by CalDAV clients (tasks.org, DAVx5, iOS Reminders) keep the
+// remote VTODO UID, which is not a Tududi nanoid. Route params must therefore
+// accept any non-empty identifier and let the database lookup decide.
+function isValidTaskUid(value) {
+    return (
+        typeof value === 'string' &&
+        value.length > 0 &&
+        value.length <= MAX_TASK_UID_LENGTH
+    );
+}
+
+async function validateProjectAccess(projectIdOrUid, userId) {
+    if (!projectIdOrUid || !projectIdOrUid.toString().trim()) {
         return null;
     }
 
-    const project = await Project.findOne({ where: { id: projectId } });
+    const value = projectIdOrUid.toString().trim();
+    const where = isUid(value) ? { uid: value } : { id: value };
+    const project = await Project.findOne({ where });
     if (!project) {
         throw new Error('Invalid project.');
     }
@@ -24,7 +46,7 @@ async function validateProjectAccess(projectId, userId) {
         throw new Error('Forbidden');
     }
 
-    return projectId;
+    return project.id;
 }
 
 async function validateParentTaskAccess(parentTaskId, userId) {
@@ -125,15 +147,134 @@ function validateDeferUntilAndDueDate(
         return;
     }
 
-    // Not a recurring instance - apply strict validation
-    // Defer until must be before or equal to due date
-    if (deferDate > dueDateObj) {
+    // Not a recurring instance - apply strict validation.
+    // Due dates are date-only (no time picker), so treat them as end-of-day
+    // so that any defer_until time on the same calendar day is allowed.
+    const dueDateEndOfDay = new Date(dueDateObj);
+    dueDateEndOfDay.setUTCHours(23, 59, 59, 999);
+    if (deferDate > dueDateEndOfDay) {
         throw new Error('Defer until date cannot be after the due date.');
     }
 }
 
+// Owners and anyone the area or goal is shared with read-write can file tasks
+// under it. Anything else, including a missing row, gets the same error so
+// ids cannot be probed.
+async function canWriteTo(userId, resourceType, uid) {
+    const access = await permissionsService.getAccess(
+        userId,
+        resourceType,
+        uid
+    );
+    return access === 'rw' || access === 'admin';
+}
+
+async function validateAreaAccess(areaIdOrUid, userId) {
+    if (!areaIdOrUid || !areaIdOrUid.toString().trim()) {
+        return null;
+    }
+
+    const value = areaIdOrUid.toString().trim();
+    const where = isUid(value) ? { uid: value } : { id: value };
+    const area = await Area.findOne({ where });
+    if (!area || !(await canWriteTo(userId, 'area', area.uid))) {
+        throw new Error('Invalid area.');
+    }
+
+    return area.id;
+}
+
+async function validateGoalAccess(goalIdOrUid, userId) {
+    if (!goalIdOrUid || !goalIdOrUid.toString().trim()) {
+        return null;
+    }
+
+    const value = goalIdOrUid.toString().trim();
+    const where = isUid(value) ? { uid: value } : { id: value };
+    const goal = await Goal.findOne({ where });
+    if (!goal || !(await canWriteTo(userId, 'goal', goal.uid))) {
+        throw new Error('Invalid goal.');
+    }
+
+    return goal.id;
+}
+
+// Assigning a task hands the assignee's account write access to it and sends
+// them a notification, so the person must be one the caller could pick in the
+// assignee list: one of their own cards, or the self-person of someone they
+// work with (share partners, group members, and members of the task's
+// project). Keeping the assignee a task already has is always allowed.
+async function validateAssignee(
+    assignedTo,
+    userId,
+    { projectId = null, currentAssignedTo = null } = {}
+) {
+    if (!assignedTo) return null;
+    if (assignedTo === currentAssignedTo) return assignedTo;
+
+    const person = await Person.findOne({
+        where: { uid: String(assignedTo) },
+        attributes: ['user_id', 'linked_user_id'],
+        raw: true,
+    });
+    if (!person) throw new Error('Invalid assignee.');
+    if (person.user_id === userId) return assignedTo;
+
+    const isSelfPerson = person.linked_user_id === person.user_id;
+    if (isSelfPerson) {
+        const allowed = new Set(await getWorkspaceUserIds(userId));
+        if (projectId) {
+            const project = await Project.findByPk(projectId, {
+                attributes: ['uid', 'user_id'],
+            });
+            if (project) {
+                allowed.add(project.user_id);
+                (
+                    await peopleRepository.findProjectCollaboratorUserIds(
+                        project.uid
+                    )
+                ).forEach((id) => allowed.add(id));
+            }
+        }
+        if (allowed.has(person.user_id)) return assignedTo;
+    }
+
+    throw new Error('Invalid assignee.');
+}
+
+/**
+ * Fetches the recurrence end date for a recurring parent task.
+ * Used for validating defer_until dates on recurring task instances.
+ *
+ * @param {number|null|undefined} recurringParentId - The ID of the recurring parent task
+ * @param {number} userId - The user ID for access control
+ * @returns {Promise<Date|null|undefined>} The parent's recurrence_end_date, null (infinite), or undefined (no parent)
+ *          - undefined: no recurring parent (not a recurring instance)
+ *          - null: recurring parent with no end date (infinite recurrence)
+ *          - Date: recurring parent with specific end date
+ */
+async function getRecurringParentEndDate(recurringParentId, userId) {
+    // No parent ID provided - not a recurring instance
+    if (!recurringParentId) return undefined;
+
+    const parent = await Task.findOne({
+        where: { id: recurringParentId, user_id: userId },
+    });
+
+    // Parent not found or no access - treat as non-recurring (undefined)
+    if (!parent) return undefined;
+
+    // Return the end date (null for infinite, Date for specific end)
+    return parent.recurrence_end_date;
+}
+
 module.exports = {
+    isValidTaskUid,
     validateProjectAccess,
     validateParentTaskAccess,
     validateDeferUntilAndDueDate,
+    validateAreaAccess,
+    validateGoalAccess,
+    validateAssignee,
+    getRecurringParentEndDate,
 };

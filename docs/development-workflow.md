@@ -31,7 +31,7 @@ npm install
 npm run db:init
 
 # This command:
-# 1. Creates /backend/database.sqlite
+# 1. Creates backend/db/development.sqlite3 (or uses DATABASE_URL for PostgreSQL)
 # 2. Runs all migrations from /backend/migrations/
 # 3. Sets up tables and relationships
 ```
@@ -107,10 +107,14 @@ Create `/backend/.env` file (not tracked in git):
 TUDUDI_SESSION_SECRET=your-random-secret-here-use-openssl-rand-hex-64
 TUDUDI_USER_EMAIL=admin@example.com
 TUDUDI_USER_PASSWORD=your-secure-password
+# The admin user is created on startup if missing. An existing user's
+# password is not overwritten (see scripts/user-create.js --update-password).
 
 # Optional - Server config
 NODE_ENV=development
-DB_FILE=database.sqlite
+DB_FILE=db/development.sqlite3
+# Or develop against PostgreSQL instead of the SQLite file (see docs/16-postgresql.md):
+# DATABASE_URL=postgres://tududi:tududi@localhost:5432/tududi_dev
 FRONTEND_URL=http://localhost:8080
 BACKEND_URL=http://localhost:3002
 PORT=3002
@@ -122,13 +126,28 @@ ENABLE_EMAIL=false
 EMAIL_SMTP_HOST=smtp.example.com
 EMAIL_SMTP_PORT=587
 EMAIL_SMTP_SECURE=false
-EMAIL_SMTP_USERNAME=user
-EMAIL_SMTP_PASSWORD=pass
 EMAIL_FROM_ADDRESS=noreply@example.com
 EMAIL_FROM_NAME=Tududi
+# EMAIL_SMTP_USERNAME and EMAIL_SMTP_PASSWORD are optional. Leave both unset
+# to use a passwordless SMTP relay (auth is skipped entirely in that case).
+EMAIL_SMTP_USERNAME=user
+EMAIL_SMTP_PASSWORD=pass
+
+# Optional - AI Assistant (any OpenAI-compatible provider)
+LLM_API_KEY=sk-...            # or OPENAI_API_KEY as fallback
+LLM_BASE_URL=http://localhost:11434/v1  # omit to use OpenAI; set for Ollama etc.
+LLM_MODEL=gpt-4o-mini         # model name for the chosen provider
+LLM_MAX_TOKENS_DAILY_BRIEF=1500      # per-feature completion token caps,
+LLM_MAX_TOKENS_TASK_INSIGHTS=1000    # raise if a reasoning model exhausts
+LLM_MAX_TOKENS_PROJECT_INSIGHTS=600  # its budget before answering
+LLM_DISABLE_THINKING=false    # true to send chat_template_kwargs.enable_thinking=false
 
 # Optional - Integrations
 DISABLE_TELEGRAM=false
+TELEGRAM_ENABLED=false        # true turns Telegram on and shows it
+# VAPID_PUBLIC_KEY=             # Web Push keys, generated and stored on
+# VAPID_PRIVATE_KEY=            # first use when unset (docs/15-pwa.md)
+# VAPID_SUBJECT=mailto:you@example.com
 GOOGLE_CLIENT_ID=your-google-oauth-client-id
 GOOGLE_CLIENT_SECRET=your-google-oauth-secret
 GOOGLE_REDIRECT_URI=http://localhost:8080/auth/google/callback
@@ -144,6 +163,10 @@ TUDUDI_ALLOWED_ORIGINS=http://localhost:8080
 
 # Optional - Registration
 REGISTRATION_TOKEN_EXPIRY_HOURS=24
+# Refuse signups whose email domain cannot receive mail (MX lookup)
+# REGISTRATION_MX_CHECK=true
+# Password reset links stay valid this long
+PASSWORD_RESET_TOKEN_EXPIRY_MINUTES=60
 ```
 
 **Generate secure session secret:**
@@ -302,7 +325,7 @@ export interface Task {
 
 ### Step 8: Update Frontend Component
 
-Edit `/frontend/components/Task/TaskForm.tsx`:
+Add a section under `/frontend/components/Task/TaskForm/` (for example `TaskEstimatedTimeSection.tsx`, modelled on `TaskDueDateSection.tsx`):
 
 ```typescript
 // Add input field
@@ -325,7 +348,7 @@ Edit `/frontend/components/Task/TaskForm.tsx`:
 
 ### Step 9: Write Tests
 
-Add tests in `/backend/tests/integration/tasks/tasks.test.js`:
+Add tests in `/backend/tests/integration/tasks.test.js`:
 
 ```javascript
 it('should create task with estimated_time', async () => {
@@ -388,7 +411,13 @@ git commit -m "Add estimated_time field to tasks
 
 ## Database Management
 
+All commands honour `DB_FILE` (SQLite) or `DATABASE_URL` (PostgreSQL) from `backend/.env`.
+
 ```bash
+# Verify the connection and create the schema if the database is empty
+# (what cmd/start.sh runs before migrations)
+npm run db:prepare
+
 # Reset database (WIPES ALL DATA!)
 npm run db:reset
 
@@ -524,8 +553,9 @@ docker run \
   -e TUDUDI_USER_EMAIL=admin@example.com \
   -e TUDUDI_USER_PASSWORD=secure-password \
   -e TUDUDI_SESSION_SECRET=$(openssl rand -hex 64) \
-  -v ~/tududi_db:/app/backend/db \
-  -v ~/tududi_uploads:/app/backend/uploads \
+  -v ~/tududi_db:/app/db \
+  -v ~/tududi_uploads:/app/uploads \
+  -v ~/tududi_backups:/app/backups \
   -p 3002:3002 \
   -d tududi:latest
 ```
@@ -547,16 +577,18 @@ kill -9 $(lsof -ti:3002)
 PORT=3003 npm run backend:dev
 ```
 
-### Database Locked
+### Database Locked (SQLite only)
 
 ```bash
 # Stop all servers
 # Delete database file
-rm backend/database.sqlite
+rm backend/db/development.sqlite3
 
 # Reinitialize
 npm run db:init
 ```
+
+PostgreSQL has no equivalent lock problem. To start over there, drop and recreate the database (`dropdb`/`createdb`) and run `npm run db:prepare`.
 
 ### Module Not Found
 

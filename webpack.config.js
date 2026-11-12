@@ -5,6 +5,22 @@ const CopyWebpackPlugin = require('copy-webpack-plugin');
 const webpack = require('webpack');
 
 const isDevelopment = process.env.NODE_ENV !== 'production';
+// Identifies one build in cache names: the git commit when available,
+// otherwise the build time.
+const buildId = (() => {
+    try {
+        return (
+            require('child_process')
+                .execSync('git rev-parse --short HEAD', {
+                    stdio: ['ignore', 'pipe', 'ignore'],
+                })
+                .toString()
+                .trim() || Date.now().toString(36)
+        );
+    } catch (_) {
+        return Date.now().toString(36);
+    }
+})();
 const frontendPort = parseInt(process.env.FRONTEND_PORT || '8080', 10);
 const frontendHost = process.env.FRONTEND_HOST || '0.0.0.0';
 const backendUrl = process.env.BACKEND_URL || 'http://localhost:3002';
@@ -42,8 +58,10 @@ module.exports = {
         historyApiFallback: true,
         proxy: [
             {
-                context: ['/api', '/locales'],
-                target: backendUrl,
+                // HPM v3: use pathFilter + router so WDS calls createProxyMiddleware(options)
+                // instead of the v2 two-argument form createProxyMiddleware(context, options)
+                pathFilter: ['/api', '/locales'],
+                router: () => backendUrl,
                 changeOrigin: true,
                 secure: false,
                 cookieDomainRewrite: frontendCookieDomain,
@@ -78,7 +96,6 @@ module.exports = {
         new webpack.DefinePlugin(
             Object.fromEntries(
                 Object.entries({
-                    ENABLE_NOTE_COLOR: process.env.ENABLE_NOTE_COLOR,
                     TUDUDI_BASE_PATH: process.env.TUDUDI_BASE_PATH || '',
                 }).map(([key, value]) => [
                     `process.env.${key}`,
@@ -101,6 +118,18 @@ module.exports = {
                     to: '',
                     globOptions: {
                         ignore: ['**/index.html'],
+                    },
+                    // The service worker's static cache name must change per
+                    // build, or returning visitors keep the old shell after
+                    // a deploy. The API cache name stays stable on purpose.
+                    transform(content, absoluteFrom) {
+                        if (!absoluteFrom.endsWith('sw.js')) return content;
+                        return content
+                            .toString()
+                            .replace(
+                                "const CACHE_VERSION = 'tududi-v1';",
+                                `const CACHE_VERSION = 'tududi-${buildId}';`
+                            );
                     },
                 },
             ],

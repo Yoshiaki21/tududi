@@ -4,19 +4,12 @@ const router = express.Router();
 // Import sub-routers for task-related routes
 const attachmentsRouter = require('./attachments');
 const eventsRouter = require('./events');
+const relationsRouter = require('./relations/routes');
+const orderRouter = require('./order/routes');
 
-const {
-    Task,
-    TaskEvent,
-    TaskAttachment,
-    RecurringCompletion,
-    Project,
-    sequelize,
-} = require('../../models');
-const { deleteFileFromDisk } = require('../../utils/attachment-utils');
-const path = require('path');
-const { getConfig } = require('../../config/config');
-const taskRoutesConfig = getConfig();
+const { Task, TaskAttachment, Project } = require('../../models');
+const { numericIdParam } = require('../../middleware/numericIdParam');
+const { deleteAttachmentFiles } = require('../../utils/attachment-utils');
 const taskRepository = require('./repository');
 const {
     resetQueryCounter,
@@ -27,10 +20,8 @@ const {
 const {
     calculateNextDueDate,
     calculateVirtualOccurrences,
-    shouldGenerateNextTask,
 } = require('./recurringTaskService');
 const { logError } = require('../../services/logService');
-const { logEvent } = require('./taskEventService');
 
 const { serializeTask, serializeTasks } = require('./core/serializers');
 const { updateTaskTags } = require('./operations/tags');
@@ -41,20 +32,28 @@ const {
     getUpcomingRangeInUTC,
 } = require('../../utils/timezone-utils');
 const permissionsService = require('../../services/permissionsService');
-const { isValidUid } = require('../../utils/slug-utils');
+const habitService = require('../habits/habitService');
 
 const {
+    isValidTaskUid,
     validateProjectAccess,
     validateParentTaskAccess,
     validateDeferUntilAndDueDate,
+    validateAreaAccess,
+    validateGoalAccess,
+    validateAssignee,
+    getRecurringParentEndDate,
 } = require('./utils/validation');
 const {
     buildTaskAttributes,
     buildUpdateAttributes,
 } = require('./core/builders');
 const { createSubtasks, updateSubtasks } = require('./operations/subtasks');
+const { requireQuota } = require('../../middleware/entitlements');
 const { handleCompletionStatus } = require('./operations/completion');
 const { captureOldValues, logTaskChanges } = require('./utils/logging');
+const { notifyAssignee } = require('./operations/assignment');
+const { destroyTaskRows } = require('./operations/deletion');
 const {
     handleParentChildOnStatusChange,
 } = require('./operations/parent-child');
@@ -71,9 +70,14 @@ const {
 const {
     handleRecurrenceUpdate,
     calculateNextIterations,
+    planOccurrenceAdvance,
+    recordOccurrence,
+    skipRecurringOccurrence,
 } = require('./operations/recurring');
 
 const { getTaskMetrics } = require('./queries/metrics-computation');
+const scopeService = require('../../services/scopeService');
+const dailyPlanService = require('../daily-plan/service');
 
 const { getSubtasks } = require('./operations/subtasks');
 
@@ -86,38 +90,12 @@ if (process.env.NODE_ENV === 'development') {
     enableQueryLogging();
 }
 
-/**
- * Fetches the recurrence end date for a recurring parent task.
- * Used for validating defer_until dates on recurring task instances.
- *
- * @param {number|null|undefined} recurringParentId - The ID of the recurring parent task
- * @param {number} userId - The user ID for access control
- * @returns {Promise<Date|null|undefined>} The parent's recurrence_end_date, null (infinite), or undefined (no parent)
- *          - undefined: no recurring parent (not a recurring instance)
- *          - null: recurring parent with no end date (infinite recurrence)
- *          - Date: recurring parent with specific end date
- */
-async function getRecurringParentEndDate(recurringParentId, userId) {
-    // No parent ID provided - not a recurring instance
-    if (!recurringParentId) return undefined;
-
-    const parent = await taskRepository.findByIdAndUser(
-        recurringParentId,
-        userId
-    );
-
-    // Parent not found or no access - treat as non-recurring (undefined)
-    if (!parent) return undefined;
-
-    // Return the end date (null for infinite, Date for specific end)
-    return parent.recurrence_end_date;
-}
-
 function expandRecurringTasks(
     tasks,
     maxDays = 7,
     statusFilter = null,
-    userTimezone = 'UTC'
+    userTimezone = 'UTC',
+    habitDays = new Map()
 ) {
     const expandedTasks = [];
     const moment = require('moment-timezone');
@@ -129,29 +107,29 @@ function expandRecurringTasks(
             task.recurrence_type !== 'none' &&
             !task.recurring_parent_id;
 
+        // Habits follow their own schedule and progress, not the recurrence.
+        if (task.habit_mode && !task.recurring_parent_id) {
+            (habitDays.get(task.id) || []).forEach((day, index) => {
+                expandedTasks.push({
+                    ...(task.toJSON ? task.toJSON() : task),
+                    due_date: day,
+                    is_virtual_occurrence: true,
+                    occurrence_index: index,
+                    virtual_id: `${task.id}_occurrence_${index}`,
+                });
+            });
+            return;
+        }
+
         if (!isRecurring) {
             expandedTasks.push(task);
             return;
         }
 
-        console.log('[DEBUG] Processing recurring task:', {
-            id: task.id,
-            name: task.name,
-            recurrence_type: task.recurrence_type,
-            due_date: task.due_date,
-            status: task.status,
-            completed_at: task.completed_at,
-            has_due_date: !!task.due_date,
-            statusFilter: statusFilter,
-        });
-
         if (
             (statusFilter === 'completed' || statusFilter === 'done') &&
             (task.status === 2 || task.status === 'done')
         ) {
-            console.log(
-                '[DEBUG] Task is completed and filter is completed, showing actual task'
-            );
             expandedTasks.push(task);
             return;
         }
@@ -163,33 +141,27 @@ function expandRecurringTasks(
                 task.completion_based && task.completed_at
                     ? new Date(task.completed_at)
                     : new Date(task.due_date || now);
-            const nextDate = calculateNextDueDate(task, baseDate);
+            const nextDate = calculateNextDueDate(task, baseDate, userTimezone);
             startFrom = nextDate || now;
-            console.log(
-                '[DEBUG] Task is completed, starting from next occurrence:',
-                startFrom
-            );
         } else if (startFrom < now) {
             let nextDate = startFrom;
             let iterations = 0;
             const MAX_ITERATIONS = 100;
 
             while (nextDate && nextDate < now && iterations < MAX_ITERATIONS) {
-                nextDate = calculateNextDueDate(task, nextDate);
+                nextDate = calculateNextDueDate(task, nextDate, userTimezone);
                 iterations++;
             }
 
             startFrom = nextDate || now;
         }
 
-        console.log('[DEBUG] Starting from date:', startFrom);
         const occurrences = calculateVirtualOccurrences(
             task,
             maxDays,
             startFrom,
             userTimezone
         );
-        console.log('[DEBUG] Generated occurrences:', occurrences.length);
 
         occurrences.forEach((occurrence, index) => {
             const virtualTask = {
@@ -224,7 +196,44 @@ router.get('/tasks', async (req, res) => {
 
         await handleRecurringTasks(userId, type);
 
-        let tasks = await filterTasksByParams(req.query, userId, timezone);
+        // One resolved scope (area_uid / project_uid / tags) serves the
+        // list, the upcoming projects and the Today lists alike.
+        const scope = await scopeService.resolveScope(req.query, userId);
+
+        const hasPagination =
+            limitParam !== undefined || offsetParam !== undefined;
+        const limit = parseInt(limitParam, 10) || 20;
+        const offset = parseInt(offsetParam, 10) || 0;
+        // Today and upcoming-by-day expand or filter the list in memory, so
+        // they page after that; everything else pages in the database.
+        const sqlPagination =
+            hasPagination &&
+            type !== 'today' &&
+            !(type === 'upcoming' && groupBy === 'day');
+
+        let tasks;
+        let totalCount;
+        if (sqlPagination) {
+            const paged = await filterTasksByParams(
+                req.query,
+                userId,
+                timezone,
+                null,
+                { limit, offset },
+                scope
+            );
+            tasks = paged.rows;
+            totalCount = paged.count;
+        } else {
+            tasks = await filterTasksByParams(
+                req.query,
+                userId,
+                timezone,
+                null,
+                null,
+                scope
+            );
+        }
 
         // Fetch projects with upcoming due dates for the upcoming view
         let upcomingProjects = [];
@@ -241,45 +250,40 @@ router.get('/tasks', async (req, res) => {
                 );
 
             upcomingProjects = await Project.findAll({
-                where: {
-                    ...ownedOrShared,
-                    due_date_at: {
-                        [Op.between]: [upcomingRange.start, upcomingRange.end],
+                where: scopeService.withScope(
+                    {
+                        ...ownedOrShared,
+                        due_date_at: {
+                            [Op.between]: [
+                                upcomingRange.start,
+                                upcomingRange.end,
+                            ],
+                        },
+                        status: {
+                            [Op.notIn]: ['done', 'cancelled'],
+                        },
                     },
-                    status: {
-                        [Op.notIn]: ['completed', 'archived'],
-                    },
-                },
-                order: [['due_date_at', 'ASC']],
+                    await scopeService.projectScopeWhere(scope)
+                ),
+                order: [['due_date_at', 'ASC NULLS FIRST']],
             });
         }
 
         if (type === 'upcoming' && groupBy === 'day') {
-            console.log('[DEBUG] Expanding recurring tasks for /upcoming');
-            console.log('[DEBUG] Total tasks before expansion:', tasks.length);
-            console.log(
-                '[DEBUG] Recurring tasks:',
-                tasks
-                    .filter(
-                        (t) => t.recurrence_type && t.recurrence_type !== 'none'
-                    )
-                    .map((t) => ({
-                        id: t.id,
-                        name: t.name,
-                        recurrence_type: t.recurrence_type,
-                        due_date: t.due_date,
-                        recurring_parent_id: t.recurring_parent_id,
-                    }))
-            );
             const days = maxDays ? parseInt(maxDays, 10) : 7;
             const safeTimezone = getSafeTimezone(timezone);
+            const habitDays = await habitService.dueDays(
+                tasks,
+                await habitService.getUserContext(userId),
+                days
+            );
             tasks = expandRecurringTasks(
                 tasks,
                 days,
                 req.query.status,
-                safeTimezone
+                safeTimezone,
+                habitDays
             );
-            console.log('[DEBUG] Total tasks after expansion:', tasks.length);
         }
 
         if (type === 'today') {
@@ -307,14 +311,10 @@ router.get('/tasks', async (req, res) => {
             );
         }
 
-        const hasPagination =
-            limitParam !== undefined || offsetParam !== undefined;
-        const totalCount = tasks.length;
+        if (totalCount === undefined) totalCount = tasks.length;
         let paginatedTasks = tasks;
 
-        if (hasPagination) {
-            const limit = parseInt(limitParam, 10) || 20;
-            const offset = parseInt(offsetParam, 10) || 0;
+        if (hasPagination && !sqlPagination) {
             paginatedTasks = tasks.slice(offset, offset + limit);
         }
 
@@ -329,7 +329,9 @@ router.get('/tasks', async (req, res) => {
         );
 
         const serializationOptions =
-            type === 'today' ? { preserveOriginalName: true } : {};
+            type === 'today' || type === 'calendar'
+                ? { preserveOriginalName: true }
+                : {};
 
         const response = {
             tasks: await serializeTasks(
@@ -367,12 +369,11 @@ router.get('/tasks', async (req, res) => {
             timezone,
             type,
             include_lists,
-            serializationOptions
+            serializationOptions,
+            await scopeService.taskScopeWhere(scope)
         );
 
         if (hasPagination) {
-            const limit = parseInt(limitParam, 10) || 20;
-            const offset = parseInt(offsetParam, 10) || 0;
             response.pagination = {
                 total: totalCount,
                 limit: limit,
@@ -407,116 +408,188 @@ router.get('/tasks/metrics', async (req, res) => {
     }
 });
 
-router.post('/task', async (req, res) => {
-    try {
-        const { name, project_id, parent_task_id, tags, Tags, subtasks } =
-            req.body;
-        const tagsData = tags || Tags;
-
-        if (!name || name.trim() === '') {
-            return res.status(400).json({ error: 'Task name is required.' });
-        }
-
-        const timezone = getSafeTimezone(req.currentUser.timezone);
-        const taskAttributes = buildTaskAttributes(
-            req.body,
-            req.currentUser.id,
-            timezone
-        );
-
+router.post(
+    '/task',
+    requireQuota(
+        'task',
+        (req) =>
+            1 +
+            (Array.isArray(req.body?.subtasks) ? req.body.subtasks.length : 0)
+    ),
+    async (req, res) => {
         try {
-            // Fetch parent end date if this is a recurring instance
-            const recurringParentEndDate = await getRecurringParentEndDate(
-                req.body.recurring_parent_id,
-                req.currentUser.id
-            );
-
-            validateDeferUntilAndDueDate(
-                taskAttributes.defer_until,
-                taskAttributes.due_date,
-                recurringParentEndDate
-            );
-        } catch (error) {
-            return res.status(400).json({ error: error.message });
-        }
-
-        try {
-            const validProjectId = await validateProjectAccess(
+            const {
+                name,
                 project_id,
-                req.currentUser.id
-            );
-            if (validProjectId) taskAttributes.project_id = validProjectId;
-        } catch (error) {
-            return res
-                .status(error.message === 'Forbidden' ? 403 : 400)
-                .json({ error: error.message });
-        }
-
-        try {
-            const validParentId = await validateParentTaskAccess(
+                project_uid,
+                area_id,
+                area_uid,
+                goal_id,
                 parent_task_id,
+                tags,
+                Tags,
+                subtasks,
+            } = req.body;
+            const tagsData = tags || Tags;
+
+            if (!name || name.trim() === '') {
+                return res
+                    .status(400)
+                    .json({ error: 'Task name is required.' });
+            }
+
+            const timezone = getSafeTimezone(req.currentUser.timezone);
+            const taskAttributes = buildTaskAttributes(
+                req.body,
+                req.currentUser.id,
+                timezone
+            );
+
+            try {
+                // Fetch parent end date if this is a recurring instance
+                const recurringParentEndDate = await getRecurringParentEndDate(
+                    req.body.recurring_parent_id,
+                    req.currentUser.id
+                );
+
+                validateDeferUntilAndDueDate(
+                    taskAttributes.defer_until,
+                    taskAttributes.due_date,
+                    recurringParentEndDate
+                );
+            } catch (error) {
+                return res.status(400).json({ error: error.message });
+            }
+
+            try {
+                const validProjectId = await validateProjectAccess(
+                    project_uid || project_id,
+                    req.currentUser.id
+                );
+                if (validProjectId) taskAttributes.project_id = validProjectId;
+            } catch (error) {
+                return res
+                    .status(error.message === 'Forbidden' ? 403 : 400)
+                    .json({ error: error.message });
+            }
+
+            try {
+                const validAreaId = await validateAreaAccess(
+                    area_uid || area_id,
+                    req.currentUser.id
+                );
+                if (validAreaId) taskAttributes.area_id = validAreaId;
+            } catch (error) {
+                return res.status(400).json({ error: error.message });
+            }
+
+            try {
+                const validParentId = await validateParentTaskAccess(
+                    parent_task_id,
+                    req.currentUser.id
+                );
+                if (validParentId)
+                    taskAttributes.parent_task_id = validParentId;
+            } catch (error) {
+                return res.status(400).json({ error: error.message });
+            }
+
+            try {
+                const validGoalId = await validateGoalAccess(
+                    goal_id,
+                    req.currentUser.id
+                );
+                if (validGoalId) taskAttributes.goal_id = validGoalId;
+            } catch (error) {
+                return res.status(400).json({ error: error.message });
+            }
+
+            try {
+                await validateAssignee(
+                    taskAttributes.assigned_to,
+                    req.currentUser.id,
+                    { projectId: taskAttributes.project_id }
+                );
+            } catch (error) {
+                return res.status(400).json({ error: error.message });
+            }
+
+            const task = await taskRepository.create(taskAttributes);
+            await updateTaskTags(task, tagsData, req.currentUser.id);
+            await createSubtasks(task.id, subtasks, req.currentUser.id);
+            if (req.body.today === true) {
+                await dailyPlanService.setTaskOnToday(
+                    req.currentUser,
+                    task.uid,
+                    true
+                );
+            }
+
+            const taskWithAssociations = await taskRepository.findById(
+                task.id,
+                {
+                    include: TASK_INCLUDES_WITH_SUBTASKS,
+                }
+            );
+
+            if (!taskWithAssociations) {
+                logError('Failed to reload created task:', task.id);
+                const fallbackTask = {
+                    ...task.toJSON(),
+                    tags: [],
+                    Project: null,
+                    subtasks: [],
+                    today_move_count: 0,
+                    due_date: task.due_date
+                        ? task.due_date instanceof Date
+                            ? task.due_date.toISOString().split('T')[0]
+                            : new Date(task.due_date)
+                                  .toISOString()
+                                  .split('T')[0]
+                        : null,
+                    completed_at: task.completed_at
+                        ? task.completed_at instanceof Date
+                            ? task.completed_at.toISOString()
+                            : new Date(task.completed_at).toISOString()
+                        : null,
+                };
+                return res.status(201).json(fallbackTask);
+            }
+
+            await notifyAssignee(
+                taskWithAssociations,
+                null,
                 req.currentUser.id
             );
-            if (validParentId) taskAttributes.parent_task_id = validParentId;
+
+            const serializedTask = await serializeTask(
+                taskWithAssociations,
+                req.currentUser.timezone,
+                { skipDisplayNameTransform: true }
+            );
+
+            res.set({
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                Pragma: 'no-cache',
+                Expires: '0',
+            });
+
+            res.status(201).json(serializedTask);
         } catch (error) {
-            return res.status(400).json({ error: error.message });
+            logError('Error creating task:', error);
+            logError('Error stack:', error.stack);
+            logError('Error name:', error.name);
+            res.status(400).json({
+                error: 'There was a problem creating the task.',
+                details: error.errors
+                    ? error.errors.map((e) => e.message)
+                    : [error.message],
+            });
         }
-
-        const task = await taskRepository.create(taskAttributes);
-        await updateTaskTags(task, tagsData, req.currentUser.id);
-        await createSubtasks(task.id, subtasks, req.currentUser.id);
-
-        const taskWithAssociations = await taskRepository.findById(task.id, {
-            include: TASK_INCLUDES_WITH_SUBTASKS,
-        });
-
-        if (!taskWithAssociations) {
-            logError('Failed to reload created task:', task.id);
-            const fallbackTask = {
-                ...task.toJSON(),
-                tags: [],
-                Project: null,
-                subtasks: [],
-                today_move_count: 0,
-                due_date: task.due_date
-                    ? task.due_date instanceof Date
-                        ? task.due_date.toISOString().split('T')[0]
-                        : new Date(task.due_date).toISOString().split('T')[0]
-                    : null,
-                completed_at: task.completed_at
-                    ? task.completed_at instanceof Date
-                        ? task.completed_at.toISOString()
-                        : new Date(task.completed_at).toISOString()
-                    : null,
-            };
-            return res.status(201).json(fallbackTask);
-        }
-
-        const serializedTask = await serializeTask(
-            taskWithAssociations,
-            req.currentUser.timezone,
-            { skipDisplayNameTransform: true }
-        );
-
-        res.set({
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            Pragma: 'no-cache',
-            Expires: '0',
-        });
-
-        res.status(201).json(serializedTask);
-    } catch (error) {
-        logError('Error creating task:', error);
-        logError('Error stack:', error.stack);
-        logError('Error name:', error.name);
-        res.status(400).json({
-            error: 'There was a problem creating the task.',
-            details: error.errors
-                ? error.errors.map((e) => e.message)
-                : [error.message],
-        });
     }
-});
+);
+
+router.param('uid', numericIdParam('task', Task));
 
 router.get('/task/:uid', requireTaskReadAccess, async (req, res) => {
     try {
@@ -546,6 +619,10 @@ router.patch('/task/:uid', requireTaskWriteAccess, async (req, res) => {
         const {
             status,
             project_id,
+            project_uid,
+            area_id,
+            area_uid,
+            goal_id,
             parent_task_id,
             tags,
             Tags,
@@ -648,10 +725,12 @@ router.patch('/task/:uid', requireTaskWriteAccess, async (req, res) => {
 
         await handleCompletionStatus(taskAttributes, status, task);
 
-        if (project_id !== undefined) {
+        const projectIdentifier =
+            project_uid !== undefined ? project_uid : project_id;
+        if (projectIdentifier !== undefined) {
             try {
                 const validProjectId = await validateProjectAccess(
-                    project_id,
+                    projectIdentifier,
                     req.currentUser.id
                 );
                 taskAttributes.project_id = validProjectId;
@@ -659,6 +738,19 @@ router.patch('/task/:uid', requireTaskWriteAccess, async (req, res) => {
                 return res
                     .status(error.message === 'Forbidden' ? 403 : 400)
                     .json({ error: error.message });
+            }
+        }
+
+        const areaIdentifier = area_uid !== undefined ? area_uid : area_id;
+        if (areaIdentifier !== undefined) {
+            try {
+                const validAreaId = await validateAreaAccess(
+                    areaIdentifier,
+                    req.currentUser.id
+                );
+                taskAttributes.area_id = validAreaId;
+            } catch (error) {
+                return res.status(400).json({ error: error.message });
             }
         }
 
@@ -675,6 +767,40 @@ router.patch('/task/:uid', requireTaskWriteAccess, async (req, res) => {
                 }
             } else {
                 taskAttributes.parent_task_id = null;
+            }
+        }
+
+        if (goal_id !== undefined) {
+            if (goal_id && goal_id.toString().trim()) {
+                try {
+                    const validGoalId = await validateGoalAccess(
+                        goal_id,
+                        req.currentUser.id
+                    );
+                    taskAttributes.goal_id = validGoalId;
+                } catch (error) {
+                    return res.status(400).json({ error: error.message });
+                }
+            } else {
+                taskAttributes.goal_id = null;
+            }
+        }
+
+        if (taskAttributes.assigned_to) {
+            try {
+                await validateAssignee(
+                    taskAttributes.assigned_to,
+                    req.currentUser.id,
+                    {
+                        projectId:
+                            taskAttributes.project_id !== undefined
+                                ? taskAttributes.project_id
+                                : task.project_id,
+                        currentAssignedTo: task.assigned_to,
+                    }
+                );
+            } catch (error) {
+                return res.status(400).json({ error: error.message });
             }
         }
 
@@ -695,81 +821,22 @@ router.patch('/task/:uid', requireTaskWriteAccess, async (req, res) => {
             req.body
         );
 
-        const resolveFinalValue = (field) =>
-            taskAttributes[field] !== undefined
-                ? taskAttributes[field]
-                : task[field];
-
-        const finalRecurrenceType = resolveFinalValue('recurrence_type');
-        const finalCompletionBased = resolveFinalValue('completion_based');
-        const finalDueDateBeforeAdvance =
-            taskAttributes.due_date !== undefined
-                ? taskAttributes.due_date
-                : task.due_date;
-
-        let recurringCompletionPayload = null;
-        let recurrenceAdvanceInfo = null;
+        let recurringOccurrence = null;
 
         if (
             status !== undefined &&
             (taskAttributes.status === Task.STATUS.DONE ||
-                taskAttributes.status === 'done') &&
-            finalRecurrenceType &&
-            finalRecurrenceType !== 'none' &&
-            !task.recurring_parent_id
+                taskAttributes.status === 'done')
         ) {
-            const completedAt = new Date();
-            const hasOriginalDueDate =
-                finalDueDateBeforeAdvance !== undefined &&
-                finalDueDateBeforeAdvance !== null &&
-                finalDueDateBeforeAdvance !== '';
-            const originalDueDate = hasOriginalDueDate
-                ? new Date(finalDueDateBeforeAdvance)
-                : new Date(completedAt);
-            const recurrenceContext = {
-                ...(typeof task.get === 'function'
-                    ? task.get({ plain: true })
-                    : task),
-                recurrence_type: finalRecurrenceType,
-                recurrence_interval: resolveFinalValue('recurrence_interval'),
-                recurrence_end_date: resolveFinalValue('recurrence_end_date'),
-                recurrence_weekday: resolveFinalValue('recurrence_weekday'),
-                recurrence_weekdays: resolveFinalValue('recurrence_weekdays'),
-                recurrence_month_day: resolveFinalValue('recurrence_month_day'),
-                recurrence_week_of_month: resolveFinalValue(
-                    'recurrence_week_of_month'
-                ),
-                completion_based: finalCompletionBased,
-                due_date: originalDueDate,
-            };
+            recurringOccurrence = planOccurrenceAdvance(task, {
+                overrides: taskAttributes,
+                timezone,
+            });
 
-            const baseDate = finalCompletionBased
-                ? completedAt
-                : new Date(originalDueDate);
-            const nextDueDate = calculateNextDueDate(
-                recurrenceContext,
-                baseDate
-            );
-
-            recurringCompletionPayload = {
-                task_id: task.id,
-                completed_at: completedAt,
-                original_due_date: new Date(originalDueDate),
-                skipped: false,
-            };
-            recurrenceAdvanceInfo = {
-                originalDueDate: new Date(originalDueDate),
-                completedAt,
-                nextDueDate,
-            };
-
-            if (
-                nextDueDate &&
-                shouldGenerateNextTask(recurrenceContext, nextDueDate)
-            ) {
+            if (recurringOccurrence?.hasNext) {
                 taskAttributes.status = Task.STATUS.NOT_STARTED;
                 taskAttributes.completed_at = null;
-                taskAttributes.due_date = nextDueDate;
+                taskAttributes.due_date = recurringOccurrence.nextDueDate;
             }
         }
 
@@ -777,6 +844,10 @@ router.patch('/task/:uid', requireTaskWriteAccess, async (req, res) => {
             status: taskAttributes.status,
             completed_at: taskAttributes.completed_at,
         });
+
+        // An example from the welcome screen becomes the user's own task
+        // the first time they change anything about it.
+        if (task.example_of) taskAttributes.example_of = null;
 
         await task.update(taskAttributes);
 
@@ -813,41 +884,23 @@ router.patch('/task/:uid', requireTaskWriteAccess, async (req, res) => {
             );
         }
 
-        if (recurringCompletionPayload) {
-            await RecurringCompletion.create(recurringCompletionPayload);
-            try {
-                await logEvent({
-                    taskId: task.id,
-                    userId: req.currentUser.id,
-                    eventType: 'recurring_occurrence_completed',
-                    fieldName: 'recurrence',
-                    oldValue: recurrenceAdvanceInfo
-                        ? recurrenceAdvanceInfo.originalDueDate
-                        : null,
-                    newValue: recurrenceAdvanceInfo
-                        ? recurrenceAdvanceInfo.nextDueDate
-                        : null,
-                    metadata: {
-                        action: 'recurring_occurrence_completed',
-                        original_due_date:
-                            recurrenceAdvanceInfo?.originalDueDate?.toISOString?.() ??
-                            recurrenceAdvanceInfo?.originalDueDate,
-                        next_due_date:
-                            recurrenceAdvanceInfo?.nextDueDate?.toISOString?.() ??
-                            null,
-                        completion_based: finalCompletionBased,
-                    },
-                });
-            } catch (eventError) {
-                logError(
-                    'Error logging recurring occurrence completion event:',
-                    eventError
-                );
-            }
+        if (recurringOccurrence) {
+            await recordOccurrence(
+                task,
+                recurringOccurrence,
+                req.currentUser.id
+            );
         }
 
         await updateTaskTags(task, tagsData, req.currentUser.id);
         await updateSubtasks(task.id, subtasks, req.currentUser.id);
+        if (typeof req.body.today === 'boolean') {
+            await dailyPlanService.setTaskOnToday(
+                req.currentUser,
+                task.uid,
+                req.body.today
+            );
+        }
         await logTaskChanges(
             task,
             oldValues,
@@ -859,6 +912,12 @@ router.patch('/task/:uid', requireTaskWriteAccess, async (req, res) => {
         const taskWithAssociations = await taskRepository.findById(task.id, {
             include: TASK_INCLUDES_WITH_SUBTASKS,
         });
+
+        await notifyAssignee(
+            taskWithAssociations,
+            oldValues.assigned_to,
+            req.currentUser.id
+        );
 
         const serializedTask = await serializeTask(
             taskWithAssociations,
@@ -878,18 +937,21 @@ router.patch('/task/:uid', requireTaskWriteAccess, async (req, res) => {
     }
 });
 
+// Removes a task's attachment files and rows (used for future recurring
+// instances, which are destroyed directly rather than via destroyTaskRows).
 async function deleteAttachmentsForTask(taskId) {
-    const attachments = await TaskAttachment.findAll({ where: { task_id: taskId } });
-    for (const attachment of attachments) {
-        const filePath = path.join(taskRoutesConfig.uploadPath, attachment.file_path);
-        await deleteFileFromDisk(filePath);
-        await attachment.destroy();
-    }
+    const attachments = await TaskAttachment.findAll({
+        where: { task_id: taskId },
+    });
+    await deleteAttachmentFiles(attachments);
+    await TaskAttachment.destroy({ where: { task_id: taskId }, force: true });
 }
 
 router.delete('/task/:uid', requireTaskWriteAccess, async (req, res) => {
     try {
-        const task = await taskRepository.findByUid(req.params.uid);
+        const task = await taskRepository.findByUid(req.params.uid, {
+            include: [{ model: TaskAttachment, as: 'Attachments' }],
+        });
 
         if (!task) {
             return res.status(404).json({ error: 'Task not found.' });
@@ -931,26 +993,7 @@ router.delete('/task/:uid', requireTaskWriteAccess, async (req, res) => {
             }
         }
 
-        await sequelize.query('PRAGMA foreign_keys = OFF');
-
-        try {
-            await TaskEvent.destroy({
-                where: { task_id: taskId },
-                force: true,
-            });
-
-            await sequelize.query('DELETE FROM tasks_tags WHERE task_id = ?', {
-                replacements: [taskId],
-            });
-
-            await taskRepository.clearRecurringParent(taskId);
-
-            await deleteAttachmentsForTask(taskId);
-
-            await task.destroy({ force: true });
-        } finally {
-            await sequelize.query('PRAGMA foreign_keys = ON');
-        }
+        await destroyTaskRows(task);
 
         res.json({ message: 'Task successfully deleted' });
     } catch (error) {
@@ -962,7 +1005,7 @@ router.delete('/task/:uid', requireTaskWriteAccess, async (req, res) => {
 
 router.get('/task/:uid/subtasks', async (req, res) => {
     try {
-        if (!isValidUid(req.params.uid)) {
+        if (!isValidTaskUid(req.params.uid)) {
             return res.status(400).json({ error: 'Invalid UID' });
         }
 
@@ -994,7 +1037,7 @@ router.get('/task/:uid/subtasks', async (req, res) => {
 
 router.get('/task/:uid/next-iterations', async (req, res) => {
     try {
-        if (!isValidUid(req.params.uid)) {
+        if (!isValidTaskUid(req.params.uid)) {
             return res.status(400).json({ error: 'Invalid UID' });
         }
 
@@ -1026,8 +1069,50 @@ router.get('/task/:uid/next-iterations', async (req, res) => {
     }
 });
 
+router.post(
+    '/task/:uid/skip-occurrence',
+    requireTaskWriteAccess,
+    async (req, res) => {
+        try {
+            const task = await taskRepository.findByUid(req.params.uid);
+
+            if (!task) {
+                return res.status(404).json({ error: 'Task not found.' });
+            }
+
+            const result = await skipRecurringOccurrence(
+                task,
+                req.currentUser.id,
+                req.currentUser.timezone
+            );
+
+            if (result.error) {
+                return res.status(400).json({ error: result.error });
+            }
+
+            const taskWithAssociations = await taskRepository.findById(
+                task.id,
+                { include: TASK_INCLUDES_WITH_SUBTASKS }
+            );
+
+            res.json(
+                await serializeTask(
+                    taskWithAssociations,
+                    req.currentUser.timezone,
+                    { skipDisplayNameTransform: true }
+                )
+            );
+        } catch (error) {
+            logError('Error skipping recurring occurrence:', error);
+            res.status(500).json({ error: 'Failed to skip occurrence' });
+        }
+    }
+);
+
 // Mount sub-routers for task-related routes
 router.use(attachmentsRouter);
 router.use(eventsRouter);
+router.use(relationsRouter);
+router.use(orderRouter);
 
 module.exports = router;

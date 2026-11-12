@@ -2,12 +2,17 @@ const {
     getSafeTimezone,
     processDueDateForResponse,
     processDeferUntilForResponse,
+    utcToUserTimeString,
+    startForResponse,
 } = require('../../../utils/timezone-utils');
 const {
     getTaskTodayMoveCount,
     getTaskTodayMoveCounts,
 } = require('../taskEventService');
 const taskRepository = require('../repository');
+const { Task } = require('../../../models');
+const { Op } = require('sequelize');
+const { getBlockedCountMap } = require('../relations/service');
 
 // Sort tags alphabetically by name (case-insensitive)
 function sortTags(tags) {
@@ -17,11 +22,24 @@ function sortTags(tags) {
     );
 }
 
+// start_date goes out as the user's local day, start_time as HH:mm or null.
+function startFields(taskJson, timezone) {
+    const start = startForResponse(
+        taskJson.start_date,
+        taskJson.start_has_time,
+        timezone
+    );
+    return { start_date: start.date, start_time: start.time };
+}
+
 async function serializeTask(
     task,
     userTimezone = 'UTC',
     options = {},
-    moveCountMap = null
+    moveCountMap = null,
+    parentUidMap = null,
+    parentTaskMap = null,
+    blockedCountMap = null
 ) {
     if (!task) {
         throw new Error('Task is null or undefined');
@@ -35,6 +53,14 @@ async function serializeTask(
           : await getTaskTodayMoveCount(task.id);
 
     const safeTimezone = getSafeTimezone(userTimezone);
+
+    // Only a count is exposed here: the serializer has no viewer, so the
+    // names of blockers come from the access-checked relations endpoint.
+    const blockedByCount = taskJson.is_virtual_occurrence
+        ? 0
+        : blockedCountMap
+          ? blockedCountMap[task.id] || 0
+          : (await getBlockedCountMap([task.id]))[task.id] || 0;
 
     const { Subtasks, ...taskWithoutSubtasks } = taskJson;
 
@@ -68,13 +94,34 @@ async function serializeTask(
 
     let recurringParentUid = null;
     if (taskJson.recurring_parent_id) {
-        const parentTask = await taskRepository.findById(
-            taskJson.recurring_parent_id,
-            {
-                attributes: ['uid'],
-            }
-        );
-        recurringParentUid = parentTask?.uid || null;
+        if (parentUidMap && taskJson.recurring_parent_id in parentUidMap) {
+            recurringParentUid =
+                parentUidMap[taskJson.recurring_parent_id] || null;
+        } else {
+            const parentTask = await taskRepository.findById(
+                taskJson.recurring_parent_id,
+                { attributes: ['uid'] }
+            );
+            recurringParentUid = parentTask?.uid || null;
+        }
+    }
+
+    let parentTaskInfo = null;
+    if (taskJson.parent_task_id) {
+        if (parentTaskMap && taskJson.parent_task_id in parentTaskMap) {
+            parentTaskInfo = parentTaskMap[taskJson.parent_task_id] || null;
+        } else {
+            const pt = taskJson.user_id
+                ? await taskRepository.findByIdAndUser(
+                      taskJson.parent_task_id,
+                      taskJson.user_id,
+                      { attributes: ['id', 'uid', 'name'] }
+                  )
+                : null;
+            parentTaskInfo = pt
+                ? { id: pt.id, uid: pt.uid, name: pt.name }
+                : null;
+        }
     }
 
     return {
@@ -82,17 +129,30 @@ async function serializeTask(
         name: displayName,
         original_name: taskJson.name,
         uid: task.uid,
+        project_uid: taskJson.Project?.uid || null,
+        area_uid: taskJson.Area?.uid || null,
+        goal_uid: taskJson.Goal?.uid || null,
         recurring_parent_uid: recurringParentUid,
         due_date: processDueDateForResponse(taskJson.due_date, safeTimezone),
+        due_time: taskJson.due_has_time
+            ? utcToUserTimeString(taskJson.due_date, safeTimezone)
+            : null,
         defer_until: processDeferUntilForResponse(
             taskJson.defer_until,
             safeTimezone
         ),
+        ...startFields(taskJson, safeTimezone),
         tags: sortTags(taskJson.Tags),
         Project: taskJson.Project
             ? {
                   ...taskJson.Project,
                   uid: taskJson.Project.uid,
+              }
+            : null,
+        Area: taskJson.Area
+            ? {
+                  ...taskJson.Area,
+                  uid: taskJson.Area.uid,
               }
             : null,
         subtasks: Subtasks
@@ -104,10 +164,14 @@ async function serializeTask(
                       subtask.due_date,
                       safeTimezone
                   ),
+                  due_time: subtask.due_has_time
+                      ? utcToUserTimeString(subtask.due_date, safeTimezone)
+                      : null,
                   defer_until: processDeferUntilForResponse(
                       subtask.defer_until,
                       safeTimezone
                   ),
+                  ...startFields(subtask, safeTimezone),
                   completed_at: subtask.completed_at
                       ? subtask.completed_at instanceof Date
                           ? subtask.completed_at.toISOString()
@@ -121,20 +185,91 @@ async function serializeTask(
                 : new Date(task.completed_at).toISOString()
             : null,
         today_move_count: todayMoveCount,
+        parent_task: parentTaskInfo,
+        blocked_by_count: blockedByCount,
+        is_blocked: blockedByCount > 0,
     };
 }
 
-async function serializeTasks(tasks, userTimezone = 'UTC', options = {}) {
+async function serializeTasks(
+    tasks,
+    userTimezone = 'UTC',
+    options = {},
+    prebuiltMoveCountMap = null,
+    prebuiltParentUidMap = null
+) {
     if (!tasks || tasks.length === 0) {
         return [];
     }
 
-    const taskIds = tasks.map((task) => task.id);
-    const moveCountMap = await getTaskTodayMoveCounts(taskIds);
+    const moveCountMap =
+        prebuiltMoveCountMap !== null
+            ? prebuiltMoveCountMap
+            : await getTaskTodayMoveCounts(tasks.map((t) => t.id));
+
+    // Batch-fetch recurring parent UIDs to avoid per-task DB queries
+    let parentUidMap = prebuiltParentUidMap;
+    if (parentUidMap === null) {
+        const parentIds = [
+            ...new Set(
+                tasks
+                    .filter((t) => t.recurring_parent_id)
+                    .map((t) => t.recurring_parent_id)
+            ),
+        ];
+        parentUidMap = {};
+        if (parentIds.length > 0) {
+            const parents = await Task.findAll({
+                where: { id: { [Op.in]: parentIds } },
+                attributes: ['id', 'uid'],
+                raw: true,
+            });
+            parents.forEach((p) => {
+                parentUidMap[p.id] = p.uid;
+            });
+        }
+    }
+
+    // Batch-fetch parent task info for subtasks to avoid per-task DB queries.
+    // Scoped to the user IDs present in this task list to prevent cross-user info disclosure.
+    const parentTaskIds = [
+        ...new Set(
+            tasks.filter((t) => t.parent_task_id).map((t) => t.parent_task_id)
+        ),
+    ];
+    const parentTaskMap = {};
+    if (parentTaskIds.length > 0) {
+        const userIds = [
+            ...new Set(tasks.map((t) => t.user_id).filter(Boolean)),
+        ];
+        const parentTasks = await Task.findAll({
+            where: {
+                id: { [Op.in]: parentTaskIds },
+                ...(userIds.length > 0
+                    ? { user_id: { [Op.in]: userIds } }
+                    : {}),
+            },
+            attributes: ['id', 'uid', 'name'],
+            raw: true,
+        });
+        parentTasks.forEach((p) => {
+            parentTaskMap[p.id] = { id: p.id, uid: p.uid, name: p.name };
+        });
+    }
+
+    const blockedCountMap = await getBlockedCountMap(tasks.map((t) => t.id));
 
     return await Promise.all(
         tasks.map((task) =>
-            serializeTask(task, userTimezone, options, moveCountMap)
+            serializeTask(
+                task,
+                userTimezone,
+                options,
+                moveCountMap,
+                parentUidMap,
+                parentTaskIds.length > 0 ? parentTaskMap : null,
+                blockedCountMap
+            )
         )
     );
 }

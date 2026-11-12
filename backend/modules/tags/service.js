@@ -2,7 +2,11 @@
 
 const tagsRepository = require('./repository');
 const { validateTagName } = require('./validation');
-const { NotFoundError, ConflictError } = require('../../shared/errors');
+const {
+    NotFoundError,
+    ConflictError,
+    ForbiddenError,
+} = require('../../shared/errors');
 
 class TagsService {
     /**
@@ -13,6 +17,13 @@ class TagsService {
         return tags.map((tag) => ({
             uid: tag.uid,
             name: tag.name,
+            tag_type: tag.tag_type,
+            pinned: tag.pinned,
+            color: tag.color || null,
+            usage_count: Number(tag.get('usage_count') ?? 0),
+            tasks_count: Number(tag.get('tasks_count') ?? 0),
+            notes_count: Number(tag.get('notes_count') ?? 0),
+            projects_count: Number(tag.get('projects_count') ?? 0),
         }));
     }
 
@@ -38,6 +49,9 @@ class TagsService {
         return {
             uid: tag.uid,
             name: tag.name,
+            tag_type: tag.tag_type,
+            pinned: tag.pinned,
+            color: tag.color || null,
         };
     }
 
@@ -63,9 +77,9 @@ class TagsService {
     }
 
     /**
-     * Update a tag's name.
+     * Update a tag's name and/or pinned state.
      */
-    async update(userId, identifier, newName) {
+    async update(userId, identifier, { name, pinned, color } = {}) {
         const decodedIdentifier = decodeURIComponent(identifier);
         const tag = await tagsRepository.findByIdentifier(
             userId,
@@ -76,27 +90,47 @@ class TagsService {
             throw new NotFoundError('Tag not found');
         }
 
-        const validatedName = validateTagName(newName);
+        const updates = {};
 
-        // Check for name conflict if changing name
-        if (validatedName !== tag.name) {
-            const exists = await tagsRepository.nameExists(
-                userId,
-                validatedName,
-                tag.id
-            );
-            if (exists) {
-                throw new ConflictError(
-                    `A tag with the name "${validatedName}" already exists.`
-                );
+        if (name !== undefined) {
+            if (tag.tag_type === 'system') {
+                // Silently ignore name field for system tags - the form always sends it
+            } else {
+                const validatedName = validateTagName(name);
+                if (validatedName !== tag.name) {
+                    const exists = await tagsRepository.nameExists(
+                        userId,
+                        validatedName,
+                        tag.id
+                    );
+                    if (exists) {
+                        throw new ConflictError(
+                            `A tag with the name "${validatedName}" already exists.`
+                        );
+                    }
+                    updates.name = validatedName;
+                }
             }
         }
 
-        await tagsRepository.update(tag, { name: validatedName });
+        if (pinned !== undefined) {
+            updates.pinned = Boolean(pinned);
+        }
+
+        if (color !== undefined) {
+            updates.color = color === '' ? null : color;
+        }
+
+        if (Object.keys(updates).length > 0) {
+            await tagsRepository.update(tag, updates);
+        }
 
         return {
             id: tag.id,
-            name: tag.name,
+            uid: tag.uid,
+            name: updates.name ?? tag.name,
+            pinned: updates.pinned !== undefined ? updates.pinned : tag.pinned,
+            color: updates.color !== undefined ? updates.color : tag.color,
         };
     }
 
@@ -112,6 +146,10 @@ class TagsService {
 
         if (!tag) {
             throw new NotFoundError('Tag not found');
+        }
+
+        if (tag.tag_type === 'system') {
+            throw new ForbiddenError('System tags cannot be deleted');
         }
 
         await tagsRepository.deleteWithAssociations(tag);

@@ -1,6 +1,6 @@
 const request = require('supertest');
 const app = require('../../app');
-const { Area, User } = require('../../models');
+const { Area, Goal, Task, User } = require('../../models');
 const { createTestUser } = require('../helpers/testUtils');
 
 describe('Areas Routes', () => {
@@ -33,6 +33,7 @@ describe('Areas Routes', () => {
             expect(response.body.description).toBe(areaData.description);
             expect(response.body.uid).toBeDefined();
             expect(typeof response.body.uid).toBe('string');
+            expect(typeof response.body.id).toBe('number');
         });
 
         it('should require authentication', async () => {
@@ -99,6 +100,44 @@ describe('Areas Routes', () => {
 
             expect(response.status).toBe(401);
             expect(response.body.error).toBe('Authentication required');
+        });
+
+        it('should include goal and task counts, covering all goal/task statuses', async () => {
+            await Goal.create({
+                title: 'Ship the roadmap',
+                area_id: area1.id,
+                user_id: user.id,
+                status: 'active',
+            });
+            await Goal.create({
+                title: 'Wrap up last quarter',
+                area_id: area1.id,
+                user_id: user.id,
+                status: 'achieved',
+            });
+            await Task.create({
+                name: 'Open task',
+                area_id: area1.id,
+                user_id: user.id,
+                status: 0, // not_started
+            });
+            await Task.create({
+                name: 'Done task',
+                area_id: area1.id,
+                user_id: user.id,
+                status: 2, // done
+            });
+
+            const response = await agent.get('/api/areas');
+
+            expect(response.status).toBe(200);
+            const workArea = response.body.find((a) => a.uid === area1.uid);
+            expect(workArea.goals_count).toBe(2);
+            expect(workArea.tasks_count).toBe(2);
+
+            const personalArea = response.body.find((a) => a.uid === area2.uid);
+            expect(personalArea.goals_count).toBe(0);
+            expect(personalArea.tasks_count).toBe(0);
         });
     });
 
@@ -190,6 +229,7 @@ describe('Areas Routes', () => {
             expect(response.status).toBe(200);
             expect(response.body.name).toBe(updateData.name);
             expect(response.body.description).toBe(updateData.description);
+            expect(response.body.id).toBe(area.id);
         });
 
         it('should return 400 for invalid uid format', async () => {

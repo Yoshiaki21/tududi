@@ -1,4 +1,8 @@
-# Tududi - Developer Guide
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Tududi - Developer Guide
 
 This documentation is designed for AI assistants and developers working with the tududi codebase. For user-facing documentation, see [README.md](README.md). For contribution guidelines, see [CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
@@ -6,9 +10,9 @@ This documentation is designed for AI assistants and developers working with the
 
 ## Quick Start
 
-Tududi is a self-hosted task management system with hierarchical organization (Areas > Projects > Tasks), smart recurring tasks, and multi-channel integration.
+Tududi is a self-hosted task management system with hierarchical organization (Areas > Goals > Projects > Tasks), smart recurring tasks, and multi-channel integration.
 
-**Tech Stack:** React 18 + TypeScript, Express + Sequelize, SQLite
+**Tech Stack:** React 18 + TypeScript, Express + Sequelize, SQLite (default) or PostgreSQL
 
 **Get Started:**
 ```bash
@@ -18,6 +22,70 @@ npm install
 npm run db:init
 npm start  # Frontend on :8080, Backend on :3002
 ```
+
+---
+
+## Common Commands
+
+**Development** (two servers, run together via `npm start` or separately):
+```bash
+npm run backend:dev    # nodemon, backend on :3002
+npm run frontend:dev   # webpack-dev-server, frontend on :8080, proxies /api to :3002
+```
+
+**Build:**
+```bash
+npm run build           # tsc --noEmit + webpack production build -> /dist
+```
+
+**Lint & format** (run both frontend and backend unless scoped):
+```bash
+npm run lint             # eslint: frontend + backend
+npm run lint:fix
+npm run format:fix       # prettier --write: frontend + backend
+```
+
+**Tests:**
+```bash
+npm test                              # backend Jest suite (alias: npm run backend:test)
+npm run backend:test:unit             # backend/tests/unit only
+npm run backend:test:integration      # backend/tests/integration only
+cd backend && npx jest tests/unit/models/task.test.js   # single backend test file
+npm run frontend:test                 # frontend Jest + React Testing Library
+npm run frontend:test -- TaskItem     # single frontend test by name pattern
+npm run test:ui                       # Playwright E2E (headless)
+npm run test:ui:headed                # Playwright E2E, visible browser
+npm run test:coverage                 # coverage for both frontend and backend
+```
+
+**Before opening a PR:**
+```bash
+npm run pre-push   # lint-staged (runs on the staged diff)
+```
+(`pre-release` runs the full lint:fix + format:fix + test + test:ui suite.)
+
+**Database** (all operate on `backend/`):
+```bash
+npm run db:init             # first-time setup
+npm run db:migrate          # run pending migrations (dev)
+npm run db:reset            # wipe and reinit
+npm run db:seed             # seed dev data
+npm run migration:create    # scaffold a new migration
+npm run migration:status    # check applied/pending migrations
+```
+
+---
+
+## Architecture at a Glance
+
+See [docs/architecture.md](docs/architecture.md) for full diagrams; the essentials:
+
+- **Dev mode is two servers.** Webpack dev server (`:8080`) serves the React app with HMR and proxies `/api/*` and `/locales/*` to the Express API (`:3002`). In production, Express serves the compiled `/dist` bundle directly alongside the API — one process, one port.
+- **Backend is organized into self-contained modules** under `/backend/modules/[feature]/`, each typically with `routes.js` (Express router, thin) → `repository.js` (Sequelize data access) → optional `operations/` (business logic too complex for the repository) and `core/` (`serializers.js`, `builders.js`, `parsers.js`). Routes never touch Sequelize models directly — they call the repository. See [docs/backend-patterns.md](docs/backend-patterns.md).
+- **Data hierarchy:** `User → Area → Project → Task → Subtask`, with `Tag` many-to-many across Tasks/Notes/Projects, and `Task` self-referencing for both subtasks (`parent_task_id`) and recurring instances (`recurring_parent_id`). Areas and Goals are optional containers — Projects can exist without either.
+- **Three auth methods**, all resolving to `req.currentUser`: session cookies (web UI, `express-session` + Sequelize store), Bearer API tokens (`tt_...`, for automation/MCP), and OAuth2 JWT bearer tokens (when OIDC is enabled, validated against the provider's JWKS). Authorization is enforced per-request via `hasAccess(level, resourceType, getResourceUid)` in `/backend/middleware/authorize.js`; ownership grants RW automatically, sharing grants RO/RW/ADMIN via the `Permission` model, and Tasks/Notes inherit access from their parent Project.
+- **Frontend state** is split three ways: Zustand (`/frontend/store/useStore.ts`) for global UI/cache state, SWR for server data fetching/revalidation, and local `useState` for component-only state. API calls go through `/frontend/utils/[resource]Service.ts` wrappers, not ad-hoc `fetch`.
+- **Recurring tasks** are the most complex subsystem — a recurring task is a pattern record; completed/generated instances are separate Task rows linked via `recurring_parent_id`, with `taskScheduler.js` (node-cron) and `recurringTaskService.js` driving generation. See [docs/01-recurring-tasks-behavior.md](docs/01-recurring-tasks-behavior.md) before touching this code.
 
 ---
 
@@ -44,12 +112,12 @@ npm start  # Frontend on :8080, Backend on :3002
 
 4. **[Database & Migrations](docs/database.md)**
    - Key models and relationships
-   - Migration workflow
-   - Migration best practices
+   - Choosing SQLite (default) or PostgreSQL, and how a fresh schema is created
+   - Migration workflow and writing dialect-safe migrations
    - Common migration operations
 
 5. **[Backups & Restoration](docs/backups.md)**
-   - Automatic SQLite file backups before migrations
+   - Automatic SQLite file backups before migrations (PostgreSQL: pg_dump)
    - Backup retention policies (4 per day, 1 per day for 7 days)
    - Restoration procedures for development, Docker, and production
    - Emergency restore after failed migrations
@@ -137,17 +205,18 @@ npm start  # Frontend on :8080, Backend on :3002
     - Status lifecycle and stalled detection
     - Completion tracking and progress metrics
     - Project sharing and collaboration permissions
+    - Completing projects (open-task prompt) and the completed history page
     - Due dates, notifications, and priorities
     - Deletion behavior (orphaning vs cascading)
     - Filtering, grouping, and sidebar pinning
 
 17. **[Areas](docs/07-areas.md)**
     - Top-level organizational categories for life domains
-    - Simple structure with name and description
-    - Optional containers for grouping projects
+    - Contain Goals and Projects
+    - Area detail page: goals spine, project cards, tasks column
+    - Optional containers (projects can exist without areas)
     - Cascade behavior when deleting (orphans projects)
-    - Grid view with alphabetical sorting
-    - Integration with Projects page filtering and grouping
+    - Grid view with alphabetical sorting and optional color
 
 18. **[Views System](docs/08-views-system.md)**
     - Smart saved searches for tasks, notes, and projects
@@ -177,11 +246,111 @@ npm start  # Frontend on :8080, Backend on :3002
     - Hashtag parsing from inbox items
     - Tag input component with autocomplete
 
-21. **[Claude Memory & Preferences](docs/MEMORY.md)**
+21. **[Goals System](docs/12-goals-system.md)**
+    - Outcome-level intentions between Areas and Projects
+    - Season/year horizons and status lifecycle
+    - Linking projects to goals or marking as maintenance
+    - Area detail page layout and scarcity rule
+    - API endpoints and database schema
+
+22. **[AI Assistant](docs/13-ai-assistant.md)**
+    - Daily Brief, Task Insights, and Project Insights features
+    - Provider-agnostic LLM integration (LLM_API_KEY, LLM_BASE_URL, LLM_MODEL)
+    - OpenAI, Ollama, Groq, and any OpenAI-compatible provider supported
+    - User "About You" profile context for personalised briefs
+    - Caching strategy and API endpoints
+    - Adding new AI features
+
+23. **[MCP Integration](docs/14-mcp-integration.md)**
+    - Model Context Protocol server for AI tool integration
+    - 65 tools across tasks, comments, projects, areas, goals, notes, tags, habits, people, views, inbox and search
+    - Stdio and HTTP transport modes
+    - Claude Desktop, Cursor, VS Code configuration
+    - API token authentication and security
+
+24. **[PWA & Offline Support](docs/15-pwa.md)**
+    - Installable as a Progressive Web App (home screen on mobile and desktop)
+    - Service worker cache strategy (static assets, API reads, offline mutation queue)
+    - Background Sync for replaying queued mutations on reconnect
+    - Session-scoped cache security (cleared on logout / 401)
+    - Known limitations (sub-path deployments, iOS background sync, offline task creation)
+    - Web Push notifications for Android, iOS (Home Screen apps) and desktop
+
+25. **[PostgreSQL Deployment](docs/16-postgresql.md)**
+    - Environment variables (`DATABASE_URL`, `DB_*`) and TLS
+    - First-start bootstrap and migration baseline
+    - Docker Compose example, upgrades, `pg_dump` backups
+    - Sizing, tuning and troubleshooting
+
+26. **[Claude Memory & Preferences](docs/MEMORY.md)**
     - PR and commit message preferences
     - Testing preferences
     - Common patterns to remember
     - Known issues and solutions
+
+27. **[User Groups](docs/18-user-groups.md)**
+    - Admin-managed groups shared across the instance
+    - Sharing any item with a whole group, with an invitation per member
+    - Live membership, overlap with direct shares, and how access is revoked
+    - Group API and the `permissionSources` rule for reading shared access
+
+28. **[People, Members & Roles](docs/19-people-and-roles.md)**
+    - Vocabulary: member, contact, person, group, share, workspace, role, capability
+    - Who a task can be assigned to, and what assigning does
+    - Members without an email (no sign-in yet), adding members from the People page, and turning a contact into a member
+    - The Everyone board
+    - Admin, user and guest roles with capabilities, and the admin Access page
+
+29. **[Daily Plan](docs/20-daily-plan.md)**
+    - Today in two modes: planning (`/today/plan`) and doing (`/today`); `/today_legacy` redirects to `/today`
+    - Timeline and list planning, task estimates, the Now card
+    - Read-only iCal calendar feeds (Google secret address), encrypted and SSRF-guarded
+    - Daily plan API and schema
+
+30. **[Habits](docs/21-habits.md)**
+    - Build and quit habits, counts or measured amounts, schedules and intervals
+    - Several check-ins a day, notes, skipped days, full-history year grid
+    - Streak rules, the strength score, and archiving
+    - Habit reminders and the habits API
+
+31. **[Kubernetes](docs/22-kubernetes.md)**
+    - Example manifests in `docs/examples/kubernetes`
+    - One replica, block storage for SQLite, ingress and backup notes
+
+32. **[Onboarding](docs/24-onboarding.md)**
+    - The welcome page at `/welcome`: the welcome video and one button, seen once by every account
+    - Empty-state starters on Areas and Habits
+    - `users.onboarding_starter`, `POST /api/onboarding/starter`, admin onboarding numbers
+
+33. **[Blog](docs/23-blog.md)**
+    - A front page note and the public notes it links become the blog
+    - Superadmin picks the front page in Admin → Blog
+    - `/blog` in the app, or the root of `TUDUDI_BLOG_HOSTS` (blog.tududi.com)
+
+34. **[Focus](docs/25-focus.md)**
+    - The Focus chip in the top bar: one area, optionally a project and tags, saved in `ui_settings.focus`
+    - Scopes Today, Upcoming, Tasks, Projects, Notes and live search; capture defaults to the Focus project and tags
+    - `area_uid`, `project_uid` and `tags` query params resolved by `backend/services/scopeService.js`; the API, MCP and Telegram stay unscoped
+
+35. **[Apprise](docs/26-apprise.md)**
+    - Sends notifications through a self-hosted apprise-api server, which reaches 100+ services
+    - Per-type opt-in in Profile → Notifications; address and config key encrypted at rest
+    - Private addresses follow the `CALDAV_ALLOW_PRIVATE_HOSTS` rule used by calendar feeds
+
+36. **[Webhooks](docs/27-webhooks.md)**
+    - Signed JSON POSTs to n8n, Home Assistant, Slack, Discord or any server; up to 10 per user, each with its own events
+    - Reminder/alert events, task created/updated/completed/deleted, and a daily summary at a chosen local hour
+    - Queue with retries in `webhook_deliveries`; turns off after 10 failures in a row; not in the Cloud trial
+
+37. **[Spreadsheet Import & Export](docs/28-spreadsheets.md)**
+    - Export tasks to Excel or CSV from a project, the Profile page, or the API; a template to fill in
+    - Import wizard: upload, match columns, dry-run review, commit, undo for 7 days
+    - Parent column, WBS numbers or indented rows as subtasks; UID column updates tasks on re-import
+
+38. **[Two-factor sign-in](docs/29-two-factor-sign-in.md)**
+    - Opt-in authenticator-app codes with 10 single-use recovery codes; applies after password and SSO sign-in
+    - Step-up (password or code) for new API keys; admin reset; CalDAV needs an API key once it is on
+    - Required for the hosted superadmin before the admin panel opens
 
 ---
 
@@ -196,13 +365,14 @@ Tududi is a self-hosted task management system designed around hierarchical orga
 - [From Task to Table: How I Finally Got to the Korean Burger](https://medium.com/@chrisveleris/from-task-to-table-how-i-finally-got-to-the-korean-burger-01245a14d491)
 
 **Key Capabilities:**
-- **Hierarchical Organization:** Areas > Projects > Tasks > Subtasks
+- **Hierarchical Organization:** Areas > Goals > Projects > Tasks > Subtasks
 - **Smart Recurring Tasks:** Multiple patterns with parent-child tracking
-- **Multi-Language Support:** 24 languages via i18next
+- **Multi-Language Support:** 26 languages via i18next
 - **Collaboration:** Project sharing with granular permissions
 - **REST API:** Swagger docs + personal API tokens
 - **Telegram Integration:** Create tasks via messages, daily digests
 - **Tag System:** Flexible tagging across tasks, notes, projects
+- **MCP Integration:** AI tool connectivity via Model Context Protocol (65 tools)
 
 **Target Users:** Self-hosting individuals and teams managing personal or collaborative productivity
 
@@ -215,11 +385,11 @@ Tududi is a self-hosted task management system designed around hierarchical orga
 - Webpack 5 (build) + webpack-dev-server (development)
 - Tailwind CSS 3.4 + Heroicons
 - Zustand (global state) + SWR (server state)
-- React Router 6, i18next (24 languages)
+- React Router 6, i18next (26 languages)
 
 **Backend:**
 - Express 4.21 + Sequelize 6.37 (ORM)
-- SQLite 5.1 (WAL mode, optimized)
+- SQLite (default, WAL mode, optimized) or PostgreSQL via `DATABASE_URL`
 - bcrypt + express-session (auth)
 - Swagger (API docs), Multer (uploads)
 - node-cron (scheduling), Nodemailer (email)
@@ -269,5 +439,5 @@ Tududi is a self-hosted task management system designed around hierarchical orga
 ---
 
 **Document Version:** 1.0.0
-**Last Updated:** 2026-03-14
+**Last Updated:** 2026-09-20
 **Maintainer:** Update when architecture changes or patterns evolve

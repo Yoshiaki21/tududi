@@ -17,12 +17,6 @@ class SyncScheduler {
             return;
         }
 
-        const enabled = process.env.CALDAV_ENABLED !== 'false';
-        if (!enabled) {
-            logger.logInfo('CalDAV sync scheduler disabled via CALDAV_ENABLED');
-            return;
-        }
-
         logger.logInfo('Initializing CalDAV sync scheduler');
 
         const syncIntervalMinutes = parseInt(
@@ -33,7 +27,8 @@ class SyncScheduler {
         const cronExpression = this._getCronExpression(syncIntervalMinutes);
 
         this.globalJob = cron.schedule(cronExpression, async () => {
-            await this.syncAllDueCalendars();
+            const { withJobLock } = require('../../../services/jobLock');
+            await withJobLock('caldav-sync', () => this.syncAllDueCalendars());
         });
 
         this.isInitialized = true;
@@ -74,6 +69,12 @@ class SyncScheduler {
 
     async _syncCalendar(calendar) {
         try {
+            const {
+                hasFeature,
+            } = require('../../../services/entitlementsService');
+            if (!(await hasFeature(calendar.user_id, 'caldav'))) {
+                return;
+            }
             logger.logInfo(
                 `Syncing calendar ${calendar.id} for user ${calendar.user_id}`
             );

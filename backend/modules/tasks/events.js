@@ -1,6 +1,7 @@
 const express = require('express');
 const { Task, TaskEvent } = require('../../models');
 const { isValidUid } = require('../../utils/slug-utils');
+const { isValidTaskUid } = require('./utils/validation');
 const {
     getTaskTimeline,
     getTaskCompletionTime,
@@ -8,12 +9,15 @@ const {
     getTaskActivitySummary,
 } = require('./taskEventService');
 const { logError } = require('../../services/logService');
+const { numericIdParam } = require('../../middleware/numericIdParam');
 const router = express.Router();
+
+router.param('uid', numericIdParam('task', Task));
 
 // GET /api/task/:uid/timeline - Get task event timeline
 router.get('/task/:uid/timeline', async (req, res) => {
     try {
-        if (!isValidUid(req.params.uid))
+        if (!isValidTaskUid(req.params.uid))
             return res.status(400).json({ error: 'Invalid UID' });
 
         const permissionsService = require('../../services/permissionsService');
@@ -49,7 +53,7 @@ router.get('/task/:uid/timeline', async (req, res) => {
 // GET /api/task/:uid/completion-time - Get task completion analytics
 router.get('/task/:uid/completion-time', async (req, res) => {
     try {
-        if (!isValidUid(req.params.uid))
+        if (!isValidTaskUid(req.params.uid))
             return res.status(400).json({ error: 'Invalid UID' });
 
         const permissionsService = require('../../services/permissionsService');

@@ -4,8 +4,11 @@ const {
     tududiToIcalPriority,
 } = require('./field-mappings');
 const { generateRRULE } = require('./rrule-generator');
+const { utcToUserDateString } = require('../../../utils/timezone-utils');
 
 function serializeTaskToVTODO(task, options = {}) {
+    const { userTimezone } = options;
+
     const comp = new ICAL.Component('vcalendar');
     comp.addPropertyWithValue('version', '2.0');
     comp.addPropertyWithValue('prodid', '-//Tududi//Task Manager//EN');
@@ -15,32 +18,75 @@ function serializeTaskToVTODO(task, options = {}) {
 
     vtodo.addPropertyWithValue('uid', task.uid);
     vtodo.addPropertyWithValue('summary', task.name);
-    vtodo.addPropertyWithValue('dtstamp', ICAL.Time.now());
+    // DTSTAMP is defined in UTC (RFC 5545 3.8.7.2); ICAL.Time.now() returns the
+    // process' local time and serializes without the trailing Z.
+    vtodo.addPropertyWithValue(
+        'dtstamp',
+        ICAL.Time.fromJSDate(new Date(), true)
+    );
 
     const status = STATUS_TUDUDI_TO_ICAL[task.status] || 'NEEDS-ACTION';
     vtodo.addPropertyWithValue('status', status);
 
-    if (task.priority !== null && task.priority !== undefined) {
-        const priority = tududiToIcalPriority(task.priority);
+    // A task with no priority is served without PRIORITY at all: 0 would read
+    // as "undefined" on the way out and as Low on the way back in.
+    const priority = tududiToIcalPriority(task.priority);
+    if (priority !== null) {
         vtodo.addPropertyWithValue('priority', priority);
     }
 
-    if (task.due_date) {
+    if (task.due_date && task.due_has_time) {
         try {
-            const dueTime = ICAL.Time.fromJSDate(new Date(task.due_date), true);
-            vtodo.addPropertyWithValue('due', dueTime);
+            // A due time is an instant, so DUE is a UTC DATE-TIME.
+            vtodo.addPropertyWithValue(
+                'due',
+                ICAL.Time.fromJSDate(new Date(task.due_date), true)
+            );
+        } catch (error) {
+            console.error('Error formatting due date:', error);
+        }
+    } else if (task.due_date) {
+        try {
+            const d = new Date(task.due_date);
+            // Use user timezone to get the correct calendar date; Tududi stores
+            // due_date as end-of-day in the user's timezone, so converting with
+            // UTC date parts gives the wrong date for non-UTC users.
+            const dateStr = userTimezone
+                ? utcToUserDateString(d, userTimezone)
+                : null;
+            const [year, month, day] = dateStr
+                ? dateStr.split('-').map(Number)
+                : [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()];
+            const dueDate = new ICAL.Time({ year, month, day, isDate: true });
+            vtodo.addPropertyWithValue('due', dueDate);
         } catch (error) {
             console.error('Error formatting due date:', error);
         }
     }
 
-    if (task.defer_until) {
+    if (task.defer_until && task.due_date && task.due_has_time) {
         try {
-            const startTime = ICAL.Time.fromJSDate(
-                new Date(task.defer_until),
-                true
+            // RFC 5545: DTSTART must have the same value type as DUE, so a
+            // timed DUE gets a UTC DATE-TIME DTSTART too.
+            vtodo.addPropertyWithValue(
+                'dtstart',
+                ICAL.Time.fromJSDate(new Date(task.defer_until), true)
             );
-            vtodo.addPropertyWithValue('dtstart', startTime);
+        } catch (error) {
+            console.error('Error formatting defer_until date:', error);
+        }
+    } else if (task.defer_until) {
+        try {
+            const d = new Date(task.defer_until);
+            // Same timezone-aware conversion for DTSTART.
+            const dateStr = userTimezone
+                ? utcToUserDateString(d, userTimezone)
+                : null;
+            const [year, month, day] = dateStr
+                ? dateStr.split('-').map(Number)
+                : [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()];
+            const startDate = new ICAL.Time({ year, month, day, isDate: true });
+            vtodo.addPropertyWithValue('dtstart', startDate);
         } catch (error) {
             console.error('Error formatting defer_until date:', error);
         }
@@ -153,6 +199,27 @@ function serializeTaskToVTODO(task, options = {}) {
         }
     }
 
+    if (task.reminder_at) {
+        try {
+            const valarm = new ICAL.Component('valarm');
+            valarm.addPropertyWithValue('action', 'DISPLAY');
+            valarm.addPropertyWithValue('description', 'Reminder');
+
+            const triggerTime = ICAL.Time.fromJSDate(
+                new Date(task.reminder_at),
+                true
+            );
+            const triggerProp = new ICAL.Property('trigger');
+            triggerProp.resetType('date-time');
+            triggerProp.setValue(triggerTime);
+            valarm.addProperty(triggerProp);
+
+            vtodo.addSubcomponent(valarm);
+        } catch (error) {
+            console.error('Error formatting reminder_at:', error);
+        }
+    }
+
     comp.addSubcomponent(vtodo);
 
     return comp.toString();
@@ -171,6 +238,32 @@ function getStatusName(status) {
     return statusMap[status];
 }
 
+async function serializeCollectionToVCALENDAR(tasks, options = {}) {
+    const comp = new ICAL.Component('vcalendar');
+    comp.addPropertyWithValue('version', '2.0');
+    comp.addPropertyWithValue('prodid', '-//Tududi//Task Manager//EN');
+    comp.addPropertyWithValue('calscale', 'GREGORIAN');
+
+    for (const task of tasks) {
+        try {
+            const vtodoStr = serializeTaskToVTODO(task, options);
+            const taskComp = new ICAL.Component(ICAL.parse(vtodoStr));
+            const vtodo = taskComp.getFirstSubcomponent('vtodo');
+            if (vtodo) {
+                comp.addSubcomponent(vtodo);
+            }
+        } catch (err) {
+            console.error(
+                `Error serializing task ${task.uid} for collection:`,
+                err
+            );
+        }
+    }
+
+    return comp.toString();
+}
+
 module.exports = {
     serializeTaskToVTODO,
+    serializeCollectionToVCALENDAR,
 };

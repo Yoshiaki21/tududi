@@ -2,8 +2,19 @@ const crypto = require('crypto');
 const { User, Setting } = require('../../models');
 const { getConfig } = require('../../config/config');
 const { logError, logInfo } = require('../../services/logService');
-const { sendEmail } = require('../../services/emailService');
-const { validateEmail, validatePassword } = require('../users/userService');
+const { normalizeLanguage } = require('../../emails');
+const { deliver } = require('../../services/emailDeliveryService');
+const {
+    canonicalEmail,
+    domainOf,
+    isDisposableDomain,
+    acceptsMail,
+} = require('../../services/emailDomainService');
+const {
+    validateEmail,
+    validatePassword,
+    MIN_LENGTH_POLICY_MESSAGE,
+} = require('../users/userService');
 const {
     getDefaultNotificationPreferences,
 } = require('../../utils/notificationPreferences');
@@ -36,20 +47,66 @@ const getTokenExpirationDate = () => {
     return expirationDate;
 };
 
-const createUnverifiedUser = async (email, password, transaction = null) => {
+const DISPOSABLE_EMAIL_MESSAGE =
+    'Please sign up with a permanent email address. Temporary or disposable addresses are not accepted.';
+const UNDELIVERABLE_EMAIL_MESSAGE =
+    'This email address cannot receive mail. Please check it and try again.';
+
+// Returns why the address cannot be used for a new account, or null. A
+// malformed address passes here and is reported by createUnverifiedUser.
+// Reserved names like .local get no rule of their own: the MX check covers
+// them, and a self-hosted instance whose internal DNS serves its own mail
+// domain keeps working.
+const checkSignupEmailDomain = async (email) => {
+    if (!validateEmail(email)) return null;
+
+    const domain = domainOf(email);
+    if (isDisposableDomain(domain)) return DISPOSABLE_EMAIL_MESSAGE;
+    if (
+        getConfig().registrationConfig.mxCheck &&
+        !(await acceptsMail(domain))
+    ) {
+        return UNDELIVERABLE_EMAIL_MESSAGE;
+    }
+    return null;
+};
+
+// On a hosted instance one mailbox gets one account, so a "+tag" or Gmail
+// dots cannot open a second trial. A self-hosted instance may well want
+// alias accounts (for testing, or one per role), so it is not checked there.
+const isTakenMailbox = async (email, transaction = null) => {
+    if (getConfig().hosted?.enabled !== true) return false;
+    const canonical = canonicalEmail(email);
+    if (!canonical) return false;
+    const existing = await User.findOne({
+        where: { email_canonical: canonical },
+        attributes: ['id'],
+        transaction,
+    });
+    return !!existing;
+};
+
+// `language` is the one the sign-up form was shown in, so the first emails
+// already arrive in it.
+const createUnverifiedUser = async (
+    email,
+    password,
+    transaction = null,
+    { language } = {}
+) => {
     if (!validateEmail(email)) {
         throw new Error('Invalid email format');
     }
 
     if (!validatePassword(password)) {
-        throw new Error('Password must be at least 6 characters long');
+        throw new Error(MIN_LENGTH_POLICY_MESSAGE);
     }
 
     const existingUser = await User.findOne({
-        where: { email },
+        where: { email: email.trim().toLowerCase() },
         transaction,
     });
-    if (existingUser) {
+    if (existingUser || (await isTakenMailbox(email, transaction))) {
         throw new Error('Email already registered');
     }
 
@@ -64,6 +121,7 @@ const createUnverifiedUser = async (email, password, transaction = null) => {
             email_verification_token: verificationToken,
             email_verification_token_expires_at: tokenExpiresAt,
             notification_preferences: getDefaultNotificationPreferences(),
+            language: normalizeLanguage(language),
         },
         { transaction }
     );
@@ -83,6 +141,93 @@ const isVerificationTokenValid = (token, expiresAt) => {
     const now = new Date();
     const expiration = new Date(expiresAt);
     return now <= expiration;
+};
+
+// Issues a fresh verification token for an unverified account and emails
+// it. Verified or unknown addresses are ignored so the caller's response can
+// stay identical in every case.
+const resendVerificationEmail = async (email) => {
+    const user = await User.findOne({
+        where: { email: String(email).trim().toLowerCase() },
+    });
+    if (!user || user.email_verified) {
+        return { sent: false };
+    }
+
+    const verificationToken = generateVerificationToken();
+    await user.update({
+        email_verification_token: verificationToken,
+        email_verification_token_expires_at: getTokenExpirationDate(),
+    });
+
+    const result = await sendVerificationEmail(user, verificationToken);
+    return { sent: !!result.success };
+};
+
+// Sends the verification email again with a fresh link, from the admin's
+// email panel. `reminder` sends the reminder wording and counts as the one
+// reminder the daily job would send.
+const sendFreshVerification = async (
+    user,
+    { reminder = false, triggeredBy = null } = {}
+) => {
+    const verificationToken = generateVerificationToken();
+    await user.update({
+        email_verification_token: verificationToken,
+        email_verification_token_expires_at: getTokenExpirationDate(),
+        ...(reminder ? { verification_reminder_sent_at: new Date() } : {}),
+    });
+    return sendVerificationEmail(user, verificationToken, {
+        reminder,
+        triggeredBy,
+    });
+};
+
+// One reminder, with a fresh link (the first one has expired by now), for a
+// self-registered hosted account that signed up between one and seven days
+// ago and has not verified. Members invited by an owner have their own
+// invitation and are left out.
+const sendVerificationReminders = async ({ now = new Date() } = {}) => {
+    const config = getConfig();
+    if (config.hosted?.enabled !== true) return [];
+    const { isEmailEnabled } = require('../../services/emailService');
+    if (!isEmailEnabled()) return [];
+
+    const { Op } = require('sequelize');
+    const DAY = 24 * 60 * 60 * 1000;
+    const users = await User.findAll({
+        where: {
+            email_verified: false,
+            email: { [Op.ne]: null },
+            created_by_user_id: null,
+            verification_reminder_sent_at: null,
+            created_at: {
+                [Op.lte]: new Date(now.getTime() - DAY),
+                [Op.gte]: new Date(now.getTime() - 7 * DAY),
+            },
+        },
+    });
+
+    const reminded = [];
+    for (const user of users) {
+        try {
+            const verificationToken = generateVerificationToken();
+            await user.update({
+                email_verification_token: verificationToken,
+                email_verification_token_expires_at: getTokenExpirationDate(),
+                verification_reminder_sent_at: now,
+            });
+            const result = await sendVerificationEmail(
+                user,
+                verificationToken,
+                { reminder: true }
+            );
+            if (result.success) reminded.push(user.id);
+        } catch (error) {
+            logError(error, `Failed to remind user ${user.id} to verify`);
+        }
+    }
+    return reminded;
 };
 
 const verifyUserEmail = async (token) => {
@@ -116,10 +261,19 @@ const verifyUserEmail = async (token) => {
     user.email_verification_token_expires_at = null;
     await user.save();
 
+    // A Cloud trial starts only once the address is proven to be real.
+    await require('../../services/entitlementsService').startTrial(user.id);
+
     return user;
 };
 
-const sendVerificationEmail = async (user, verificationToken) => {
+// `reminder` is the follow-up for a sign-up that never verified: same link,
+// different opening.
+const sendVerificationEmail = async (
+    user,
+    verificationToken,
+    { reminder = false, triggeredBy = null } = {}
+) => {
     const config = getConfig();
     const { isEmailEnabled } = require('../../services/emailService');
 
@@ -133,59 +287,19 @@ const sendVerificationEmail = async (user, verificationToken) => {
     const verificationUrl = `${config.backendUrl}/api/verify-email?token=${verificationToken}`;
     const tokenExpiryHours = config.registrationConfig.tokenExpiryHours;
 
-    const subject = 'Welcome to Tududi - Verify your email';
-
-    const text = `Welcome to Tududi!
-
-Thank you for registering. To complete your registration and start using Tududi, please verify your email address by clicking the link below:
-
-${verificationUrl}
-
-This verification link will expire in ${tokenExpiryHours} hours.
-
-After verification, you'll be able to:
-- Create and organize tasks with ease
-- Manage projects and areas
-- Set up recurring tasks
-- Track your productivity
-
-If you didn't create an account with Tududi, you can safely ignore this email.
-
-Best regards,
-The Tududi Team`;
-
-    const html = `
-<p>Welcome to Tududi!</p>
-
-<p>Thank you for registering. To complete your registration and start using Tududi, please verify your email address by clicking the button below:</p>
-
-<p style="text-align: center; margin: 30px 0;">
-    <a href="${verificationUrl}" style="background-color: #3b82f6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">Verify Email Address</a>
-</p>
-
-<p>Or copy and paste this link into your browser:</p>
-<p style="word-break: break-all; color: #666;">${verificationUrl}</p>
-
-<p><strong>This verification link will expire in ${tokenExpiryHours} hours.</strong></p>
-
-<p>After verification, you'll be able to:</p>
-<ul>
-    <li>Create and organize tasks with ease</li>
-    <li>Manage projects and areas</li>
-    <li>Set up recurring tasks</li>
-    <li>Track your productivity</li>
-</ul>
-
-<p>If you didn't create an account with Tududi, you can safely ignore this email.</p>
-
-<p>Best regards,<br>The Tududi Team</p>
-`;
-
-    const result = await sendEmail({
-        to: user.email,
-        subject,
-        text,
-        html,
+    // On Cloud the email also says what the trial gives, since the trial
+    // starts on this link.
+    const trialDays = config.hosted?.enabled ? config.hosted.trialDays || 0 : 0;
+    const result = await deliver('verification', {
+        user,
+        variant: reminder ? 'reminder' : null,
+        triggeredBy,
+        vars: {
+            url: verificationUrl,
+            expiryHours: tokenExpiryHours,
+            trialDays,
+            reminder,
+        },
     });
 
     if (result.success) {
@@ -235,8 +349,13 @@ module.exports = {
     setRegistrationEnabled,
     generateVerificationToken,
     createUnverifiedUser,
+    isTakenMailbox,
+    checkSignupEmailDomain,
     verifyUserEmail,
     sendVerificationEmail,
+    resendVerificationEmail,
+    sendFreshVerification,
+    sendVerificationReminders,
     isVerificationTokenValid,
     cleanupExpiredTokens,
 };

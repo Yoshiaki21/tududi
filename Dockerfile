@@ -1,7 +1,10 @@
 ###############
 # BUILD STAGE #
 ###############
-FROM node:22-trixie-slim AS builder
+# Runs on the build host's own architecture: only the compiled frontend and
+# static assets leave this stage, and they do not depend on the target CPU.
+# Building them under QEMU for arm64 made the full npm install time out.
+FROM --platform=$BUILDPLATFORM node:22-trixie-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
@@ -20,7 +23,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 
 # Install all dependencies (frontend and backend)
-RUN npm install --no-audit --no-fund
+RUN npm config set fetch-retries 5 && \
+    npm config set fetch-retry-mintimeout 20000 && \
+    npm install --no-audit --no-fund
 
 # Copy source code
 COPY . ./
@@ -40,6 +45,11 @@ RUN npm cache clean --force && \
 # Production stage #
 ####################
 FROM node:22-trixie-slim AS production
+
+# service: Kamal (the hosted deploy) refuses images without it.
+# source: links the ghcr.io package to this repository.
+LABEL service="tududi" \
+      org.opencontainers.image.source="https://github.com/chrisvel/tududi"
 
 ENV APP_UID=1001
 ENV APP_GID=1001
@@ -73,13 +83,13 @@ RUN chmod +x /app/scripts/docker-entrypoint.sh
 # Copy package files first
 COPY --chown=app:app package.json package-lock.json /app/
 
-# Install production dependencies only
+# Install production dependencies only. A failed install must fail the
+# build: only the size cleanup below is allowed to fail.
 RUN npm install --omit=dev --no-audit --no-fund && \
     npm cache clean --force && \
-
     ln -s /app/node_modules /app/backend/node_modules && \
     # Remove unnecessary files from node_modules to reduce size
-    find /app/node_modules -type f \( \
+    { find /app/node_modules -type f \( \
     -name "*.md" -o \
     -name "*.ts" -o \
     -name "*.map" -o \
@@ -98,7 +108,9 @@ RUN npm install --omit=dev --no-audit --no-fund && \
     -name "example" -o \
     -name "coverage" -o \
     -name ".github" \
-    \) -exec rm -rf {} + 2>/dev/null || true
+    \) -exec rm -rf {} + 2>/dev/null || true; } && \
+    cd /app/backend && \
+    node -e "require('sequelize'); require('sqlite3'); require('express')"
 
 # Copy frontend
 RUN rm -rf /app/backend/dist
@@ -108,16 +120,17 @@ COPY --from=builder --chown=app:app /app/public/manifest.json ./backend/dist/
 COPY --from=builder --chown=app:app /app/public/locales ./backend/dist/locales
 
 # Create necessary directories
-RUN mkdir -p /app/backend/db /app/backend/certs /app/backend/uploads && \
-    chown -R app:app /app/backend/db /app/backend/certs /app/backend/uploads
+RUN mkdir -p /app/db /app/backend/certs /app/uploads /app/backups && \
+    chown -R app:app /app/db /app/backend/certs /app/uploads /app/backups
 
-VOLUME ["/app/backend/db"]
-VOLUME ["/app/backend/uploads"]
+VOLUME ["/app/db"]
+VOLUME ["/app/uploads"]
+VOLUME ["/app/backups"]
 
 EXPOSE 3002
 
 ENV NODE_ENV=production \
-    DB_FILE="db/production.sqlite3" \
+    DB_FILE="/app/db/production.sqlite3" \
     PORT=3002 \
     TUDUDI_ALLOWED_ORIGINS="http://localhost:8080,http://localhost:3002,http://127.0.0.1:8080,http://127.0.0.1:3002" \
     TUDUDI_SESSION_SECRET="" \
@@ -126,12 +139,9 @@ ENV NODE_ENV=production \
     TUDUDI_TRUST_PROXY=false \
     DISABLE_TELEGRAM=false \
     DISABLE_SCHEDULER=false \
-    TUDUDI_UPLOAD_PATH="/app/backend/uploads" \
-    SWAGGER_ENABLED=false \
-    FF_ENABLE_BACKUPS=false \
-    FF_ENABLE_CALDAV=false \
-    FF_ENABLE_CALENDAR=false \
-    FF_ENABLE_HABITS=false
+    TUDUDI_UPLOAD_PATH="/app/uploads" \
+    TUDUDI_BACKUP_PATH="/app/backups" \
+    SWAGGER_ENABLED=false
 
 HEALTHCHECK --interval=60s --timeout=3s --start-period=10s --retries=2 \
     CMD ["wget", "-q", "--spider", "http://127.0.0.1:3002/api/health"]

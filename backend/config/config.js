@@ -27,6 +27,54 @@ const credentials = {
 
 const defaultHost = environment === 'test' ? '127.0.0.1' : '0.0.0.0';
 
+// Prices as they are shown to people, in one place: the marketing page and
+// the in-app subscription page both read this, so neither can drift from
+// the other. Setting it does not change what the payment provider charges;
+// keep the two in step by hand.
+const displayPricing = () => ({
+    currency: 'EUR',
+    monthly: 5,
+    annual: 50,
+    // The price after the early-bird tag comes off. It matches `annual`
+    // because no higher price has ever been charged or decided; an invented
+    // one is what the EU price-indication rules are about. Raise it here
+    // deliberately if that ever changes.
+    standard: 50,
+    launchActive: true,
+    // A decided price rise, per seat. The pricing pages announce it until
+    // `from`, and subscribing before then keeps today's price.
+    next: { monthly: 7, annual: 70, from: '2027-01-01' },
+    ...parseJsonEnv(
+        process.env.TUDUDI_PRICING_JSON ||
+            process.env.TUDUDI_LANDING_PRICING_JSON
+    ),
+});
+
+// Where the blog lives, for links from the marketing pages and the sitemap:
+// TUDUDI_BLOG_URL, else the first blog host, else null (no blog host).
+function blogSiteUrl() {
+    if (process.env.TUDUDI_BLOG_URL) {
+        return process.env.TUDUDI_BLOG_URL.replace(/\/$/, '');
+    }
+    const host = (process.env.TUDUDI_BLOG_HOSTS || '').split(',')[0].trim();
+    return host ? `https://${host.toLowerCase()}` : null;
+}
+
+// A JSON object from an environment variable, or {} when unset or invalid.
+function parseJsonEnv(value) {
+    if (!value) return {};
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed
+            : {};
+    } catch {
+        return {};
+    }
+}
+
+const { resolveDatabaseSettings } = require('./database-settings');
+
 const emailConfig = {
     enabled: process.env.ENABLE_EMAIL === 'true',
     smtp: {
@@ -50,7 +98,28 @@ const registrationConfig = {
     tokenExpiryHours: process.env.REGISTRATION_TOKEN_EXPIRY_HOURS
         ? parseInt(process.env.REGISTRATION_TOKEN_EXPIRY_HOURS, 10)
         : 24,
+    // Whether a new account's email domain must be able to receive mail (an
+    // MX lookup that fails open when DNS is unreachable). Off under test so
+    // the suite never touches the network.
+    mxCheck: process.env.REGISTRATION_MX_CHECK
+        ? process.env.REGISTRATION_MX_CHECK === 'true'
+        : environment !== 'test',
 };
+
+const passwordResetConfig = {
+    tokenExpiryMinutes: process.env.PASSWORD_RESET_TOKEN_EXPIRY_MINUTES
+        ? parseInt(process.env.PASSWORD_RESET_TOKEN_EXPIRY_MINUTES, 10)
+        : 60,
+};
+
+const inviteTokenExpiryHours = process.env.INVITE_TOKEN_EXPIRY_HOURS
+    ? parseInt(process.env.INVITE_TOKEN_EXPIRY_HOURS, 10)
+    : 168;
+
+// How long a sign-in link for a member without an email stays valid.
+const memberSignInLinkExpiryHours = process.env.MEMBER_SIGN_IN_LINK_EXPIRY_HOURS
+    ? parseInt(process.env.MEMBER_SIGN_IN_LINK_EXPIRY_HOURS, 10)
+    : 24;
 
 const config = {
     allowedOrigins: process.env.TUDUDI_ALLOWED_ORIGINS
@@ -72,13 +141,178 @@ const config = {
 
     disableTelegram: process.env.DISABLE_TELEGRAM === 'true',
 
+    // Telegram is off unless TELEGRAM_ENABLED=true: no polling, no
+    // messages, no API, and the UI hides it. DISABLE_TELEGRAM above only
+    // stops this process from polling (web pods next to a worker).
+    telegramEnabled: process.env.TELEGRAM_ENABLED === 'true',
+
+    // Hosted mode: this instance serves unrelated members of the public, so
+    // conveniences that assume a single owner (first user becomes admin,
+    // bootstrap role assignment, SSO auto-provisioning past a closed
+    // registration) are switched off. Off by default for self-hosters.
+    hosted: {
+        enabled: process.env.TUDUDI_HOSTED_MODE === 'true',
+        trialDays: process.env.TUDUDI_TRIAL_DAYS
+            ? parseInt(process.env.TUDUDI_TRIAL_DAYS, 10)
+            : 7,
+        // After a trial ends without a subscription the account can still
+        // read (and export) its data for this many days, then it is deleted.
+        trialReadOnlyDays: process.env.TUDUDI_TRIAL_READ_ONLY_DAYS
+            ? parseInt(process.env.TUDUDI_TRIAL_READ_ONLY_DAYS, 10)
+            : 30,
+        deleteExpiredTrials:
+            process.env.TUDUDI_DELETE_EXPIRED_TRIALS !== 'false',
+        graceDays: process.env.TUDUDI_PAST_DUE_GRACE_DAYS
+            ? parseInt(process.env.TUDUDI_PAST_DUE_GRACE_DAYS, 10)
+            : 14,
+        exemptAdmins: process.env.TUDUDI_HOSTED_EXEMPT_ADMINS !== 'false',
+        // Sell access rather than upgrades: without an active subscription
+        // the app is closed, and only billing, the profile and data export
+        // stay reachable. Off by default, and meaningless when hosted mode
+        // is off, so a self-hosted instance is never gated.
+        requireSubscription: process.env.TUDUDI_REQUIRE_SUBSCRIPTION === 'true',
+        stripe: {
+            secretKey: process.env.STRIPE_SECRET_KEY,
+            webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+            apiVersion: process.env.STRIPE_API_VERSION || undefined,
+            prices: {
+                proMonthly: process.env.STRIPE_PRICE_PRO_MONTHLY,
+                proAnnual: process.env.STRIPE_PRICE_PRO_ANNUAL,
+                // Team plans: {"team_5":{"month":"price_…","year":"price_…"}}
+                team: parseJsonEnv(process.env.STRIPE_TEAM_PRICES_JSON),
+            },
+        },
+        lemonsqueezy: {
+            apiKey: process.env.LEMONSQUEEZY_API_KEY,
+            storeId: process.env.LEMONSQUEEZY_STORE_ID,
+            webhookSecret: process.env.LEMONSQUEEZY_WEBHOOK_SECRET,
+            apiBase: process.env.LEMONSQUEEZY_API_BASE || undefined,
+            variants: {
+                proMonthly: process.env.LEMONSQUEEZY_VARIANT_PRO_MONTHLY,
+                proAnnual: process.env.LEMONSQUEEZY_VARIANT_PRO_ANNUAL,
+                // Team plans: {"team_5":{"month":"123","year":"456"}}
+                team: parseJsonEnv(process.env.LEMONSQUEEZY_TEAM_VARIANTS_JSON),
+            },
+        },
+        paddle: {
+            apiKey: process.env.PADDLE_API_KEY,
+            // Client-side token (live_… or test_…) for Paddle.js; public.
+            clientToken: process.env.PADDLE_CLIENT_TOKEN,
+            webhookSecret: process.env.PADDLE_WEBHOOK_SECRET,
+            // "sandbox" for sandbox-api.paddle.com; production otherwise.
+            environment: process.env.PADDLE_ENVIRONMENT || 'production',
+            apiBase: process.env.PADDLE_API_BASE || undefined,
+            // Price ids by plan:
+            // {"pro":{"month":"pri_…","year":"pri_…"},"team_5":{…}}
+            prices: parseJsonEnv(process.env.PADDLE_PRICES_JSON),
+        },
+        // Which provider sells new subscriptions. Explicit BILLING_PROVIDER
+        // wins; otherwise Paddle when it has a key, then Lemon Squeezy when
+        // it has a key and Stripe does not, else Stripe. Subscriptions bought
+        // through another configured provider are still managed there.
+        billing: {
+            provider:
+                process.env.BILLING_PROVIDER ||
+                (process.env.PADDLE_API_KEY
+                    ? 'paddle'
+                    : process.env.LEMONSQUEEZY_API_KEY &&
+                        !process.env.STRIPE_SECRET_KEY
+                      ? 'lemonsqueezy'
+                      : 'stripe'),
+        },
+    },
+
+    // Whether a waitlist address must belong to a domain that can receive
+    // mail (an MX lookup, failing open when DNS itself is unreachable). On by
+    // default, off under test so the suite never touches the network.
+    waitlist: {
+        mxCheck: process.env.WAITLIST_MX_CHECK
+            ? process.env.WAITLIST_MX_CHECK === 'true'
+            : environment !== 'test',
+    },
+
+    // Public demo sandbox: one shared account, seeded and wiped on a timer.
+    // Off unless TUDUDI_DEMO_ENABLED is set, so a self-hosted instance never
+    // grows a public login.
+    demo: {
+        enabled: process.env.TUDUDI_DEMO_ENABLED === 'true',
+        email: process.env.TUDUDI_DEMO_EMAIL || 'demo@tududi.com',
+        password: process.env.TUDUDI_DEMO_PASSWORD || 'demodemo',
+        resetMinutes: process.env.TUDUDI_DEMO_RESET_MINUTES
+            ? parseInt(process.env.TUDUDI_DEMO_RESET_MINUTES, 10)
+            : 60,
+    },
+
+    // Bot protection on registration, password reset and verification
+    // resend (Cloudflare Turnstile). Off unless both keys are set.
+    captcha: {
+        siteKey: process.env.TURNSTILE_SITE_KEY,
+        secretKey: process.env.TURNSTILE_SECRET_KEY,
+        verifyUrl: process.env.TURNSTILE_VERIFY_URL || undefined,
+    },
+
+    // Marketing page. When TUDUDI_LANDING_HOSTS names one or more hostnames,
+    // requests for those hosts get the marketing page instead of the app,
+    // and product paths on them redirect to FRONTEND_URL. Empty (the
+    // default) means the page is never served.
+    landing: {
+        hosts: (process.env.TUDUDI_LANDING_HOSTS || '')
+            .split(',')
+            .map((h) => h.trim().toLowerCase())
+            .filter(Boolean),
+        siteUrl:
+            process.env.TUDUDI_LANDING_URL ||
+            (process.env.TUDUDI_LANDING_HOSTS
+                ? `https://${process.env.TUDUDI_LANDING_HOSTS.split(',')[0].trim()}`
+                : 'https://tududi.com'),
+        appUrl: process.env.FRONTEND_URL || 'http://localhost:8080',
+        pricing: displayPricing(),
+        blogUrl: blogSiteUrl(),
+    },
+
+    // Blog. The superadmin picks a publicly shared note of theirs as the
+    // front page in the admin area; the public notes it links with [[Title]]
+    // are the posts. TUDUDI_BLOG_HOSTS serves the blog at the root of those
+    // hostnames; without it the blog is still readable at /blog.
+    blog: {
+        hosts: (process.env.TUDUDI_BLOG_HOSTS || '')
+            .split(',')
+            .map((h) => h.trim().toLowerCase())
+            .filter(Boolean),
+        siteUrl: blogSiteUrl(),
+    },
+
+    // Page views for the admin dashboard: marketing, blog and app loads. No
+    // address is stored (see models/site_visit.js). TUDUDI_VISIT_TRACKING=false
+    // turns it off, and the dashboard then shows no visit numbers.
+    visits: {
+        enabled: process.env.TUDUDI_VISIT_TRACKING !== 'false',
+    },
+
+    // Same object the marketing page uses, so /api/billing can quote the
+    // price without the frontend hardcoding numbers of its own.
+    pricing: displayPricing(),
+
     email: process.env.TUDUDI_USER_EMAIL,
 
     environment,
 
-    frontendUrl: process.env.FRONTEND_URL || 'http://localhost:8080',
+    // In production the app and the API share one address, so BASE_URL (the
+    // public URL of the deployment) also stands in for FRONTEND_URL. Without
+    // it, email links (verification redirect, password reset) would point at
+    // the development server on localhost:8080.
+    frontendUrl:
+        process.env.FRONTEND_URL ||
+        process.env.BASE_URL ||
+        'http://localhost:8080',
 
-    backendUrl: process.env.BACKEND_URL || 'http://localhost:3002',
+    // BACKEND_URL is the primary variable; BASE_URL (documented for OIDC
+    // callbacks) is accepted as a fallback since it's the publicly-facing
+    // URL of the deployment and users commonly set only that one.
+    backendUrl:
+        process.env.BACKEND_URL ||
+        process.env.BASE_URL ||
+        'http://localhost:3002',
 
     // Some CI/sandbox environments disallow binding to 0.0.0.0, so force
     // loopback for tests unless HOST is explicitly provided.
@@ -100,8 +334,19 @@ const config = {
 
     registrationConfig,
 
+    passwordResetConfig,
+
+    inviteTokenExpiryHours,
+
+    memberSignInLinkExpiryHours,
+
     uploadPath:
         process.env.TUDUDI_UPLOAD_PATH || path.join(projectRootPath, 'uploads'),
+
+    // Per-user backup exports (Profile > Backup). A separate volume in Docker
+    // so they survive a container recreate like uploads do.
+    backupPath:
+        process.env.TUDUDI_BACKUP_PATH || path.join(projectRootPath, 'backups'),
 
     // File upload limit in MB (default 10MB)
     fileUploadLimitMB: process.env.FILE_UPLOAD_LIMIT_MB
@@ -120,10 +365,12 @@ const config = {
             return false;
         }
         if (val === 'true') {
-            console.log(
-                '[Config] TUDUDI_TRUST_PROXY=true parsed as boolean true'
+            console.warn(
+                '[Config] TUDUDI_TRUST_PROXY=true is permissive — converting to 1 (single hop). ' +
+                    'Set TUDUDI_TRUST_PROXY=1 explicitly to silence this warning, ' +
+                    'or use a higher number if you have multiple proxy hops.'
             );
-            return true;
+            return 1;
         }
         if (val === 'false') {
             console.log(
@@ -142,6 +389,14 @@ const config = {
         return val;
     })(),
 
+    // Project templates marketplace
+    marketplaceUrl: process.env.MARKETPLACE_URL || '',
+    marketplaceApiKey: process.env.MARKETPLACE_API_KEY || '',
+    templatesEnabled: process.env.PROJECT_TEMPLATES_ENABLED !== 'false',
+    maxTemplatesPerUser: process.env.MAX_TEMPLATES_PER_USER
+        ? parseInt(process.env.MAX_TEMPLATES_PER_USER, 10)
+        : 50,
+
     // Encryption key for CalDAV credentials (falls back to SECRET_KEY or session secret)
     encryptionKey: process.env.ENCRYPTION_KEY,
 
@@ -149,6 +404,14 @@ const config = {
     secretKey: process.env.SECRET_KEY,
 
     // Rate limiting configuration
+    caldav: {
+        // Remote calendars on loopback, LAN or other private addresses are
+        // refused unless the operator opts in (self-hosted Nextcloud or
+        // Radicale on the same network is the usual reason). Opting in also
+        // allows plain http, since such servers rarely have certificates.
+        allowPrivateHosts: process.env.CALDAV_ALLOW_PRIVATE_HOSTS === 'true',
+    },
+
     rateLimiting: {
         // Disable rate limiting in test environment
         enabled:
@@ -161,6 +424,41 @@ const config = {
                 parseInt(process.env.RATE_LIMIT_AUTH_WINDOW_MS) ||
                 15 * 60 * 1000, // 15 minutes
             max: parseInt(process.env.RATE_LIMIT_AUTH_MAX) || 5, // 5 requests per window
+        },
+
+        // Sign-in links for members without an email (looking at a link and
+        // using it), per IP. Kept apart from the auth limit above so a
+        // household handing out links to several devices is not locked out,
+        // and generous because the token itself cannot be guessed.
+        signInLink: {
+            windowMs:
+                parseInt(process.env.RATE_LIMIT_SIGN_IN_LINK_WINDOW_MS) ||
+                15 * 60 * 1000, // 15 minutes
+            max: parseInt(process.env.RATE_LIMIT_SIGN_IN_LINK_MAX) || 30,
+        },
+
+        // Login and password reset attempts per email address, on top of
+        // the per-IP limit above, so one address cannot be hammered from
+        // many IPs and one shared IP does not lock everyone else out.
+        authEmail: {
+            windowMs:
+                parseInt(process.env.RATE_LIMIT_AUTH_EMAIL_WINDOW_MS) ||
+                15 * 60 * 1000, // 15 minutes
+            max: parseInt(process.env.RATE_LIMIT_AUTH_EMAIL_MAX) || 10,
+        },
+
+        // Password sign-ups per IP on a hosted instance. Only accounts that
+        // were actually created count, so typos and refusals do not.
+        signup: {
+            windowMs:
+                parseInt(process.env.RATE_LIMIT_SIGNUP_WINDOW_MS) ||
+                24 * 60 * 60 * 1000, // 24 hours
+            max: parseInt(process.env.RATE_LIMIT_SIGNUP_MAX) || 3,
+        },
+
+        // CalDAV Basic-auth attempts, per IP + username, per auth window
+        caldavAuth: {
+            max: parseInt(process.env.RATE_LIMIT_CALDAV_AUTH_MAX) || 20,
         },
 
         // General API for unauthenticated requests
@@ -179,6 +477,27 @@ const config = {
             max: parseInt(process.env.RATE_LIMIT_AUTH_API_MAX) || 1000, // 1000 requests per window
         },
 
+        // Failed (401) Bearer authentications per IP, per auth window
+        bearerFailure: {
+            max: parseInt(process.env.RATE_LIMIT_BEARER_FAILURE_MAX) || 50,
+        },
+
+        // Endpoints that verify or change account credentials
+        passwordConfirm: {
+            windowMs:
+                parseInt(process.env.RATE_LIMIT_PASSWORD_CONFIRM_WINDOW_MS) ||
+                15 * 60 * 1000, // 15 minutes
+            max: parseInt(process.env.RATE_LIMIT_PASSWORD_CONFIRM_MAX) || 10,
+        },
+
+        // Uploaded file requests (avatars, project images, attachments)
+        uploads: {
+            windowMs:
+                parseInt(process.env.RATE_LIMIT_UPLOADS_WINDOW_MS) ||
+                15 * 60 * 1000, // 15 minutes
+            max: parseInt(process.env.RATE_LIMIT_UPLOADS_MAX) || 3000,
+        },
+
         // Resource creation endpoints
         createResource: {
             windowMs:
@@ -194,14 +513,35 @@ const config = {
                 60 * 60 * 1000, // 1 hour
             max: parseInt(process.env.RATE_LIMIT_API_KEY_MAX) || 10, // 10 requests per window
         },
+
+        // The marketing site's waitlist form, per IP. It's a plain HTML post
+        // with no session and no CAPTCHA, so this is the only thing standing
+        // between it and a script flooding the table.
+        waitlist: {
+            windowMs:
+                parseInt(process.env.RATE_LIMIT_WAITLIST_WINDOW_MS) ||
+                10 * 60 * 1000, // 10 minutes
+            max: parseInt(process.env.RATE_LIMIT_WAITLIST_MAX) || 5, // 5 submissions per window
+        },
     },
 };
 
-console.log(`Using database file '${config.dbFile}'`);
+config.db = resolveDatabaseSettings(process.env, config.dbFile);
+
+if (config.db.dialect === 'sqlite') {
+    console.log(`Using database file '${config.dbFile}'`);
+} else {
+    console.log(
+        `Using PostgreSQL database '${config.db.database}' at ${config.db.host}:${config.db.port}`
+    );
+}
 
 function setConfig({ dbFile } = {}) {
     if (dbFile != null) {
         config.dbFile = dbFile;
+        if (config.db.dialect === 'sqlite') {
+            config.db.storage = dbFile;
+        }
     }
 }
 

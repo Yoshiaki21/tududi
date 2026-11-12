@@ -21,13 +21,18 @@ async function initializeMatrixPolling() {
             });
 
             if (users.length > 0) {
-                console.log(`Matrix: initializing polling for ${users.length} user(s)...`);
+                console.log(
+                    `Matrix: initializing polling for ${users.length} user(s)...`
+                );
                 for (const user of users) {
                     await matrixPoller.start(user.id);
                 }
             }
         } catch (error) {
-            console.error('Matrix: error during initialization:', error.message);
+            console.error(
+                'Matrix: error during initialization:',
+                error.message
+            );
         }
     }, startupDelay);
 }

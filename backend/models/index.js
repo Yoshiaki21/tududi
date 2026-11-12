@@ -1,46 +1,49 @@
 const { Sequelize } = require('sequelize');
-const path = require('path');
 const { getConfig } = require('../config/config');
+const { buildSequelizeOptions } = require('../config/db');
 const config = getConfig();
 
-let dbConfig;
-
-dbConfig = {
-    dialect: 'sqlite',
-    storage: config.dbFile,
-    logging: config.environment === 'development' ? console.log : false,
-    define: {
-        timestamps: true,
-        underscored: true,
-        createdAt: 'created_at',
-        updatedAt: 'updated_at',
-    },
-};
+const dbConfig = buildSequelizeOptions();
 
 const sequelize = new Sequelize(dbConfig);
 
 // SQLite performance optimizations for slow I/O systems (e.g., Synology NAS with HDDs)
 if (dbConfig.dialect === 'sqlite') {
-    const pragmas = [
-        // WAL mode: sequential writes instead of random I/O, better for Btrfs COW
-        'PRAGMA journal_mode=WAL;',
-        // Relaxed sync: faster writes with minimal durability risk for single-user app
-        'PRAGMA synchronous=NORMAL;',
-        // 5 second busy timeout: prevents "database is locked" errors under load
-        'PRAGMA busy_timeout=5000;',
-        // 64MB cache: keeps more data in memory, reduces disk reads
-        'PRAGMA cache_size=-64000;',
-        // Store temp tables in memory instead of disk
-        'PRAGMA temp_store=MEMORY;',
-        // Enable memory-mapped I/O (256MB): faster reads on large databases
-        'PRAGMA mmap_size=268435456;',
-    ];
+    // Per-connection PRAGMAs via afterConnect, which runs inside _connect() before
+    // the connection is returned to the pool. This guarantees busy_timeout is set
+    // on every connection before first use, preventing SQLITE_BUSY errors when
+    // startup scripts race against an async IIFE that might not yet have run.
+    sequelize.afterConnect(async (connection) => {
+        await new Promise((resolve, reject) => {
+            connection.exec(
+                [
+                    // Relaxed sync: faster writes with minimal durability risk for single-user app
+                    'PRAGMA synchronous=NORMAL;',
+                    // 5 second busy timeout: prevents "database is locked" errors under load
+                    'PRAGMA busy_timeout=5000;',
+                    // 64MB cache: keeps more data in memory, reduces disk reads
+                    'PRAGMA cache_size=-64000;',
+                    // Store temp tables in memory instead of disk
+                    'PRAGMA temp_store=MEMORY;',
+                    // Enable memory-mapped I/O (256MB): faster reads on large databases
+                    'PRAGMA mmap_size=268435456;',
+                    // Checkpoint WAL every 200 frames instead of the 1000-frame default.
+                    // Keeps the WAL file smaller so reads traverse fewer frames on slow disks.
+                    'PRAGMA wal_autocheckpoint=200;',
+                ].join('\n'),
+                (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                }
+            );
+        });
+    });
 
+    // WAL mode persists in the DB file — set it once on startup.
+    // afterConnect ensures busy_timeout is already applied on the connection used here.
     (async () => {
         try {
-            for (const pragma of pragmas) {
-                await sequelize.query(pragma);
-            }
+            await sequelize.query('PRAGMA journal_mode=WAL;');
             if (config.environment === 'development') {
                 console.log('SQLite performance optimizations enabled');
             }
@@ -58,15 +61,24 @@ const Tag = require('./tag')(sequelize);
 const Note = require('./note')(sequelize);
 const InboxItem = require('./inbox_item')(sequelize);
 const TaskEvent = require('./task_event')(sequelize);
+const TaskRelation = require('./task_relation')(sequelize);
+const Comment = require('./comment')(sequelize);
+const CommentReaction = require('./comment_reaction')(sequelize);
 const Role = require('./role')(sequelize);
 const Action = require('./action')(sequelize);
 const Permission = require('./permission')(sequelize);
+const UserGroup = require('./userGroup')(sequelize);
+const UserGroupMember = require('./userGroupMember')(sequelize);
+const MemberSignInLink = require('./memberSignInLink')(sequelize);
+const GroupShare = require('./groupShare')(sequelize);
+const GroupPermission = require('./groupPermission')(sequelize);
 const View = require('./view')(sequelize);
 const ApiToken = require('./api_token')(sequelize);
 const Setting = require('./setting')(sequelize);
 const Notification = require('./notification')(sequelize);
 const RecurringCompletion = require('./recurringCompletion')(sequelize);
 const TaskAttachment = require('./task_attachment')(sequelize);
+const InboxItemAttachment = require('./inbox_item_attachment')(sequelize);
 const ProjectAttachment = require('./project_attachment')(sequelize);
 const NoteAttachment = require('./note_attachment')(sequelize);
 const Backup = require('./backup')(sequelize);
@@ -80,19 +92,85 @@ const CalDAVOccurrenceOverride = require('./caldav_occurrence_override')(
 );
 const CalDAVRemoteCalendar = require('./caldav_remote_calendar')(sequelize);
 const CalendarToken = require('./calendar_token')(sequelize);
+const CalendarFeed = require('./calendar_feed')(sequelize);
+const DailyPlan = require('./daily_plan')(sequelize);
+const DailyPlanItem = require('./daily_plan_item')(sequelize);
+const Goal = require('./goal')(sequelize);
+const UserGoalOrder = require('./user_goal_order')(sequelize);
+const UserAreaOrder = require('./user_area_order')(sequelize);
+const Person = require('./person')(sequelize);
+const UserProjectArea = require('./user_project_area')(sequelize);
+const UserProjectOrder = require('./user_project_order')(sequelize);
+const UserTaskOrder = require('./user_task_order')(sequelize);
+const RateLimit = require('./rate_limit')(sequelize);
+const BillingAccount = require('./billing_account')(sequelize);
+const BillingEvent = require('./billing_event')(sequelize);
+const WaitlistSubscriber = require('./waitlist_subscriber')(sequelize);
+const SiteVisit = require('./site_visit')(sequelize);
+const EmailDelivery = require('./email_delivery')(sequelize);
+const UsageCounter = require('./usage_counter')(sequelize);
+const Feedback = require('./feedback')(sequelize);
+const PushSubscription = require('./push_subscription')(sequelize);
+const Webhook = require('./webhook')(sequelize);
+const WebhookDelivery = require('./webhook_delivery')(sequelize);
+const ImportJob = require('./import_job')(sequelize);
+const UserMfa = require('./user_mfa')(sequelize);
+const UserRecoveryCode = require('./user_recovery_code')(sequelize);
+const Account = require('./account')(sequelize);
+const { selfPersonName } = require('../utils/selfPersonName');
+
+User.hasOne(BillingAccount, { foreignKey: 'user_id', as: 'BillingAccount' });
+BillingAccount.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+User.hasMany(UsageCounter, { foreignKey: 'user_id', as: 'UsageCounters' });
+UsageCounter.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+User.hasMany(Feedback, { foreignKey: 'user_id', as: 'Feedback' });
+Feedback.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+User.hasMany(PushSubscription, {
+    foreignKey: 'user_id',
+    as: 'PushSubscriptions',
+});
+PushSubscription.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+User.hasMany(Webhook, { foreignKey: 'user_id', as: 'Webhooks' });
+Webhook.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+User.hasOne(UserMfa, { foreignKey: 'user_id', as: 'Mfa' });
+UserMfa.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+User.hasMany(UserRecoveryCode, {
+    foreignKey: 'user_id',
+    as: 'RecoveryCodes',
+});
+UserRecoveryCode.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+Webhook.hasMany(WebhookDelivery, {
+    foreignKey: 'webhook_id',
+    as: 'Deliveries',
+    onDelete: 'CASCADE',
+});
+WebhookDelivery.belongsTo(Webhook, { foreignKey: 'webhook_id', as: 'Webhook' });
+User.hasMany(ImportJob, { foreignKey: 'user_id', as: 'ImportJobs' });
+ImportJob.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
 
 User.hasMany(Area, { foreignKey: 'user_id' });
 Area.belongsTo(User, { foreignKey: 'user_id' });
+
+User.hasMany(Goal, { foreignKey: 'user_id', as: 'Goals' });
+Goal.belongsTo(User, { foreignKey: 'user_id' });
+Area.hasMany(Goal, { foreignKey: 'area_id', as: 'Goals' });
+Goal.belongsTo(Area, { foreignKey: 'area_id' });
+Goal.hasMany(Project, { foreignKey: 'goal_id', as: 'Projects' });
+Goal.hasMany(Task, { foreignKey: 'goal_id', as: 'Tasks' });
+Task.belongsTo(Goal, { foreignKey: 'goal_id', allowNull: true, as: 'Goal' });
 
 User.hasMany(Project, { foreignKey: 'user_id' });
 Project.belongsTo(User, { foreignKey: 'user_id' });
 Project.belongsTo(Area, { foreignKey: 'area_id', allowNull: true });
 Area.hasMany(Project, { foreignKey: 'area_id' });
+Project.belongsTo(Goal, { foreignKey: 'goal_id', allowNull: true, as: 'Goal' });
 
 User.hasMany(Task, { foreignKey: 'user_id' });
 Task.belongsTo(User, { foreignKey: 'user_id' });
 Task.belongsTo(Project, { foreignKey: 'project_id', allowNull: true });
 Project.hasMany(Task, { foreignKey: 'project_id' });
+Task.belongsTo(Area, { foreignKey: 'area_id', allowNull: true });
+Area.hasMany(Task, { foreignKey: 'area_id' });
 
 User.hasMany(Tag, { foreignKey: 'user_id' });
 Tag.belongsTo(User, { foreignKey: 'user_id' });
@@ -109,6 +187,41 @@ User.hasMany(TaskEvent, { foreignKey: 'user_id', as: 'TaskEvents' });
 TaskEvent.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
 Task.hasMany(TaskEvent, { foreignKey: 'task_id', as: 'TaskEvents' });
 TaskEvent.belongsTo(Task, { foreignKey: 'task_id', as: 'Task' });
+
+User.hasMany(Comment, { foreignKey: 'user_id', as: 'Comments' });
+Comment.belongsTo(User, { foreignKey: 'user_id', as: 'Author' });
+Task.hasMany(Comment, { foreignKey: 'task_id', as: 'Comments' });
+Comment.belongsTo(Task, { foreignKey: 'task_id', as: 'Task' });
+Task.hasMany(TaskRelation, {
+    foreignKey: 'source_task_id',
+    as: 'SourceRelations',
+    onDelete: 'CASCADE',
+});
+Task.hasMany(TaskRelation, {
+    foreignKey: 'target_task_id',
+    as: 'TargetRelations',
+    onDelete: 'CASCADE',
+});
+TaskRelation.belongsTo(Task, {
+    foreignKey: 'source_task_id',
+    as: 'SourceTask',
+});
+TaskRelation.belongsTo(Task, {
+    foreignKey: 'target_task_id',
+    as: 'TargetTask',
+});
+
+Comment.hasMany(Comment, { foreignKey: 'parent_comment_id', as: 'Replies' });
+Comment.belongsTo(Comment, {
+    foreignKey: 'parent_comment_id',
+    as: 'ParentComment',
+});
+Comment.hasMany(CommentReaction, {
+    foreignKey: 'comment_id',
+    as: 'Reactions',
+});
+CommentReaction.belongsTo(Comment, { foreignKey: 'comment_id' });
+CommentReaction.belongsTo(User, { foreignKey: 'user_id' });
 
 Task.belongsTo(Task, {
     as: 'ParentTask',
@@ -178,6 +291,38 @@ Permission.belongsTo(User, {
     foreignKey: 'granted_by_user_id',
     as: 'GrantedBy',
 });
+UserGroup.belongsTo(User, {
+    foreignKey: 'created_by_user_id',
+    as: 'CreatedBy',
+});
+UserGroup.hasMany(UserGroupMember, {
+    foreignKey: 'group_id',
+    as: 'Members',
+    onDelete: 'CASCADE',
+});
+UserGroupMember.belongsTo(UserGroup, { foreignKey: 'group_id', as: 'Group' });
+UserGroupMember.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+MemberSignInLink.belongsTo(User, { foreignKey: 'user_id', as: 'Member' });
+UserGroup.hasMany(GroupShare, {
+    foreignKey: 'group_id',
+    as: 'Shares',
+    onDelete: 'CASCADE',
+});
+GroupShare.belongsTo(UserGroup, { foreignKey: 'group_id', as: 'Group' });
+GroupShare.belongsTo(User, {
+    foreignKey: 'granted_by_user_id',
+    as: 'GrantedBy',
+});
+GroupShare.hasMany(GroupPermission, {
+    foreignKey: 'group_share_id',
+    as: 'Permissions',
+    onDelete: 'CASCADE',
+});
+GroupPermission.belongsTo(GroupShare, {
+    foreignKey: 'group_share_id',
+    as: 'GroupShare',
+});
+GroupPermission.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
 Action.belongsTo(User, { foreignKey: 'actor_user_id', as: 'Actor' });
 Action.belongsTo(User, { foreignKey: 'target_user_id', as: 'Target' });
 
@@ -196,13 +341,23 @@ TaskAttachment.belongsTo(User, { foreignKey: 'user_id' });
 Task.hasMany(TaskAttachment, { foreignKey: 'task_id', as: 'Attachments' });
 TaskAttachment.belongsTo(Task, { foreignKey: 'task_id' });
 
-// ProjectAttachment associations
+// InboxItemAttachment associations
+User.hasMany(InboxItemAttachment, { foreignKey: 'user_id' });
+InboxItemAttachment.belongsTo(User, { foreignKey: 'user_id' });
+InboxItem.hasMany(InboxItemAttachment, {
+    foreignKey: 'inbox_item_id',
+    as: 'Attachments',
+});
+InboxItemAttachment.belongsTo(InboxItem, { foreignKey: 'inbox_item_id' });
+
+// ProjectAttachment and NoteAttachment associations
 User.hasMany(ProjectAttachment, { foreignKey: 'user_id' });
 ProjectAttachment.belongsTo(User, { foreignKey: 'user_id' });
-Project.hasMany(ProjectAttachment, { foreignKey: 'project_id', as: 'Attachments' });
+Project.hasMany(ProjectAttachment, {
+    foreignKey: 'project_id',
+    as: 'Attachments',
+});
 ProjectAttachment.belongsTo(Project, { foreignKey: 'project_id' });
-
-// NoteAttachment associations
 User.hasMany(NoteAttachment, { foreignKey: 'user_id' });
 NoteAttachment.belongsTo(User, { foreignKey: 'user_id' });
 Note.hasMany(NoteAttachment, { foreignKey: 'note_id', as: 'Attachments' });
@@ -275,25 +430,278 @@ User.hasMany(CalendarToken, {
 });
 CalendarToken.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
 
+// Day plans and read-only calendar feeds
+User.hasMany(DailyPlan, { foreignKey: 'user_id', as: 'DailyPlans' });
+DailyPlan.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+DailyPlan.hasMany(DailyPlanItem, {
+    foreignKey: 'daily_plan_id',
+    as: 'Items',
+    onDelete: 'CASCADE',
+});
+DailyPlanItem.belongsTo(DailyPlan, {
+    foreignKey: 'daily_plan_id',
+    as: 'DailyPlan',
+});
+Task.hasMany(DailyPlanItem, { foreignKey: 'task_id', as: 'DailyPlanItems' });
+DailyPlanItem.belongsTo(Task, { foreignKey: 'task_id', as: 'Task' });
+User.hasMany(CalendarFeed, { foreignKey: 'user_id', as: 'CalendarFeeds' });
+CalendarFeed.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+
+// UserProjectArea associations (per-user area placement for shared projects)
+User.hasMany(UserProjectArea, {
+    foreignKey: 'user_id',
+    as: 'ProjectAreaOverrides',
+});
+UserProjectArea.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+Project.hasMany(UserProjectArea, {
+    foreignKey: 'project_id',
+    as: 'AreaOverrides',
+});
+UserProjectArea.belongsTo(Project, { foreignKey: 'project_id', as: 'Project' });
+UserProjectArea.belongsTo(Area, { foreignKey: 'area_id', as: 'Area' });
+
+// UserProjectOrder associations (per-user custom order of the Projects page)
+User.hasMany(UserProjectOrder, {
+    foreignKey: 'user_id',
+    as: 'ProjectOrders',
+    onDelete: 'CASCADE',
+});
+UserProjectOrder.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+Project.hasMany(UserProjectOrder, {
+    foreignKey: 'project_id',
+    as: 'Orders',
+    onDelete: 'CASCADE',
+});
+UserProjectOrder.belongsTo(Project, {
+    foreignKey: 'project_id',
+    as: 'Project',
+});
+
+// UserGoalOrder associations (per-user custom order of the Goals page)
+User.hasMany(UserGoalOrder, {
+    foreignKey: 'user_id',
+    as: 'GoalOrders',
+    onDelete: 'CASCADE',
+});
+UserGoalOrder.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+Goal.hasMany(UserGoalOrder, {
+    foreignKey: 'goal_id',
+    as: 'Orders',
+    onDelete: 'CASCADE',
+});
+UserGoalOrder.belongsTo(Goal, {
+    foreignKey: 'goal_id',
+    as: 'Goal',
+});
+
+// UserAreaOrder associations (per-user custom order of the Areas page)
+User.hasMany(UserAreaOrder, {
+    foreignKey: 'user_id',
+    as: 'AreaOrders',
+    onDelete: 'CASCADE',
+});
+UserAreaOrder.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+Area.hasMany(UserAreaOrder, {
+    foreignKey: 'area_id',
+    as: 'Orders',
+    onDelete: 'CASCADE',
+});
+UserAreaOrder.belongsTo(Area, {
+    foreignKey: 'area_id',
+    as: 'Area',
+});
+
+// UserTaskOrder associations (per-user manual order of task lists)
+User.hasMany(UserTaskOrder, {
+    foreignKey: 'user_id',
+    as: 'TaskOrders',
+    onDelete: 'CASCADE',
+});
+UserTaskOrder.belongsTo(User, { foreignKey: 'user_id', as: 'User' });
+Task.hasMany(UserTaskOrder, {
+    foreignKey: 'task_id',
+    as: 'Orders',
+    onDelete: 'CASCADE',
+});
+UserTaskOrder.belongsTo(Task, { foreignKey: 'task_id', as: 'Task' });
+
+// Person associations
+User.hasMany(Person, { foreignKey: 'user_id', as: 'People' });
+Person.belongsTo(User, { foreignKey: 'user_id' });
+Task.belongsTo(Person, {
+    foreignKey: 'assigned_to',
+    targetKey: 'uid',
+    as: 'AssignedTo',
+    allowNull: true,
+});
+Person.hasMany(Task, {
+    foreignKey: 'assigned_to',
+    sourceKey: 'uid',
+    as: 'AssignedTasks',
+});
+User.hasOne(Person, { foreignKey: 'linked_user_id', as: 'SelfPerson' });
+Person.belongsTo(User, { foreignKey: 'linked_user_id', as: 'LinkedUser' });
+
+// Runs a non-fatal hook body inside a savepoint on the caller's transaction
+// (or a fresh transaction when there is none). A failure inside is logged and
+// swallowed without poisoning the outer transaction: PostgreSQL refuses every
+// later statement in a transaction that hit an error, unlike SQLite.
+async function runNonFatalHook(parentTransaction, description, body) {
+    try {
+        await sequelize.transaction(
+            parentTransaction ? { transaction: parentTransaction } : {},
+            body
+        );
+    } catch (err) {
+        const { logError } = require('../services/logService');
+        logError(err, description);
+    }
+}
+
+// Auto-create a self-person for every new user
+User.addHook('afterCreate', async (user, options) => {
+    // A caller that turns an existing person into the account's own person
+    // passes skipSelfPerson so no blank one is made next to it.
+    if (options.skipSelfPerson) return;
+    await runNonFatalHook(
+        options.transaction,
+        `Failed to create self-person for user ${user.id}`,
+        async (transaction) => {
+            const existing = await Person.findOne({
+                where: { user_id: user.id, linked_user_id: user.id },
+                transaction,
+            });
+            if (existing) return;
+
+            let personName = selfPersonName(user);
+
+            const nameConflict = await Person.findOne({
+                where: { user_id: user.id, name: personName },
+                transaction,
+            });
+            if (nameConflict) personName = personName + ' (me)';
+
+            await Person.create(
+                {
+                    user_id: user.id,
+                    linked_user_id: user.id,
+                    name: personName,
+                    email: user.email || null,
+                    relationship_type: 'other',
+                    archived: false,
+                },
+                { transaction }
+            );
+        }
+    );
+});
+
+// Sync name/email changes to the self-person
+User.addHook('afterUpdate', async (user, options) => {
+    if (
+        !user.changed('name') &&
+        !user.changed('surname') &&
+        !user.changed('email')
+    )
+        return;
+    await runNonFatalHook(
+        options.transaction,
+        `Failed to sync self-person for user ${user.id}`,
+        async (transaction) => {
+            const selfPerson = await Person.findOne({
+                where: { user_id: user.id, linked_user_id: user.id },
+                transaction,
+            });
+            if (!selfPerson) return;
+
+            const updates = {};
+            if (user.changed('name') || user.changed('surname')) {
+                updates.name = selfPersonName(user);
+            }
+            if (user.changed('email')) updates.email = user.email || null;
+
+            await selfPerson.update(updates, { transaction });
+        }
+    );
+});
+
+// Sync self-person name changes back to the linked User
+// Only fires for self-persons (linked_user_id === user_id) and only syncs name, not email
+// (email is auth-sensitive; Person → User email sync is intentionally excluded)
+Person.addHook('afterUpdate', async (person, options) => {
+    if (!person.changed('name')) return;
+    if (
+        person.linked_user_id == null ||
+        person.linked_user_id !== person.user_id
+    )
+        return;
+    await runNonFatalHook(
+        options.transaction,
+        `Failed to sync user from self-person ${person.id}`,
+        async (transaction) => {
+            const linkedUser = await User.findByPk(person.linked_user_id, {
+                transaction,
+            });
+            if (!linkedUser) return;
+
+            const [firstName, ...rest] = person.name.trim().split(' ');
+            const surname = rest.length > 0 ? rest.join(' ') : null;
+
+            await linkedUser.update(
+                { name: firstName || null, surname },
+                { transaction }
+            );
+        }
+    );
+});
+
+// Seed system tags for every new user
+User.addHook('afterCreate', async (user, options) => {
+    // Non-fatal: system tags can be seeded via migration if this fails.
+    // The parent transaction is reused so Tag.findOrCreate doesn't open a
+    // nested transaction while User.findOrCreate's transaction is still
+    // active, which causes SQLITE_BUSY on first-time database initialization.
+    await runNonFatalHook(
+        options.transaction,
+        `Failed to seed system tags for user ${user.id}`,
+        async (transaction) => {
+            const {
+                seedSystemTagsForUser,
+            } = require('../modules/tags/systemTags');
+            await seedSystemTagsForUser(user.id, transaction);
+        }
+    );
+});
+
 module.exports = {
     sequelize,
     User,
     Area,
+    Goal,
     Project,
     Task,
     Tag,
     Note,
     InboxItem,
     TaskEvent,
+    TaskRelation,
+    Comment,
+    CommentReaction,
     Role,
     Action,
     Permission,
+    UserGroup,
+    UserGroupMember,
+    MemberSignInLink,
+    GroupShare,
+    GroupPermission,
     View,
     ApiToken,
     Setting,
     Notification,
     RecurringCompletion,
     TaskAttachment,
+    InboxItemAttachment,
     ProjectAttachment,
     NoteAttachment,
     Backup,
@@ -305,4 +713,28 @@ module.exports = {
     CalDAVOccurrenceOverride,
     CalDAVRemoteCalendar,
     CalendarToken,
+    CalendarFeed,
+    DailyPlan,
+    DailyPlanItem,
+    Person,
+    UserProjectArea,
+    UserProjectOrder,
+    UserGoalOrder,
+    UserAreaOrder,
+    UserTaskOrder,
+    RateLimit,
+    BillingAccount,
+    BillingEvent,
+    WaitlistSubscriber,
+    SiteVisit,
+    EmailDelivery,
+    UsageCounter,
+    Feedback,
+    Account,
+    PushSubscription,
+    Webhook,
+    WebhookDelivery,
+    ImportJob,
+    UserMfa,
+    UserRecoveryCode,
 };

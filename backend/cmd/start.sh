@@ -6,6 +6,16 @@ set -eu
 : "${NODE_ENV:=production}"
 : "${DB_FILE:=db/${NODE_ENV}.sqlite3}"
 
+# PostgreSQL is selected with DATABASE_URL or DB_DIALECT=postgres
+# (see config/config.js). Everything file-related below is SQLite only.
+USE_POSTGRES=false
+case "$(printf '%s' "${DB_DIALECT:-}" | tr '[:upper:]' '[:lower:]')" in
+  postgres|postgresql) USE_POSTGRES=true ;;
+esac
+if [ -n "${DATABASE_URL:-}" ]; then
+  USE_POSTGRES=true
+fi
+
 backup_db() {
   db_dir=$(dirname "$DB_FILE")
   today=$(date +"%Y%m%d")
@@ -33,7 +43,7 @@ backup_db() {
     
     # Delete backups older than one week
     if [ "$backup_date" -lt "$week_ago" ]; then
-      rm "$backup"
+      rm -f "$backup" "$backup-wal"
       echo "Deleted old backup (>1 week): $(basename "$backup")"
       continue
     fi
@@ -48,7 +58,7 @@ backup_db() {
           first=false
           continue  # Skip the newest one
         fi
-        rm "$old_backup"
+        rm -f "$old_backup" "$old_backup-wal"
         echo "Deleted duplicate backup: $(basename "$old_backup")"
       done
     fi
@@ -61,7 +71,7 @@ backup_db() {
   if [ "$today_backup_count" -ge 4 ]; then
     oldest_today_backup=$(ls -t "$db_dir"/db-backup-${today}*.sqlite3 2>/dev/null | tail -n 1)
     if [ -n "$oldest_today_backup" ]; then
-      rm "$oldest_today_backup"
+      rm -f "$oldest_today_backup" "$oldest_today_backup-wal"
       echo "Deleted oldest backup from today: $(basename "$oldest_today_backup")"
     fi
   fi
@@ -70,35 +80,78 @@ backup_db() {
   backup_file="$db_dir/db-backup-${timestamp}.sqlite3"
 
   if [ -f "$DB_FILE" ]; then
-    cp "$DB_FILE" "$backup_file"
-    echo "Database backed up to $backup_file"
+    # VACUUM INTO includes writes still in the -wal file, which a plain cp of
+    # the main file would silently leave out.
+    if node scripts/sqlite-backup.js "$DB_FILE" "$backup_file"; then
+      echo "Database backed up to $backup_file"
+    else
+      echo "Falling back to a file copy (with its -wal file)"
+      cp "$DB_FILE" "$backup_file"
+      if [ -f "$DB_FILE-wal" ]; then
+        cp "$DB_FILE-wal" "$backup_file-wal"
+      fi
+      echo "Database backed up to $backup_file"
+    fi
   else
     echo "Database file $DB_FILE not found, skipping backup"
   fi
 }
 
-# Check if database exists and create/authenticate
-if [ ! -f "$DB_FILE" ]; then
-  echo "Creating new database..."
-  node scripts/db-init.js
-else
+# Before v1.2.0, the database was mounted at /app/backend/db. If the new path
+# does not exist but the old path does, redirect DB_FILE to the old path so
+# writes stay on the persistent (user-mounted) volume rather than being copied
+# to an anonymous Docker volume that is discarded on container recreation.
+OLD_DB_PATH="/app/backend/db/${NODE_ENV}.sqlite3"
+if [ "$USE_POSTGRES" = false ] && [ ! -f "$DB_FILE" ] && [ -f "$OLD_DB_PATH" ]; then
+  echo ""
+  echo "⚠️  =============================================================="
+  echo "⚠️  ACTION REQUIRED: Volume mount path changed in v1.2.0"
+  echo "⚠️"
+  echo "⚠️  Your database is at the old location: $OLD_DB_PATH"
+  echo "⚠️  The new canonical location is:        $DB_FILE"
+  echo "⚠️"
+  echo "⚠️  To prevent data loss, using old path until you update:"
+  echo "⚠️    docker-compose.yml volumes:"
+  echo "⚠️      - ./tududi_db:/app/backend/db  (OLD - change this)"
+  echo "⚠️      + ./tududi_db:/app/db           (NEW)"
+  echo "⚠️"
+  echo "⚠️  WARNING: New data will be LOST on container recreation until"
+  echo "⚠️  you update the volume mount. See upgrade docs for details."
+  echo "⚠️  =============================================================="
+  echo ""
+  export DB_FILE="$OLD_DB_PATH"
+fi
+
+# Back up the SQLite file (if any) before touching the schema
+if [ "$USE_POSTGRES" = false ] && [ -f "$DB_FILE" ]; then
   backup_db
-  echo "Checking database connection..."
-  node scripts/db-status.js
+fi
+
+# Verify the connection and create the schema when the database is empty
+echo "Preparing database..."
+# Both steps run under a PostgreSQL advisory lock so that several app
+# containers booting together cannot create the schema or migrate twice.
+if ! node scripts/with-db-lock.js node scripts/db-prepare.js; then
+  echo "❌ Database preparation failed. Check the connection settings above."
+  exit 1
 fi
 
 # Run database migrations automatically
 echo "Running database migrations..."
-if npx sequelize-cli db:migrate --config config/database.js; then
-  echo "Migrations completed successfully"
-else
-  echo "Migration failed, but continuing startup (may be expected for new installations)"
+if ! node scripts/with-db-lock.js npx sequelize-cli db:migrate --config config/database.js; then
+  echo "❌ Migration failed. Container cannot start with an incomplete schema."
+  echo "   Check the migration error above and restore from backup if needed."
+  exit 1
 fi
+echo "Migrations completed successfully"
 
 if [ -n "${TUDUDI_USER_EMAIL:-}" ] && [ -n "${TUDUDI_USER_PASSWORD:-}" ]; then
   # Trim whitespace/carriage returns that may come from docker-compose env vars
   TUDUDI_USER_EMAIL=$(printf '%s' "$TUDUDI_USER_EMAIL" | tr -d '[:space:]')
-  node scripts/user-create.js "$TUDUDI_USER_EMAIL" "$TUDUDI_USER_PASSWORD" true || exit 1
+  if ! node scripts/user-create.js "$TUDUDI_USER_EMAIL" "$TUDUDI_USER_PASSWORD" true; then
+    echo "❌ Failed to create/update user. Check migration errors above."
+    exit 1
+  fi
 fi
 
 exec node app.js

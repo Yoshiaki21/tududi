@@ -2,9 +2,23 @@ import { create } from 'zustand';
 import { Project } from '../entities/Project';
 import { Area } from '../entities/Area';
 import { Note } from '../entities/Note';
+import { Capabilities, RoleId } from '../entities/Role';
 import { Task } from '../entities/Task';
 import { Tag } from '../entities/Tag';
 import { InboxItem } from '../entities/InboxItem';
+import { Goal } from '../entities/Goal';
+import { Person } from '../entities/Person';
+import type { SidebarVisibleSections } from '../components/Profile/types';
+import type { Focus } from '../utils/focus';
+import {
+    DEFAULT_LINK_ORDER,
+    DEFAULT_SECTION_ORDER,
+    resolveOrder,
+} from '../utils/sidebarLayout';
+import {
+    SIDEBAR_DEFAULT_PERCENT,
+    clampSidebarPercent,
+} from '../utils/sidebarWidth';
 
 interface NotesStore {
     notes: Note[];
@@ -12,6 +26,7 @@ interface NotesStore {
     isError: boolean;
     hasLoaded: boolean;
     setNotes: (notes: Note[]) => void;
+    addNote: (note: Note) => void;
     setLoading: (isLoading: boolean) => void;
     setError: (isError: boolean) => void;
     loadNotes: () => Promise<void>;
@@ -25,7 +40,7 @@ interface AreasStore {
     setAreas: (areas: Area[]) => void;
     setLoading: (isLoading: boolean) => void;
     setError: (isError: boolean) => void;
-    loadAreas: () => Promise<void>;
+    loadAreas: (forceReload?: boolean) => Promise<void>;
 }
 
 interface ProjectsStore {
@@ -33,10 +48,12 @@ interface ProjectsStore {
     currentProject: Project | null;
     isLoading: boolean;
     isError: boolean;
+    hasLoaded: boolean;
     setProjects: (projects: Project[]) => void;
     setCurrentProject: (project: Project | null) => void;
     setLoading: (isLoading: boolean) => void;
     setError: (isError: boolean) => void;
+    loadProjects: () => Promise<void>;
 }
 
 interface TagsStore {
@@ -57,6 +74,7 @@ interface TasksStore {
     tasks: Task[];
     isLoading: boolean;
     isError: boolean;
+    hasLoaded: boolean;
     setTasks: (tasks: Task[]) => void;
     setLoading: (isLoading: boolean) => void;
     setError: (isError: boolean) => void;
@@ -100,6 +118,64 @@ interface InboxStore {
     resetPagination: () => void;
 }
 
+interface UserSettingsStore {
+    eisenhowerEnabled: boolean;
+    setEisenhowerEnabled: (enabled: boolean) => void;
+    kanbanEnabled: boolean;
+    setKanbanEnabled: (enabled: boolean) => void;
+    habitsEnabled: boolean;
+    setHabitsEnabled: (enabled: boolean) => void;
+    calendarEnabled: boolean;
+    setCalendarEnabled: (enabled: boolean) => void;
+    hasCollaborators: boolean;
+    setHasCollaborators: (enabled: boolean) => void;
+    capabilities: Capabilities | null;
+    setCapabilities: (capabilities: Capabilities | null) => void;
+    role: RoleId | null;
+    setRole: (role: RoleId | null) => void;
+    templatesEnabled: boolean;
+    setTemplatesEnabled: (enabled: boolean) => void;
+    aiAssistantEnabled: boolean;
+    setAiAssistantEnabled: (enabled: boolean) => void;
+    contentBackground: string | null;
+    setContentBackground: (background: string | null) => void;
+    sidebarVisibleSections: SidebarVisibleSections;
+    setSidebarVisibleSections: (sections: SidebarVisibleSections) => void;
+    sidebarLinkOrder: string[];
+    sidebarSectionOrder: string[];
+    setSidebarOrder: (order: {
+        linkOrder?: unknown;
+        sectionOrder?: unknown;
+    }) => void;
+    sidebarWidthPercent: number;
+    setSidebarWidthPercent: (percent: number | undefined) => void;
+    // The Focus chip's scope (see utils/focus.ts); null when none is set
+    focus: Focus | null;
+    setFocus: (focus: Focus | null) => void;
+}
+
+interface GoalsStore {
+    goals: Goal[];
+    isLoading: boolean;
+    isError: boolean;
+    hasLoaded: boolean;
+    setGoals: (goals: Goal[]) => void;
+    setLoading: (isLoading: boolean) => void;
+    setError: (isError: boolean) => void;
+    loadGoals: (forceReload?: boolean) => Promise<void>;
+}
+
+interface PeopleStore {
+    people: Person[];
+    isLoading: boolean;
+    isError: boolean;
+    hasLoaded: boolean;
+    setPeople: (people: Person[]) => void;
+    setLoading: (isLoading: boolean) => void;
+    setError: (isError: boolean) => void;
+    loadPeople: (forceReload?: boolean) => Promise<void>;
+}
+
 interface HabitsStore {
     habits: Task[];
     isLoading: boolean;
@@ -108,18 +184,27 @@ interface HabitsStore {
     setLoading: (isLoading: boolean) => void;
     setError: (isError: boolean) => void;
     loadHabits: () => Promise<void>;
-    logCompletion: (habitUid: string, completedAt?: Date) => Promise<void>;
+    logCompletion: (
+        habitUid: string,
+        completedAt?: Date,
+        options?: { value?: number; note?: string }
+    ) => Promise<void>;
+    skipDay: (habitUid: string, date?: Date) => Promise<void>;
+    updateHabitInList: (habit: Task) => void;
     removeTodayCompletion: (habitUid: string) => Promise<void>;
 }
 
 interface StoreState {
     notesStore: NotesStore;
     areasStore: AreasStore;
+    goalsStore: GoalsStore;
     projectsStore: ProjectsStore;
     tagsStore: TagsStore;
+    peopleStore: PeopleStore;
     tasksStore: TasksStore;
     inboxStore: InboxStore;
     habitsStore: HabitsStore;
+    userSettingsStore: UserSettingsStore;
 }
 
 export const useStore = create<StoreState>((set: any) => ({
@@ -130,6 +215,18 @@ export const useStore = create<StoreState>((set: any) => ({
         hasLoaded: false,
         setNotes: (notes) =>
             set((state) => ({ notesStore: { ...state.notesStore, notes } })),
+        addNote: (note) =>
+            set((state) => ({
+                notesStore: {
+                    ...state.notesStore,
+                    notes: [
+                        note,
+                        ...state.notesStore.notes.filter(
+                            (n) => n.uid !== note.uid
+                        ),
+                    ],
+                },
+            })),
         setLoading: (isLoading) =>
             set((state) => ({
                 notesStore: { ...state.notesStore, isLoading },
@@ -186,9 +283,10 @@ export const useStore = create<StoreState>((set: any) => ({
             })),
         setError: (isError) =>
             set((state) => ({ areasStore: { ...state.areasStore, isError } })),
-        loadAreas: async () => {
+        loadAreas: async (forceReload = false) => {
             const state = useStore.getState();
             if (state.areasStore.isLoading) return;
+            if (state.areasStore.hasLoaded && !forceReload) return;
 
             const { fetchAreas } = await import('../utils/areasService');
 
@@ -223,11 +321,63 @@ export const useStore = create<StoreState>((set: any) => ({
             }
         },
     },
+    goalsStore: {
+        goals: [],
+        isLoading: false,
+        isError: false,
+        hasLoaded: false,
+        setGoals: (goals) =>
+            set((state) => ({ goalsStore: { ...state.goalsStore, goals } })),
+        setLoading: (isLoading) =>
+            set((state) => ({
+                goalsStore: { ...state.goalsStore, isLoading },
+            })),
+        setError: (isError) =>
+            set((state) => ({ goalsStore: { ...state.goalsStore, isError } })),
+        loadGoals: async (forceReload = false) => {
+            const state = useStore.getState();
+            if (state.goalsStore.isLoading) return;
+            if (state.goalsStore.hasLoaded && !forceReload) return;
+
+            const { fetchGoals } = await import('../utils/goalsService');
+
+            set((state) => ({
+                goalsStore: {
+                    ...state.goalsStore,
+                    isLoading: true,
+                    isError: false,
+                },
+            }));
+
+            try {
+                const goals = await fetchGoals();
+                set((state) => ({
+                    goalsStore: {
+                        ...state.goalsStore,
+                        goals,
+                        isLoading: false,
+                        hasLoaded: true,
+                    },
+                }));
+            } catch (error) {
+                console.error('loadGoals: Failed to load goals:', error);
+                set((state) => ({
+                    goalsStore: {
+                        ...state.goalsStore,
+                        isError: true,
+                        isLoading: false,
+                        hasLoaded: true,
+                    },
+                }));
+            }
+        },
+    },
     projectsStore: {
         projects: [],
         currentProject: null,
         isLoading: false,
         isError: false,
+        hasLoaded: false,
         setProjects: (projects) =>
             set((state) => ({
                 projectsStore: { ...state.projectsStore, projects },
@@ -244,6 +394,42 @@ export const useStore = create<StoreState>((set: any) => ({
             set((state) => ({
                 projectsStore: { ...state.projectsStore, isError },
             })),
+        loadProjects: async () => {
+            const state = useStore.getState();
+            if (state.projectsStore.isLoading) return;
+
+            const { fetchProjects } = await import('../utils/projectsService');
+
+            set((state) => ({
+                projectsStore: {
+                    ...state.projectsStore,
+                    isLoading: true,
+                    isError: false,
+                },
+            }));
+
+            try {
+                const projects = await fetchProjects();
+                set((state) => ({
+                    projectsStore: {
+                        ...state.projectsStore,
+                        projects,
+                        isLoading: false,
+                        hasLoaded: true,
+                    },
+                }));
+            } catch (error) {
+                console.error('loadProjects: Failed to load projects:', error);
+                set((state) => ({
+                    projectsStore: {
+                        ...state.projectsStore,
+                        isError: true,
+                        isLoading: false,
+                        hasLoaded: true,
+                    },
+                }));
+            }
+        },
     },
     tagsStore: {
         tags: [],
@@ -338,10 +524,66 @@ export const useStore = create<StoreState>((set: any) => ({
             }, 0);
         },
     },
+    peopleStore: {
+        people: [],
+        isLoading: false,
+        isError: false,
+        hasLoaded: false,
+        setPeople: (people) =>
+            set((state) => ({
+                peopleStore: { ...state.peopleStore, people },
+            })),
+        setLoading: (isLoading) =>
+            set((state) => ({
+                peopleStore: { ...state.peopleStore, isLoading },
+            })),
+        setError: (isError) =>
+            set((state) => ({
+                peopleStore: { ...state.peopleStore, isError },
+            })),
+        loadPeople: async (forceReload = false) => {
+            const state = useStore.getState();
+            if (state.peopleStore.isLoading) return;
+            if (state.peopleStore.hasLoaded && !forceReload) return;
+
+            const { fetchPeople } = await import('../utils/peopleService');
+
+            set((state) => ({
+                peopleStore: {
+                    ...state.peopleStore,
+                    isLoading: true,
+                    isError: false,
+                },
+            }));
+
+            try {
+                const people = await fetchPeople();
+                set((state) => ({
+                    peopleStore: {
+                        ...state.peopleStore,
+                        people,
+                        isLoading: false,
+                        hasLoaded: true,
+                    },
+                }));
+            } catch (error) {
+                console.error('loadPeople: Failed to load people:', error);
+                set((state) => ({
+                    peopleStore: {
+                        ...state.peopleStore,
+                        isError: true,
+                        isLoading: false,
+                        hasLoaded: true,
+                    },
+                }));
+            }
+        },
+    },
     tasksStore: {
         tasks: [],
         isLoading: false,
         isError: false,
+        hasLoaded: false,
         setTasks: (tasks) =>
             set((state) => ({ tasksStore: { ...state.tasksStore, tasks } })),
         setLoading: (isLoading) =>
@@ -366,6 +608,7 @@ export const useStore = create<StoreState>((set: any) => ({
                         ...state.tasksStore,
                         tasks,
                         isLoading: false,
+                        hasLoaded: true,
                     },
                 }));
             } catch (error) {
@@ -375,6 +618,7 @@ export const useStore = create<StoreState>((set: any) => ({
                         ...state.tasksStore,
                         isError: true,
                         isLoading: false,
+                        hasLoaded: true,
                     },
                 }));
             }
@@ -440,9 +684,8 @@ export const useStore = create<StoreState>((set: any) => ({
             }
         },
         toggleTaskCompletion: async (taskUid) => {
-            const { toggleTaskCompletion } = await import(
-                '../utils/tasksService'
-            );
+            const { toggleTaskCompletion } =
+                await import('../utils/tasksService');
             try {
                 const updatedTask = await toggleTaskCompletion(taskUid);
                 set((state) => ({
@@ -718,12 +961,36 @@ export const useStore = create<StoreState>((set: any) => ({
                 }));
             }
         },
-        logCompletion: async (habitUid, completedAt) => {
-            const { logHabitCompletion } = await import(
-                '../utils/habitsService'
-            );
+        updateHabitInList: (habit) =>
+            set((state) => ({
+                habitsStore: {
+                    ...state.habitsStore,
+                    habits: state.habitsStore.habits.map((h) =>
+                        h.uid === habit.uid ? { ...h, ...habit } : h
+                    ),
+                },
+            })),
+        skipDay: async (habitUid, date) => {
+            const { skipHabitDay } = await import('../utils/habitsService');
+            const updated = await skipHabitDay(habitUid, date);
+            set((state) => ({
+                habitsStore: {
+                    ...state.habitsStore,
+                    habits: state.habitsStore.habits.map((h) =>
+                        h.uid === habitUid ? { ...h, ...updated.task } : h
+                    ),
+                },
+            }));
+        },
+        logCompletion: async (habitUid, completedAt, options) => {
+            const { logHabitCompletion } =
+                await import('../utils/habitsService');
             try {
-                const updated = await logHabitCompletion(habitUid, completedAt);
+                const updated = await logHabitCompletion(
+                    habitUid,
+                    completedAt,
+                    options
+                );
                 set((state) => ({
                     habitsStore: {
                         ...state.habitsStore,
@@ -779,5 +1046,127 @@ export const useStore = create<StoreState>((set: any) => ({
                 throw error;
             }
         },
+    },
+    userSettingsStore: {
+        eisenhowerEnabled: false,
+        setEisenhowerEnabled: (enabled) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    eisenhowerEnabled: enabled,
+                },
+            })),
+        kanbanEnabled: false,
+        setKanbanEnabled: (enabled) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    kanbanEnabled: enabled,
+                },
+            })),
+        habitsEnabled: true,
+        setHabitsEnabled: (enabled) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    habitsEnabled: enabled,
+                },
+            })),
+        calendarEnabled: false,
+        setCalendarEnabled: (enabled) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    calendarEnabled: enabled,
+                },
+            })),
+        hasCollaborators: false,
+        setHasCollaborators: (enabled) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    hasCollaborators: enabled,
+                },
+            })),
+        role: null,
+        setRole: (role) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    role,
+                },
+            })),
+        capabilities: null,
+        setCapabilities: (capabilities) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    capabilities,
+                },
+            })),
+        templatesEnabled: true,
+        setTemplatesEnabled: (enabled) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    templatesEnabled: enabled,
+                },
+            })),
+        aiAssistantEnabled: false,
+        setAiAssistantEnabled: (enabled) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    aiAssistantEnabled: enabled,
+                },
+            })),
+        contentBackground: null,
+        setContentBackground: (background) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    contentBackground: background,
+                },
+            })),
+        sidebarVisibleSections: {},
+        setSidebarVisibleSections: (sections) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    sidebarVisibleSections: sections,
+                },
+            })),
+        sidebarLinkOrder: [...DEFAULT_LINK_ORDER],
+        sidebarSectionOrder: [...DEFAULT_SECTION_ORDER],
+        setSidebarOrder: ({ linkOrder, sectionOrder }) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    sidebarLinkOrder: resolveOrder(
+                        linkOrder,
+                        DEFAULT_LINK_ORDER
+                    ),
+                    sidebarSectionOrder: resolveOrder(
+                        sectionOrder,
+                        DEFAULT_SECTION_ORDER
+                    ),
+                },
+            })),
+        sidebarWidthPercent: SIDEBAR_DEFAULT_PERCENT,
+        setSidebarWidthPercent: (percent) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    sidebarWidthPercent: clampSidebarPercent(percent),
+                },
+            })),
+        focus: null,
+        setFocus: (focus) =>
+            set((state) => ({
+                userSettingsStore: {
+                    ...state.userSettingsStore,
+                    focus,
+                },
+            })),
     },
 }));

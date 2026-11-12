@@ -60,8 +60,20 @@ module.exports = {
         let updatedCount = 0;
         for (const user of usersWithPrefs) {
             let prefs = user.notification_preferences;
-            while (typeof prefs === 'string') {
-                prefs = JSON.parse(prefs);
+            if (typeof prefs === 'string') {
+                try {
+                    prefs = JSON.parse(prefs);
+                } catch {
+                    prefs = {};
+                }
+            }
+            // Handle double-encoded JSON caused by bug in 20251209000001
+            if (typeof prefs === 'string') {
+                try {
+                    prefs = JSON.parse(prefs);
+                } catch {
+                    prefs = {};
+                }
             }
             let needsUpdate = false;
 

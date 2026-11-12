@@ -50,6 +50,17 @@ module.exports = (sequelize) => {
                 type: DataTypes.DATE,
                 allowNull: true,
             },
+            // When the project begins. Whole-day starts are stored as the
+            // start of the day in the user's timezone.
+            start_date_at: {
+                type: DataTypes.DATE,
+                allowNull: true,
+            },
+            start_has_time: {
+                type: DataTypes.BOOLEAN,
+                allowNull: false,
+                defaultValue: false,
+            },
             user_id: {
                 type: DataTypes.INTEGER,
                 allowNull: false,
@@ -70,6 +81,10 @@ module.exports = (sequelize) => {
                 type: DataTypes.TEXT,
                 allowNull: true,
             },
+            color: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
             task_show_completed: {
                 type: DataTypes.BOOLEAN,
                 allowNull: true,
@@ -79,6 +94,57 @@ module.exports = (sequelize) => {
                 type: DataTypes.STRING,
                 allowNull: true,
                 defaultValue: 'created_at:desc',
+            },
+            goal_id: {
+                type: DataTypes.INTEGER,
+                allowNull: true,
+                references: {
+                    model: 'goals',
+                    key: 'id',
+                },
+            },
+            is_maintenance: {
+                type: DataTypes.BOOLEAN,
+                allowNull: false,
+                defaultValue: false,
+            },
+            // 'area' lets the project's area and goal shares reach it;
+            // 'restricted' keeps it to its owner, the area owner and people
+            // added to the project itself.
+            visibility: {
+                type: DataTypes.STRING,
+                allowNull: false,
+                defaultValue: 'area',
+                validate: {
+                    isIn: [['area', 'restricted']],
+                },
+            },
+            ai_insights: {
+                type: DataTypes.JSON,
+                allowNull: true,
+                defaultValue: null,
+            },
+            is_template: {
+                type: DataTypes.BOOLEAN,
+                allowNull: false,
+                defaultValue: false,
+            },
+            template_category: {
+                type: DataTypes.STRING(100),
+                allowNull: true,
+            },
+            clone_count: {
+                type: DataTypes.INTEGER,
+                allowNull: false,
+                defaultValue: 0,
+            },
+            source_template_id: {
+                type: DataTypes.INTEGER,
+                allowNull: true,
+                references: {
+                    model: 'projects',
+                    key: 'id',
+                },
             },
             status: {
                 type: DataTypes.ENUM(
@@ -91,6 +157,10 @@ module.exports = (sequelize) => {
                 ),
                 allowNull: false,
                 defaultValue: 'not_started',
+            },
+            completed_at: {
+                type: DataTypes.DATE,
+                allowNull: true,
             },
             unit_price: {
                 type: DataTypes.INTEGER,
@@ -107,7 +177,30 @@ module.exports = (sequelize) => {
                 {
                     fields: ['area_id'],
                 },
+                {
+                    fields: ['is_template'],
+                },
+                {
+                    fields: ['user_id', 'completed_at'],
+                    name: 'projects_user_id_completed_at',
+                },
             ],
+            hooks: {
+                // Every write path (REST, MCP, templates) goes through here,
+                // so the completion date always follows the status.
+                beforeSave: (project) => {
+                    if (!project.isNewRecord && !project.changed('status')) {
+                        return;
+                    }
+                    if (project.status === 'done') {
+                        if (!project.completed_at) {
+                            project.completed_at = new Date();
+                        }
+                    } else {
+                        project.completed_at = null;
+                    }
+                },
+            },
         }
     );
 

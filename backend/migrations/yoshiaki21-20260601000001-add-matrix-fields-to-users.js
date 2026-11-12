@@ -10,7 +10,8 @@ module.exports = {
                 definition: {
                     type: Sequelize.STRING,
                     allowNull: true,
-                    comment: 'Matrix homeserver URL (e.g. https://matrix.example.com)',
+                    comment:
+                        'Matrix homeserver URL (e.g. https://matrix.example.com)',
                 },
             },
             {
@@ -26,7 +27,8 @@ module.exports = {
                 definition: {
                     type: Sequelize.STRING,
                     allowNull: true,
-                    comment: 'Matrix room ID for receiving and sending messages (e.g. !xxx:homeserver)',
+                    comment:
+                        'Matrix room ID for receiving and sending messages (e.g. !xxx:homeserver)',
                 },
             },
             {

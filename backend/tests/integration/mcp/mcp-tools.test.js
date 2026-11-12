@@ -8,9 +8,17 @@ const {
     Project,
     Area,
     Tag,
+    Note,
     InboxItem,
+    Goal,
+    Comment,
+    Permission,
+    Person,
+    Notification,
+    RecurringCompletion,
 } = require('../../../models');
 const { createTestUser } = require('../../helpers/testUtils');
+const peopleService = require('../../../modules/people/service');
 const {
     createApiToken: createApiTokenFromService,
 } = require('../../../modules/users/apiTokenService');
@@ -57,20 +65,6 @@ function getToolContent(response) {
 
 describe('MCP Tools Integration', () => {
     let user, apiTokenValue;
-    let originalEnv;
-
-    beforeAll(() => {
-        originalEnv = process.env.FF_ENABLE_MCP;
-        process.env.FF_ENABLE_MCP = 'true';
-    });
-
-    afterAll(() => {
-        if (originalEnv === undefined) {
-            delete process.env.FF_ENABLE_MCP;
-        } else {
-            process.env.FF_ENABLE_MCP = originalEnv;
-        }
-    });
 
     async function createApiToken(userId) {
         const { rawToken } = await createApiTokenFromService({
@@ -138,6 +132,27 @@ describe('MCP Tools Integration', () => {
                 expect(content.count).toBeGreaterThanOrEqual(1);
             });
 
+            it('should return the real name of a recurring task', async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Pay rent',
+                    status: 0,
+                    recurrence_type: 'monthly',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_tasks',
+                    {}
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                const names = content.tasks.map((t) => t.name);
+                expect(names).toContain('Pay rent');
+                expect(names).not.toContain('Monthly');
+            });
+
             it('should filter tasks by status', async () => {
                 await Task.create({
                     user_id: user.id,
@@ -178,6 +193,223 @@ describe('MCP Tools Integration', () => {
                 const { content } = getToolContent(response);
                 expect(content.tasks.every((t) => t.status === 2)).toBe(true);
             });
+
+            it('should filter archived tasks by status using status 3', async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Archived Task',
+                    status: 3,
+                });
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Planned Task',
+                    status: 6,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_tasks',
+                    { status: 'archived' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.tasks.every((t) => t.status === 3)).toBe(true);
+                expect(
+                    content.tasks.some((t) => t.name === 'Archived Task')
+                ).toBe(true);
+                expect(
+                    content.tasks.some((t) => t.name === 'Planned Task')
+                ).toBe(false);
+            });
+
+            it('should filter archived tasks by type using status 3', async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Archived Task',
+                    status: 3,
+                });
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Planned Task',
+                    status: 6,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_tasks',
+                    { type: 'archived' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.tasks.every((t) => t.status === 3)).toBe(true);
+                expect(
+                    content.tasks.some((t) => t.name === 'Archived Task')
+                ).toBe(true);
+                expect(
+                    content.tasks.some((t) => t.name === 'Planned Task')
+                ).toBe(false);
+            });
+
+            it('should exclude archived tasks (status 3) from today type', async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Active Task',
+                    status: 1,
+                });
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Archived Task',
+                    status: 3,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_tasks',
+                    { type: 'today' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(
+                    content.tasks.some((t) => t.name === 'Archived Task')
+                ).toBe(false);
+                expect(
+                    content.tasks.some((t) => t.name === 'Active Task')
+                ).toBe(true);
+            });
+
+            it('should return only what the Today page shows for today type', async () => {
+                const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+                const nextMonth = new Date(
+                    Date.now() + 30 * 24 * 60 * 60 * 1000
+                );
+                await Task.create({
+                    user_id: user.id,
+                    name: 'In Progress Task',
+                    status: 1,
+                });
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Overdue Task',
+                    status: 0,
+                    due_date: yesterday,
+                });
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Unscheduled Task',
+                    status: 0,
+                });
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Next Month Task',
+                    status: 0,
+                    due_date: nextMonth,
+                });
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Done Task',
+                    status: 2,
+                    due_date: yesterday,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_tasks',
+                    { type: 'today' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                const names = content.tasks.map((t) => t.name).sort();
+                expect(names).toEqual(['In Progress Task', 'Overdue Task']);
+            });
+
+            it('should apply the status filter within today type', async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'In Progress Task',
+                    status: 1,
+                });
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Overdue Task',
+                    status: 0,
+                    due_date: new Date(Date.now() - 24 * 60 * 60 * 1000),
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_tasks',
+                    { type: 'today', status: 'in_progress' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.tasks.map((t) => t.name)).toEqual([
+                    'In Progress Task',
+                ]);
+            });
+
+            it('should return tasks due in the next 7 days for upcoming type', async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Soon Task',
+                    status: 0,
+                    due_date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+                });
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Next Month Task',
+                    status: 0,
+                    due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+                });
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Unscheduled Task',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_tasks',
+                    { type: 'upcoming' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.tasks.map((t) => t.name)).toEqual(['Soon Task']);
+            });
+
+            it('should filter planned tasks by status using status 6', async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Planned Task',
+                    status: 6,
+                });
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Archived Task',
+                    status: 3,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_tasks',
+                    { status: 'planned' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.tasks.every((t) => t.status === 6)).toBe(true);
+                expect(
+                    content.tasks.some((t) => t.name === 'Planned Task')
+                ).toBe(true);
+                expect(
+                    content.tasks.some((t) => t.name === 'Archived Task')
+                ).toBe(false);
+            });
         });
 
         describe('create_task', () => {
@@ -212,6 +444,36 @@ describe('MCP Tools Integration', () => {
                 expect(content.task.priority).toBe(2); // high = 2
             });
 
+            it('should support none priority and preserve the default', async () => {
+                const noneResponse = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    { name: 'No Priority', priority: 'none' }
+                );
+
+                const noneResult = getToolContent(noneResponse);
+                expect(noneResult.isError).toBe(false);
+                expect(noneResult.content.task.priority).toBeNull();
+
+                const defaultResponse = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    { name: 'Default Priority' }
+                );
+
+                const defaultResult = getToolContent(defaultResponse);
+                expect(defaultResult.content.task.priority).toBe(1);
+
+                const nullResponse = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    { name: 'Null Priority', priority: null }
+                );
+
+                const nullResult = getToolContent(nullResponse);
+                expect(nullResult.content.task.priority).toBe(1);
+            });
+
             it('should create a task with description', async () => {
                 const response = await callMcpTool(
                     apiTokenValue,
@@ -225,6 +487,21 @@ describe('MCP Tools Integration', () => {
                 expect(response.status).toBe(200);
                 const { content } = getToolContent(response);
                 expect(content.task.note).toBe('This is a detailed note');
+            });
+
+            it('should create a task with note', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Task with Note Param',
+                        note: 'Written as note',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.note).toBe('Written as note');
             });
 
             it('should create a task with due date', async () => {
@@ -241,6 +518,311 @@ describe('MCP Tools Integration', () => {
                 expect(response.status).toBe(200);
                 const { content } = getToolContent(response);
                 expect(content.task.due_date).toBeDefined();
+            });
+
+            it('should store a date-only due_date at end of day in the user timezone, not shift a day earlier (issue #1382)', async () => {
+                // America/Bogota is UTC-05:00, so a naive Date parse of
+                // "2026-08-08" (UTC midnight) would render as Aug 7 there.
+                await user.update({ timezone: 'America/Bogota' });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Bogota Due Date Task',
+                        due_date: '2026-08-08',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+
+                const taskFromDb = await Task.findByPk(content.task.id);
+                expect(taskFromDb.due_date.toISOString()).toBe(
+                    '2026-08-09T04:59:59.999Z'
+                );
+                expect(content.task.due_date).toBe('2026-08-08');
+            });
+
+            it('should create a task with defer_until', async () => {
+                const dueDate = new Date(Date.now() + 172800000).toISOString();
+                const deferUntil = new Date(
+                    Date.now() + 86400000
+                ).toISOString();
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Task with Defer Until',
+                        due_date: dueDate,
+                        defer_until: deferUntil,
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.defer_until).toBeDefined();
+                expect(content.task.defer_until).not.toBeNull();
+            });
+
+            it('should reject a defer_until after the due date', async () => {
+                const dueDate = new Date(Date.now() + 86400000).toISOString();
+                const deferUntil = new Date(
+                    Date.now() + 172800000
+                ).toISOString();
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Bad Defer Until',
+                        due_date: dueDate,
+                        defer_until: deferUntil,
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const jsonRpc = parseSseResponse(response.text);
+                expect(jsonRpc.result.isError).toBe(true);
+
+                const created = await Task.findOne({
+                    where: { user_id: user.id, name: 'Bad Defer Until' },
+                });
+                expect(created).toBeNull();
+            });
+
+            it('should create a recurring task with recurrence fields', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Weekly Recurring Task',
+                        recurrence_type: 'weekly',
+                        recurrence_interval: 2,
+                        recurrence_weekday: 3,
+                        recurrence_end_date: '2030-01-01',
+                        completion_based: true,
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.name).toBe('Weekly Recurring Task');
+                expect(content.task.recurrence_type).toBe('weekly');
+                expect(content.task.recurrence_interval).toBe(2);
+                expect(content.task.recurrence_weekday).toBe(3);
+                expect(content.task.recurrence_end_date).toBeDefined();
+                expect(content.task.completion_based).toBe(true);
+                // No due date was given, so one should be computed from the pattern
+                expect(content.task.due_date).toBeDefined();
+            });
+
+            it('should create a recurring task with multiple weekdays', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Multi-Weekday Recurring Task',
+                        recurrence_type: 'weekly',
+                        recurrence_weekdays: [1, 3, 5],
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.recurrence_type).toBe('weekly');
+                expect(content.task.recurrence_weekdays).toEqual([1, 3, 5]);
+            });
+
+            it('should default recurrence_type to none when omitted', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Plain Task',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.recurrence_type).toBe('none');
+            });
+
+            it('should create a task with multiple tags without SQLITE_BUSY (issue #1526)', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Tagged Task',
+                        tags: ['alpha', 'beta', 'gamma', 'delta', 'epsilon'],
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.tags.map((t) => t.name).sort()).toEqual([
+                    'alpha',
+                    'beta',
+                    'delta',
+                    'epsilon',
+                    'gamma',
+                ]);
+            });
+
+            it('should reject a non-array tags value', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Bad Tags Task',
+                        tags: 'urgent',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                expect(getToolContent(response).isError).toBe(true);
+                await expect(
+                    Task.findOne({
+                        where: { user_id: user.id, name: 'Bad Tags Task' },
+                    })
+                ).resolves.toBeNull();
+            });
+
+            it('should reject an invalid tag name without creating the task', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Invalid Tag Task',
+                        tags: ['ok-tag', 'bad#tag'],
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                expect(getToolContent(response).isError).toBe(true);
+                await expect(
+                    Task.findOne({
+                        where: { user_id: user.id, name: 'Invalid Tag Task' },
+                    })
+                ).resolves.toBeNull();
+                await expect(
+                    Tag.findOne({
+                        where: { user_id: user.id, name: 'ok-tag' },
+                    })
+                ).resolves.toBeNull();
+            });
+
+            it('should roll back the task and new tags when a tag fails', async () => {
+                const bulkCreate = Tag.bulkCreate;
+                const bulkCreateSpy = jest
+                    .spyOn(Tag, 'bulkCreate')
+                    .mockImplementation(async (...args) => {
+                        await bulkCreate.apply(Tag, args);
+                        throw new Error('Tag write failed');
+                    });
+
+                try {
+                    const response = await callMcpTool(
+                        apiTokenValue,
+                        'create_task',
+                        {
+                            name: 'Rolled Back MCP Task',
+                            tags: ['new-task-tag'],
+                        }
+                    );
+
+                    expect(response.status).toBe(200);
+                    expect(getToolContent(response).isError).toBe(true);
+                    await expect(
+                        Task.findOne({
+                            where: {
+                                user_id: user.id,
+                                name: 'Rolled Back MCP Task',
+                            },
+                        })
+                    ).resolves.toBeNull();
+                    await expect(
+                        Tag.findOne({
+                            where: { user_id: user.id, name: 'new-task-tag' },
+                        })
+                    ).resolves.toBeNull();
+                } finally {
+                    bulkCreateSpy.mockRestore();
+                }
+            });
+
+            it('should roll back the task and new tags when association fails', async () => {
+                const setTagsSpy = jest
+                    .spyOn(Task.prototype, 'setTags')
+                    .mockRejectedValue(new Error('Tag association failed'));
+
+                try {
+                    const response = await callMcpTool(
+                        apiTokenValue,
+                        'create_task',
+                        {
+                            name: 'Association Failure MCP Task',
+                            tags: ['association-failure-task-tag'],
+                        }
+                    );
+
+                    expect(response.status).toBe(200);
+                    expect(getToolContent(response).isError).toBe(true);
+                    await expect(
+                        Task.findOne({
+                            where: {
+                                user_id: user.id,
+                                name: 'Association Failure MCP Task',
+                            },
+                        })
+                    ).resolves.toBeNull();
+                    await expect(
+                        Tag.findOne({
+                            where: {
+                                user_id: user.id,
+                                name: 'association-failure-task-tag',
+                            },
+                        })
+                    ).resolves.toBeNull();
+                } finally {
+                    setTagsSpy.mockRestore();
+                }
+            });
+
+            it('should create a task with estimated_minutes', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Task with Estimate',
+                        estimated_minutes: 30,
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.estimated_minutes).toBe(30);
+
+                const created = await Task.findByPk(content.task.id);
+                expect(created.estimated_minutes).toBe(30);
+            });
+
+            it('should reject invalid estimated_minutes on create', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    {
+                        name: 'Invalid Estimate Task',
+                        estimated_minutes: 3,
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const jsonRpc = parseSseResponse(response.text);
+                expect(jsonRpc.result.isError).toBe(true);
+                const { content } = getToolContent(response);
+                expect(content._rawError).toMatch(
+                    /estimated_minutes must be a whole number between 5 and 720/
+                );
             });
         });
 
@@ -275,6 +857,23 @@ describe('MCP Tools Integration', () => {
                 expect(response.status).toBe(200);
                 const { content } = getToolContent(response);
                 expect(content.name).toBe('Findable by UID');
+            });
+
+            it('should return the real name of a recurring task', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Water the plants',
+                    status: 0,
+                    recurrence_type: 'weekly',
+                });
+
+                const response = await callMcpTool(apiTokenValue, 'get_task', {
+                    id: task.uid,
+                });
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.name).toBe('Water the plants');
             });
 
             it('should throw error for non-existent task', async () => {
@@ -329,6 +928,50 @@ describe('MCP Tools Integration', () => {
                 expect(content.task.name).toBe('New Name');
             });
 
+            it('should update task note', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Note Task',
+                    note: 'original',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        note: 'via note',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.note).toBe('via note');
+            });
+
+            it('should update task note when sent as description', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Description Alias Task',
+                    note: 'original',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        description: 'via description',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.note).toBe('via description');
+            });
+
             it('should update task status', async () => {
                 const task = await Task.create({
                     user_id: user.id,
@@ -348,6 +991,756 @@ describe('MCP Tools Integration', () => {
                 expect(response.status).toBe(200);
                 const { content } = getToolContent(response);
                 expect(content.task.status).toBe(1); // in_progress = 1
+            });
+
+            it.each(['done', 'completed'])(
+                'should stamp completed_at when status is set to %s',
+                async (status) => {
+                    const task = await Task.create({
+                        user_id: user.id,
+                        name: 'Finish Me',
+                        status: 0,
+                    });
+                    expect(task.completed_at).toBeFalsy();
+
+                    const response = await callMcpTool(
+                        apiTokenValue,
+                        'update_task',
+                        { id: task.id, status }
+                    );
+
+                    expect(response.status).toBe(200);
+                    await task.reload();
+                    expect(task.status).toBe(2);
+                    expect(task.completed_at).toBeInstanceOf(Date);
+                }
+            );
+
+            it('should clear completed_at when a done task is moved back out of done', async () => {
+                const completedAt = new Date('2026-01-01T10:00:00Z');
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Reopen Me',
+                    status: 2,
+                    completed_at: completedAt,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, status: 'pending' }
+                );
+
+                expect(response.status).toBe(200);
+                await task.reload();
+                expect(task.status).toBe(0);
+                expect(task.completed_at).toBeNull();
+            });
+
+            it('should keep the original completed_at when a done task is set to done again', async () => {
+                const completedAt = new Date('2026-01-01T10:00:00Z');
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Already Done',
+                    status: 2,
+                    completed_at: completedAt,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, status: 'done' }
+                );
+
+                expect(response.status).toBe(200);
+                await task.reload();
+                expect(task.completed_at.getTime()).toBe(completedAt.getTime());
+            });
+
+            it('should leave completed_at alone when status is not part of the update', async () => {
+                const completedAt = new Date('2026-01-01T10:00:00Z');
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Rename Done Task',
+                    status: 2,
+                    completed_at: completedAt,
+                });
+
+                await callMcpTool(apiTokenValue, 'update_task', {
+                    id: task.id,
+                    name: 'Renamed',
+                });
+
+                await task.reload();
+                expect(task.completed_at.getTime()).toBe(completedAt.getTime());
+            });
+
+            it('should set status to archived (3) not planned (6)', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Archive Me',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, status: 'archived' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.status).toBe(3); // archived = 3
+
+                await task.reload();
+                expect(task.status).toBe(3);
+            });
+
+            it('should set status to planned (6) distinct from archived (3)', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Plan Me',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, status: 'planned' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.status).toBe(6); // planned = 6
+
+                await task.reload();
+                expect(task.status).toBe(6);
+            });
+
+            it('should store a date-only due_date at end of day in the user timezone, not shift a day earlier (issue #1382)', async () => {
+                await user.update({ timezone: 'America/Bogota' });
+
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Bogota Update Task',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, due_date: '2026-08-08' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.due_date).toBe('2026-08-08');
+
+                await task.reload();
+                expect(task.due_date.toISOString()).toBe(
+                    '2026-08-09T04:59:59.999Z'
+                );
+            });
+
+            it('should update defer_until and persist it', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Defer Me',
+                    status: 0,
+                    due_date: new Date(Date.now() + 172800000),
+                });
+                const deferUntil = new Date(
+                    Date.now() + 86400000
+                ).toISOString();
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, defer_until: deferUntil }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.defer_until).toBeDefined();
+                expect(content.task.defer_until).not.toBeNull();
+
+                await task.reload();
+                expect(task.defer_until).not.toBeNull();
+            });
+
+            it('should reject a defer_until after the due date', async () => {
+                const dueDate = new Date(Date.now() + 86400000);
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Defer After Due',
+                    status: 0,
+                    due_date: dueDate,
+                });
+                const badDeferUntil = new Date(
+                    Date.now() + 172800000
+                ).toISOString();
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, defer_until: badDeferUntil }
+                );
+
+                expect(response.status).toBe(200);
+                const jsonRpc = parseSseResponse(response.text);
+                expect(jsonRpc.result.isError).toBe(true);
+
+                await task.reload();
+                expect(task.defer_until).toBeNull();
+            });
+
+            it('should reject unsupported fields instead of silently ignoring them', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Untouched',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        name: 'Should Not Apply',
+                        nonexistent_field: 'bogus',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const jsonRpc = parseSseResponse(response.text);
+                expect(jsonRpc.result.isError).toBe(true);
+                const { content } = getToolContent(response);
+                expect(content._rawError).toContain('nonexistent_field');
+
+                await task.reload();
+                expect(task.name).toBe('Untouched');
+            });
+
+            it('should update recurrence fields on an existing task', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Recurrence Update Task',
+                    status: 0,
+                    recurrence_type: 'daily',
+                    recurrence_interval: 1,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        recurrence_type: 'monthly',
+                        recurrence_interval: 3,
+                        recurrence_month_day: 15,
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.name).toBe('Recurrence Update Task');
+                expect(content.task.recurrence_type).toBe('monthly');
+                expect(content.task.recurrence_interval).toBe(3);
+                expect(content.task.recurrence_month_day).toBe(15);
+
+                await task.reload();
+                expect(task.recurrence_type).toBe('monthly');
+                expect(task.recurrence_interval).toBe(3);
+                expect(task.recurrence_month_day).toBe(15);
+            });
+
+            it('should compute a due date when recurrence is newly added without one', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'No Due Date Task',
+                    status: 0,
+                });
+                expect(task.due_date).toBeFalsy();
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        recurrence_type: 'daily',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.recurrence_type).toBe('daily');
+                expect(content.task.due_date).toBeDefined();
+            });
+
+            it('should replace existing tags with the requested set', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Retagged Task',
+                    status: 0,
+                });
+                const oldTag = await Tag.create({
+                    user_id: user.id,
+                    name: 'old-tag',
+                });
+                await task.setTags([oldTag]);
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        tags: ['new-tag-one', 'new-tag-two'],
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.tags.map((t) => t.name).sort()).toEqual([
+                    'new-tag-one',
+                    'new-tag-two',
+                ]);
+            });
+
+            it('should accept tags sent as a JSON-encoded array string', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'JSON Tags Task',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        tags: '["需求", "json-tag"]',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.tags.map((t) => t.name).sort()).toEqual([
+                    'json-tag',
+                    '需求',
+                ]);
+            });
+
+            it('should clear tags when given an empty array', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Untagged Task',
+                    status: 0,
+                });
+                const oldTag = await Tag.create({
+                    user_id: user.id,
+                    name: 'clear-me-tag',
+                });
+                await task.setTags([oldTag]);
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        tags: [],
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.tags).toEqual([]);
+            });
+
+            it('should reject a non-array tags value without touching the task', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Bad Tags Update Task',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        name: 'Should Not Apply',
+                        tags: 'urgent',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                expect(getToolContent(response).isError).toBe(true);
+                await task.reload();
+                expect(task.name).toBe('Bad Tags Update Task');
+            });
+
+            it('should roll back the update when tag association fails', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Rollback On Update Task',
+                    status: 0,
+                });
+
+                const setTagsSpy = jest
+                    .spyOn(Task.prototype, 'setTags')
+                    .mockRejectedValue(new Error('Tag association failed'));
+
+                try {
+                    const response = await callMcpTool(
+                        apiTokenValue,
+                        'update_task',
+                        {
+                            id: task.id,
+                            name: 'Should Not Apply Either',
+                            tags: ['update-rollback-tag'],
+                        }
+                    );
+
+                    expect(response.status).toBe(200);
+                    expect(getToolContent(response).isError).toBe(true);
+                    await task.reload();
+                    expect(task.name).toBe('Rollback On Update Task');
+                    await expect(
+                        Tag.findOne({
+                            where: {
+                                user_id: user.id,
+                                name: 'update-rollback-tag',
+                            },
+                        })
+                    ).resolves.toBeNull();
+                } finally {
+                    setTagsSpy.mockRestore();
+                }
+            });
+
+            it('should set estimated_minutes on an existing task', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Estimate Target Task',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        estimated_minutes: 45,
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.estimated_minutes).toBe(45);
+
+                await task.reload();
+                expect(task.estimated_minutes).toBe(45);
+            });
+
+            it('should clear estimated_minutes to null on update', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Task to Clear Estimate',
+                    status: 0,
+                    estimated_minutes: 60,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        estimated_minutes: null,
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.task.estimated_minutes).toBeNull();
+
+                await task.reload();
+                expect(task.estimated_minutes).toBeNull();
+            });
+
+            it('should reject invalid estimated_minutes on update', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Task with Valid Estimate',
+                    status: 0,
+                    estimated_minutes: 30,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    {
+                        id: task.id,
+                        estimated_minutes: 3,
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const jsonRpc = parseSseResponse(response.text);
+                expect(jsonRpc.result.isError).toBe(true);
+                const { content } = getToolContent(response);
+                expect(content._rawError).toMatch(
+                    /estimated_minutes must be a whole number between 5 and 720/
+                );
+
+                await task.reload();
+                expect(task.estimated_minutes).toBe(30);
+            });
+
+            it('should clear priority using none', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Priority Test',
+                    priority: 2,
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, priority: 'none' }
+                );
+
+                const { content, isError } = getToolContent(response);
+
+                expect(isError).toBe(false);
+                expect(content.task.priority).toBeNull();
+
+                await task.reload();
+                expect(task.priority).toBeNull();
+            });
+        });
+
+        describe('direct area assignment', () => {
+            let area;
+
+            beforeEach(async () => {
+                area = await Area.create({
+                    user_id: user.id,
+                    name: 'Home',
+                });
+            });
+
+            it('create_task assigns an area by id', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    { name: 'Area task', area_id: area.id }
+                );
+
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(false);
+                expect(content.task.area_id).toBe(area.id);
+                expect(content.task.area_uid).toBe(area.uid);
+                expect(content.task.Area.name).toBe('Home');
+            });
+
+            it('create_task assigns an area by uid', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    { name: 'Area uid task', area_uid: area.uid }
+                );
+
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(false);
+                expect(content.task.area_id).toBe(area.id);
+            });
+
+            it('update_task sets and clears the area', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'No area yet',
+                    status: 0,
+                });
+
+                const setResponse = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, area_id: area.id }
+                );
+                const set = getToolContent(setResponse);
+                expect(set.isError).toBe(false);
+                expect(set.content.task.area_id).toBe(area.id);
+                expect(set.content.task.Area.uid).toBe(area.uid);
+
+                const clearResponse = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, area_id: null }
+                );
+                const cleared = getToolContent(clearResponse);
+                expect(cleared.isError).toBe(false);
+                await task.reload();
+                expect(task.area_id).toBeNull();
+            });
+
+            it("rejects another user's area", async () => {
+                const otherUser = await createTestUser({
+                    email: `mcp_area_other_${Date.now()}@example.com`,
+                });
+                const otherArea = await Area.create({
+                    user_id: otherUser.id,
+                    name: 'Private',
+                });
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Keep my area',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, area_id: otherArea.id }
+                );
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(true);
+                expect(content._rawError).toMatch(/Invalid area/);
+
+                await task.reload();
+                expect(task.area_id).toBeNull();
+            });
+
+            it('list_tasks includes the directly assigned area', async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Listed area task',
+                    status: 0,
+                    area_id: area.id,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_tasks',
+                    { type: 'all' }
+                );
+                const { content } = getToolContent(response);
+                const listed = content.tasks.find(
+                    (t) => t.name === 'Listed area task'
+                );
+                expect(listed.Area).toMatchObject({
+                    uid: area.uid,
+                    name: 'Home',
+                });
+            });
+        });
+
+        describe('assignee', () => {
+            it('create_task assigns one of my people', async () => {
+                const person = await Person.create({
+                    user_id: user.id,
+                    name: 'Neighbour',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_task',
+                    { name: 'Water the plants', assigned_to: person.uid }
+                );
+
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(false);
+                expect(content.task.assigned_to).toBe(person.uid);
+            });
+
+            it('update_task assigns a project collaborator, notifies them, and unassigns', async () => {
+                const collaborator = await createTestUser({
+                    email: `mcp_assignee_${Date.now()}@example.com`,
+                    name: 'Collaborator',
+                });
+                await peopleService.createSelfPerson(collaborator);
+                const collaboratorSelf = await Person.findOne({
+                    where: {
+                        user_id: collaborator.id,
+                        linked_user_id: collaborator.id,
+                    },
+                });
+                const project = await Project.create({
+                    user_id: user.id,
+                    name: 'Shared with collaborator',
+                });
+                await Permission.create({
+                    user_id: collaborator.id,
+                    resource_type: 'project',
+                    resource_uid: project.uid,
+                    access_level: 'rw',
+                    propagation: 'direct',
+                    granted_by_user_id: user.id,
+                    status: 'accepted',
+                });
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Needs an owner',
+                    status: 0,
+                    project_id: project.id,
+                });
+
+                const assignResponse = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.uid, assigned_to: collaboratorSelf.uid }
+                );
+                const assigned = getToolContent(assignResponse);
+                expect(assigned.isError).toBe(false);
+                expect(assigned.content.task.assigned_to).toBe(
+                    collaboratorSelf.uid
+                );
+                const notifications = await Notification.findAll({
+                    where: {
+                        user_id: collaborator.id,
+                        type: 'task_assigned',
+                    },
+                });
+                expect(notifications).toHaveLength(1);
+                expect(notifications[0].data.taskUid).toBe(task.uid);
+
+                const clearResponse = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.uid, assigned_to: null }
+                );
+                expect(getToolContent(clearResponse).isError).toBe(false);
+                await task.reload();
+                expect(task.assigned_to).toBeNull();
+            });
+
+            it('rejects a person outside my workspace', async () => {
+                const stranger = await createTestUser({
+                    email: `mcp_stranger_${Date.now()}@example.com`,
+                });
+                await peopleService.createSelfPerson(stranger);
+                const strangerSelf = await Person.findOne({
+                    where: {
+                        user_id: stranger.id,
+                        linked_user_id: stranger.id,
+                    },
+                });
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Stays unassigned',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.uid, assigned_to: strangerSelf.uid }
+                );
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(true);
+                expect(content._rawError).toMatch(/Invalid assignee/);
+                await task.reload();
+                expect(task.assigned_to).toBeNull();
             });
         });
 
@@ -388,6 +1781,282 @@ describe('MCP Tools Integration', () => {
                 const { content } = getToolContent(response);
                 expect(content.message).toBe('Task reopened');
                 expect(content.task.status).toBe(0); // pending = 0
+            });
+
+            it('should advance a monthly recurring task to its next occurrence', async () => {
+                const dueDate = new Date(Date.UTC(2026, 0, 15, 12));
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Pay rent',
+                    status: 0,
+                    recurrence_type: 'monthly',
+                    recurrence_interval: 1,
+                    recurrence_month_day: 15,
+                    due_date: dueDate,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'complete_task',
+                    { id: task.id }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.message).toBe(
+                    'Occurrence completed, next due 2026-02-15'
+                );
+                expect(content.next_due_date).toBe('2026-02-15');
+                expect(content.task.status).toBe(Task.STATUS.NOT_STARTED);
+
+                await task.reload();
+                expect(task.status).toBe(Task.STATUS.NOT_STARTED);
+                expect(task.completed_at).toBeNull();
+                const nextDue = new Date(task.due_date);
+                expect(nextDue.getUTCMonth()).toBe(1);
+                expect(nextDue.getUTCDate()).toBe(15);
+
+                const completions = await RecurringCompletion.findAll({
+                    where: { task_id: task.id },
+                });
+                expect(completions).toHaveLength(1);
+                expect(completions[0].skipped).toBe(false);
+                expect(
+                    new Date(completions[0].original_due_date).toISOString()
+                ).toBe(dueDate.toISOString());
+            });
+
+            it('should not write a recurring completion for a one-off task', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'One-off',
+                    status: 0,
+                });
+
+                await callMcpTool(apiTokenValue, 'complete_task', {
+                    id: task.id,
+                });
+
+                await task.reload();
+                expect(task.status).toBe(Task.STATUS.DONE);
+                expect(task.completed_at).not.toBeNull();
+                const completions = await RecurringCompletion.count({
+                    where: { task_id: task.id },
+                });
+                expect(completions).toBe(0);
+            });
+
+            it('should leave a generated instance done', async () => {
+                const parent = await Task.create({
+                    user_id: user.id,
+                    name: 'Pay rent',
+                    status: 0,
+                    recurrence_type: 'monthly',
+                    recurrence_interval: 1,
+                    recurrence_month_day: 15,
+                    due_date: new Date(Date.UTC(2026, 0, 15, 12)),
+                });
+                const instance = await Task.create({
+                    user_id: user.id,
+                    name: 'Pay rent',
+                    status: 0,
+                    recurrence_type: 'monthly',
+                    recurring_parent_id: parent.id,
+                    due_date: new Date(Date.UTC(2026, 1, 15, 12)),
+                });
+
+                await callMcpTool(apiTokenValue, 'complete_task', {
+                    id: instance.id,
+                });
+
+                await instance.reload();
+                expect(instance.status).toBe(Task.STATUS.DONE);
+                expect(instance.completed_at).not.toBeNull();
+                expect(new Date(instance.due_date).getUTCMonth()).toBe(1);
+                const completions = await RecurringCompletion.count({
+                    where: { task_id: instance.id },
+                });
+                expect(completions).toBe(0);
+            });
+
+            it('should stay done after the last occurrence of a series', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Pay rent',
+                    status: 0,
+                    recurrence_type: 'monthly',
+                    recurrence_interval: 1,
+                    recurrence_month_day: 15,
+                    recurrence_end_date: new Date(Date.UTC(2026, 0, 31)),
+                    due_date: new Date(Date.UTC(2026, 0, 15, 12)),
+                });
+
+                const { content } = getToolContent(
+                    await callMcpTool(apiTokenValue, 'complete_task', {
+                        id: task.id,
+                    })
+                );
+                expect(content.message).toBe('Task completed');
+                expect(content.next_due_date).toBeUndefined();
+
+                await task.reload();
+                expect(task.status).toBe(Task.STATUS.DONE);
+                expect(task.completed_at).not.toBeNull();
+                expect(new Date(task.due_date).getUTCMonth()).toBe(0);
+                const completions = await RecurringCompletion.count({
+                    where: { task_id: task.id },
+                });
+                expect(completions).toBe(1);
+            });
+
+            it('should advance a recurring task marked done via update_task', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Pay rent',
+                    status: 0,
+                    recurrence_type: 'monthly',
+                    recurrence_interval: 1,
+                    recurrence_month_day: 15,
+                    due_date: new Date(Date.UTC(2026, 0, 15, 12)),
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_task',
+                    { id: task.id, status: 'done' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.message).toBe(
+                    'Occurrence completed, next due 2026-02-15'
+                );
+                expect(content.next_due_date).toBe('2026-02-15');
+                await task.reload();
+                expect(task.status).toBe(Task.STATUS.NOT_STARTED);
+                expect(task.completed_at).toBeNull();
+                expect(new Date(task.due_date).getUTCMonth()).toBe(1);
+                const completions = await RecurringCompletion.count({
+                    where: { task_id: task.id },
+                });
+                expect(completions).toBe(1);
+            });
+        });
+
+        describe('skip_task_occurrence', () => {
+            it('moves a recurring task to its next due date as a skip', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Pay rent',
+                    status: 0,
+                    recurrence_type: 'daily',
+                    recurrence_interval: 1,
+                    due_date: new Date('2030-01-10T00:00:00Z'),
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'skip_task_occurrence',
+                    { id: task.uid }
+                );
+
+                expect(response.status).toBe(200);
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(false);
+                expect(content.message).toBe('Occurrence skipped');
+                expect(content.next_due_date.slice(0, 10)).toBe('2030-01-11');
+
+                const completions = await RecurringCompletion.findAll({
+                    where: { task_id: task.id },
+                });
+                expect(completions).toHaveLength(1);
+                expect(completions[0].skipped).toBe(true);
+            });
+
+            it('refuses a task that does not recur', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'One-off',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'skip_task_occurrence',
+                    { id: task.id }
+                );
+
+                const { isError } = getToolContent(response);
+                expect(isError).toBe(true);
+            });
+        });
+
+        describe('task relations', () => {
+            it('creates, lists, filters, warns and removes', async () => {
+                const blocker = await Task.create({
+                    user_id: user.id,
+                    name: 'Blocker',
+                    status: 0,
+                });
+                const blocked = await Task.create({
+                    user_id: user.id,
+                    name: 'Blocked',
+                    status: 0,
+                });
+
+                const created = getToolContent(
+                    await callMcpTool(apiTokenValue, 'create_task_relation', {
+                        id: blocker.id,
+                        target_id: blocked.uid,
+                        type: 'blocks',
+                    })
+                );
+                expect(created.isError).toBe(false);
+                expect(created.content.relation.type).toBe('blocks');
+
+                const listed = getToolContent(
+                    await callMcpTool(apiTokenValue, 'list_task_relations', {
+                        id: blocked.uid,
+                    })
+                ).content;
+                expect(listed.relations[0]).toMatchObject({
+                    type: 'blocked_by',
+                    task: { uid: blocker.uid },
+                });
+
+                const onlyBlocked = getToolContent(
+                    await callMcpTool(apiTokenValue, 'list_tasks', {
+                        blocked: true,
+                    })
+                ).content;
+                expect(onlyBlocked.tasks.map((t) => t.name)).toEqual([
+                    'Blocked',
+                ]);
+
+                const completed = getToolContent(
+                    await callMcpTool(apiTokenValue, 'complete_task', {
+                        id: blocked.id,
+                    })
+                ).content;
+                expect(completed.message).toBe('Task completed');
+                expect(completed.warning).toMatch(/blocked by 1/);
+
+                const cycle = getToolContent(
+                    await callMcpTool(apiTokenValue, 'create_task_relation', {
+                        id: blocked.id,
+                        target_id: blocker.id,
+                        type: 'blocks',
+                    })
+                );
+                expect(cycle.isError).toBe(true);
+
+                const removed = getToolContent(
+                    await callMcpTool(apiTokenValue, 'remove_task_relation', {
+                        id: blocker.id,
+                        relation_uid: listed.relations[0].uid,
+                    })
+                );
+                expect(removed.content.message).toBe('Relation removed');
             });
         });
 
@@ -437,6 +2106,58 @@ describe('MCP Tools Integration', () => {
                 expect(content.message).toBe('Subtask created successfully');
                 expect(content.subtask.name).toBe('Child Subtask');
             });
+
+            it('should store a date-only due_date at end of day in the user timezone, not shift a day earlier (issue #1382)', async () => {
+                await user.update({ timezone: 'America/Bogota' });
+
+                const parent = await Task.create({
+                    user_id: user.id,
+                    name: 'Parent Task',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_subtask',
+                    {
+                        parent_id: parent.id,
+                        name: 'Bogota Subtask',
+                        due_date: '2026-08-08',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.subtask.due_date).toBe('2026-08-08');
+
+                const subtaskFromDb = await Task.findByPk(content.subtask.id);
+                expect(subtaskFromDb.due_date.toISOString()).toBe(
+                    '2026-08-09T04:59:59.999Z'
+                );
+            });
+
+            it('should create a subtask with none priority', async () => {
+                const parent = await Task.create({
+                    user_id: user.id,
+                    name: 'Parent Task',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_subtask',
+                    {
+                        parent_id: parent.id,
+                        name: 'No Priority Subtask',
+                        priority: 'none',
+                    }
+                );
+
+                const { content, isError } = getToolContent(response);
+
+                expect(isError).toBe(false);
+                expect(content.subtask.priority).toBeNull();
+            });
         });
 
         describe('get_task_metrics', () => {
@@ -465,6 +2186,341 @@ describe('MCP Tools Integration', () => {
                 expect(content.completed_tasks).toBeGreaterThanOrEqual(1);
                 expect(content.overdue_tasks).toBeDefined();
                 expect(content.in_progress_tasks).toBeDefined();
+            });
+        });
+    });
+
+    describe('Comment Tools', () => {
+        describe('add_task_comment', () => {
+            it('should add a comment to an own task', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Discuss this',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_task_comment',
+                    { id: task.uid, body: '  Looks good  ' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(false);
+                expect(content.comment.uid).toBeDefined();
+                expect(content.comment.body).toBe('Looks good');
+                expect(content.comment.is_own).toBe(true);
+            });
+
+            it('should reply to a comment by numeric task ID', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Discuss this',
+                    status: 0,
+                });
+                const parent = getToolContent(
+                    await callMcpTool(apiTokenValue, 'add_task_comment', {
+                        id: task.uid,
+                        body: 'Question',
+                    })
+                ).content.comment;
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_task_comment',
+                    {
+                        id: task.id,
+                        body: 'Answer',
+                        parent_comment_uid: parent.uid,
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { isError } = getToolContent(response);
+                expect(isError).toBe(false);
+
+                const list = getToolContent(
+                    await callMcpTool(apiTokenValue, 'list_task_comments', {
+                        id: task.uid,
+                    })
+                ).content;
+                expect(list.count).toBe(1);
+                expect(list.comments[0].body).toBe('Question');
+                expect(list.comments[0].replies.map((r) => r.body)).toEqual([
+                    'Answer',
+                ]);
+            });
+
+            it('should reject an empty comment', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Discuss this',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_task_comment',
+                    { id: task.uid, body: '   ' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(true);
+                expect(content._rawError).toContain('Comment body is required');
+            });
+
+            it('should reject a reply to a reply', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Discuss this',
+                    status: 0,
+                });
+                const parent = getToolContent(
+                    await callMcpTool(apiTokenValue, 'add_task_comment', {
+                        id: task.uid,
+                        body: 'Question',
+                    })
+                ).content.comment;
+                const reply = getToolContent(
+                    await callMcpTool(apiTokenValue, 'add_task_comment', {
+                        id: task.uid,
+                        body: 'Answer',
+                        parent_comment_uid: parent.uid,
+                    })
+                ).content.comment;
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_task_comment',
+                    {
+                        id: task.uid,
+                        body: 'Nested',
+                        parent_comment_uid: reply.uid,
+                    }
+                );
+
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(true);
+                expect(content._rawError).toContain('Cannot reply to a reply');
+            });
+
+            it('should notify a mentioned person', async () => {
+                const otherUser = await createTestUser({
+                    email: `mention_${Date.now()}@example.com`,
+                    name: 'Mentioned',
+                });
+                await peopleService.createSelfPerson(otherUser);
+                const otherSelf = await Person.findOne({
+                    where: {
+                        user_id: otherUser.id,
+                        linked_user_id: otherUser.id,
+                    },
+                });
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Discuss this',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_task_comment',
+                    {
+                        id: task.uid,
+                        body: 'Hey @Mentioned',
+                        mentioned_person_uids: [otherSelf.uid],
+                    }
+                );
+
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(false);
+                expect(content.comment.mentioned_people).toEqual([
+                    { uid: otherSelf.uid, name: 'Mentioned' },
+                ]);
+                const notifications = await Notification.findAll({
+                    where: { user_id: otherUser.id, type: 'mention' },
+                });
+                expect(notifications).toHaveLength(1);
+                expect(notifications[0].data.taskUid).toBe(task.uid);
+            });
+
+            it('should let a read-only collaborator comment on a shared task', async () => {
+                const owner = await createTestUser({
+                    email: `owner_${Date.now()}@example.com`,
+                });
+                const project = await Project.create({
+                    user_id: owner.id,
+                    name: 'Shared Project',
+                });
+                const task = await Task.create({
+                    user_id: owner.id,
+                    project_id: project.id,
+                    name: 'Shared task',
+                    status: 0,
+                });
+                await Permission.create({
+                    user_id: user.id,
+                    resource_type: 'project',
+                    resource_uid: project.uid,
+                    access_level: 'ro',
+                    propagation: 'direct',
+                    granted_by_user_id: owner.id,
+                    status: 'accepted',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_task_comment',
+                    { id: task.uid, body: 'From a collaborator' }
+                );
+
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(false);
+                expect(content.comment.body).toBe('From a collaborator');
+
+                const list = getToolContent(
+                    await callMcpTool(apiTokenValue, 'list_task_comments', {
+                        id: task.uid,
+                    })
+                ).content;
+                expect(list.count).toBe(1);
+                expect(list.comments[0].is_own).toBe(true);
+            });
+
+            it('should deny commenting on another user task', async () => {
+                const otherUser = await createTestUser({
+                    email: `other_${Date.now()}@example.com`,
+                });
+                const otherTask = await Task.create({
+                    user_id: otherUser.id,
+                    name: 'Secret Task',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_task_comment',
+                    { id: otherTask.uid, body: 'Sneaky' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(true);
+                expect(content._rawError).toBe('Error: Task not found');
+                expect(
+                    await Comment.count({ where: { task_id: otherTask.id } })
+                ).toBe(0);
+            });
+
+            it('should give the same error for a missing task as for another user task', async () => {
+                const otherUser = await createTestUser({
+                    email: `other_${Date.now()}@example.com`,
+                });
+                const otherTask = await Task.create({
+                    user_id: otherUser.id,
+                    name: 'Secret Task',
+                    status: 0,
+                });
+
+                const missing = getToolContent(
+                    await callMcpTool(apiTokenValue, 'add_task_comment', {
+                        id: 999999,
+                        body: 'Nothing here',
+                    })
+                );
+                const notYours = getToolContent(
+                    await callMcpTool(apiTokenValue, 'add_task_comment', {
+                        id: otherTask.id,
+                        body: 'Sneaky',
+                    })
+                );
+
+                expect(missing.isError).toBe(true);
+                expect(notYours.isError).toBe(true);
+                expect(missing.content._rawError).toBe('Error: Task not found');
+                expect(notYours.content._rawError).toBe(
+                    missing.content._rawError
+                );
+            });
+        });
+
+        describe('list_task_comments', () => {
+            it('should return an empty list for a task without comments', async () => {
+                const task = await Task.create({
+                    user_id: user.id,
+                    name: 'Quiet task',
+                    status: 0,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_task_comments',
+                    { id: task.id }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.count).toBe(0);
+                expect(content.comments).toEqual([]);
+            });
+
+            it('should deny reading comments on another user task', async () => {
+                const otherUser = await createTestUser({
+                    email: `other_${Date.now()}@example.com`,
+                });
+                const otherTask = await Task.create({
+                    user_id: otherUser.id,
+                    name: 'Secret Task',
+                    status: 0,
+                });
+                await Comment.create({
+                    task_id: otherTask.id,
+                    user_id: otherUser.id,
+                    body: 'Private note',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_task_comments',
+                    { id: otherTask.uid }
+                );
+
+                expect(response.status).toBe(200);
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(true);
+                expect(content._rawError).toBe('Error: Task not found');
+                expect(content._rawError).not.toContain('Private note');
+            });
+
+            it('should give the same error for a missing task as for another user task', async () => {
+                const otherUser = await createTestUser({
+                    email: `other_${Date.now()}@example.com`,
+                });
+                const otherTask = await Task.create({
+                    user_id: otherUser.id,
+                    name: 'Secret Task',
+                    status: 0,
+                });
+
+                const missing = getToolContent(
+                    await callMcpTool(apiTokenValue, 'list_task_comments', {
+                        id: 999999,
+                    })
+                );
+                const notYours = getToolContent(
+                    await callMcpTool(apiTokenValue, 'list_task_comments', {
+                        id: otherTask.id,
+                    })
+                );
+
+                expect(missing.isError).toBe(true);
+                expect(notYours.isError).toBe(true);
+                expect(missing.content._rawError).toBe('Error: Task not found');
+                expect(notYours.content._rawError).toBe(
+                    missing.content._rawError
+                );
             });
         });
     });
@@ -535,6 +2591,158 @@ describe('MCP Tools Integration', () => {
                 expect(content.project.status).toBe('in_progress');
                 expect(content.project.priority).toBe(2);
             });
+
+            it('should create a project with multiple tags', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_project',
+                    {
+                        name: 'Tagged MCP Project',
+                        tags: [
+                            'first-tag',
+                            'second-tag',
+                            'first-tag',
+                            'third-tag',
+                        ],
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(false);
+                expect(content.message).toBe('Project created successfully');
+                expect(content.project.tags).toEqual(
+                    expect.arrayContaining([
+                        'first-tag',
+                        'second-tag',
+                        'third-tag',
+                    ])
+                );
+                expect(content.project.tags).toHaveLength(3);
+            });
+
+            it('should reject a non-array tags value', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_project',
+                    {
+                        name: 'Bad Tags Project',
+                        tags: 'urgent',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                expect(getToolContent(response).isError).toBe(true);
+                await expect(
+                    Project.findOne({
+                        where: { user_id: user.id, name: 'Bad Tags Project' },
+                    })
+                ).resolves.toBeNull();
+            });
+
+            it('should reject an invalid tag name without creating the project', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_project',
+                    {
+                        name: 'Invalid Tag Project',
+                        tags: ['ok-tag', 'bad#tag'],
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                expect(getToolContent(response).isError).toBe(true);
+                await expect(
+                    Project.findOne({
+                        where: {
+                            user_id: user.id,
+                            name: 'Invalid Tag Project',
+                        },
+                    })
+                ).resolves.toBeNull();
+                await expect(
+                    Tag.findOne({
+                        where: { user_id: user.id, name: 'ok-tag' },
+                    })
+                ).resolves.toBeNull();
+            });
+
+            it('should roll back the project and new tags when a tag fails', async () => {
+                const bulkCreate = Tag.bulkCreate;
+                const bulkCreateSpy = jest
+                    .spyOn(Tag, 'bulkCreate')
+                    .mockImplementation(async (...args) => {
+                        await bulkCreate.apply(Tag, args);
+                        throw new Error('Tag write failed');
+                    });
+
+                try {
+                    const response = await callMcpTool(
+                        apiTokenValue,
+                        'create_project',
+                        {
+                            name: 'Rolled Back MCP Project',
+                            tags: ['new-tag'],
+                        }
+                    );
+
+                    expect(response.status).toBe(200);
+                    expect(getToolContent(response).isError).toBe(true);
+                    await expect(
+                        Project.findOne({
+                            where: {
+                                user_id: user.id,
+                                name: 'Rolled Back MCP Project',
+                            },
+                        })
+                    ).resolves.toBeNull();
+                    await expect(
+                        Tag.findOne({
+                            where: { user_id: user.id, name: 'new-tag' },
+                        })
+                    ).resolves.toBeNull();
+                } finally {
+                    bulkCreateSpy.mockRestore();
+                }
+            });
+
+            it('should roll back the project and new tags when association fails', async () => {
+                const setTagsSpy = jest
+                    .spyOn(Project.prototype, 'setTags')
+                    .mockRejectedValue(new Error('Tag association failed'));
+
+                try {
+                    const response = await callMcpTool(
+                        apiTokenValue,
+                        'create_project',
+                        {
+                            name: 'Association Failure MCP Project',
+                            tags: ['association-failure-tag'],
+                        }
+                    );
+
+                    expect(response.status).toBe(200);
+                    expect(getToolContent(response).isError).toBe(true);
+                    await expect(
+                        Project.findOne({
+                            where: {
+                                user_id: user.id,
+                                name: 'Association Failure MCP Project',
+                            },
+                        })
+                    ).resolves.toBeNull();
+                    await expect(
+                        Tag.findOne({
+                            where: {
+                                user_id: user.id,
+                                name: 'association-failure-tag',
+                            },
+                        })
+                    ).resolves.toBeNull();
+                } finally {
+                    setTagsSpy.mockRestore();
+                }
+            });
         });
 
         describe('update_project', () => {
@@ -562,6 +2770,25 @@ describe('MCP Tools Integration', () => {
                 expect(content.project.status).toBe('in_progress');
             });
 
+            it('should record when a project is marked done', async () => {
+                const project = await Project.create({
+                    user_id: user.id,
+                    name: 'Finish me',
+                    status: 'in_progress',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_project',
+                    { uid: project.uid, status: 'done' }
+                );
+
+                const { content } = getToolContent(response);
+                expect(content.project.completed_at).toBeTruthy();
+                await project.reload();
+                expect(project.completed_at).toBeInstanceOf(Date);
+            });
+
             it('should throw error for non-existent project', async () => {
                 const response = await callMcpTool(
                     apiTokenValue,
@@ -575,6 +2802,239 @@ describe('MCP Tools Integration', () => {
                 expect(response.status).toBe(200);
                 const jsonRpc = parseSseResponse(response.text);
                 expect(jsonRpc.result.isError).toBe(true);
+            });
+        });
+
+        describe('goal linking', () => {
+            it('should link a project to a goal on create by goal_uid', async () => {
+                const goal = await Goal.create({
+                    user_id: user.id,
+                    title: 'Run a marathon',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_project',
+                    { name: 'Training plan', goal_uid: goal.uid }
+                );
+
+                const { content } = getToolContent(response);
+                expect(content.project.goal).toEqual({
+                    id: goal.id,
+                    uid: goal.uid,
+                    title: 'Run a marathon',
+                });
+            });
+
+            it('should link by goal_id, re-link idempotently and unlink with null', async () => {
+                const goal = await Goal.create({
+                    user_id: user.id,
+                    title: 'Ship v2',
+                });
+                const project = await Project.create({
+                    user_id: user.id,
+                    name: 'Release work',
+                });
+
+                for (let i = 0; i < 2; i++) {
+                    const response = await callMcpTool(
+                        apiTokenValue,
+                        'update_project',
+                        { uid: project.uid, goal_id: goal.id }
+                    );
+                    const { content, isError } = getToolContent(response);
+                    expect(isError).toBe(false);
+                    expect(content.project.goal.id).toBe(goal.id);
+                }
+
+                const goalResponse = await callMcpTool(
+                    apiTokenValue,
+                    'get_goal',
+                    { uid: goal.uid }
+                );
+                expect(
+                    getToolContent(goalResponse).content.goal.projects.map(
+                        (p) => p.uid
+                    )
+                ).toEqual([project.uid]);
+
+                const unlinkResponse = await callMcpTool(
+                    apiTokenValue,
+                    'update_project',
+                    { uid: project.uid, goal_uid: null }
+                );
+                expect(
+                    getToolContent(unlinkResponse).content.project.goal
+                ).toBe(null);
+                await project.reload();
+                expect(project.goal_id).toBeNull();
+            });
+
+            it("should reject another user's goal", async () => {
+                const other = await createTestUser({
+                    email: `mcp_goal_other_${Date.now()}@example.com`,
+                });
+                const foreignGoal = await Goal.create({
+                    user_id: other.id,
+                    title: 'Not yours',
+                });
+                const project = await Project.create({
+                    user_id: user.id,
+                    name: 'Mine',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_project',
+                    { uid: project.uid, goal_uid: foreignGoal.uid }
+                );
+
+                expect(getToolContent(response).isError).toBe(true);
+                await project.reload();
+                expect(project.goal_id).toBeNull();
+            });
+        });
+
+        describe('maintenance flag', () => {
+            it('should persist is_maintenance on create and return it from get and list', async () => {
+                const createResponse = await callMcpTool(
+                    apiTokenValue,
+                    'create_project',
+                    { name: 'Household upkeep', is_maintenance: true }
+                );
+                const created = getToolContent(createResponse).content.project;
+                expect(created.is_maintenance).toBe(true);
+
+                const stored = await Project.findOne({
+                    where: { uid: created.uid },
+                });
+                expect(stored.is_maintenance).toBe(true);
+
+                const getResponse = await callMcpTool(
+                    apiTokenValue,
+                    'get_project',
+                    { uid: created.uid }
+                );
+                expect(
+                    getToolContent(getResponse).content.project.is_maintenance
+                ).toBe(true);
+
+                const listResponse = await callMcpTool(
+                    apiTokenValue,
+                    'list_projects',
+                    {}
+                );
+                const listed = getToolContent(
+                    listResponse
+                ).content.projects.find((p) => p.uid === created.uid);
+                expect(listed.is_maintenance).toBe(true);
+            });
+
+            it('should toggle is_maintenance on update and unlink the goal', async () => {
+                const goal = await Goal.create({
+                    user_id: user.id,
+                    title: 'Get fit',
+                });
+                const project = await Project.create({
+                    user_id: user.id,
+                    name: 'Gym',
+                    goal_id: goal.id,
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_project',
+                    { uid: project.uid, is_maintenance: true }
+                );
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(false);
+                expect(content.project.is_maintenance).toBe(true);
+                expect(content.project.goal).toBe(null);
+                await project.reload();
+                expect(project.is_maintenance).toBe(true);
+                expect(project.goal_id).toBeNull();
+
+                await callMcpTool(apiTokenValue, 'update_project', {
+                    uid: project.uid,
+                    goal_id: goal.id,
+                });
+                await project.reload();
+                expect(project.goal_id).toBe(goal.id);
+                expect(project.is_maintenance).toBe(false);
+            });
+
+            it('should reject a goal together with is_maintenance true', async () => {
+                const goal = await Goal.create({
+                    user_id: user.id,
+                    title: 'Learn Greek',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_project',
+                    {
+                        name: 'Lessons',
+                        goal_id: goal.id,
+                        is_maintenance: true,
+                    }
+                );
+
+                expect(getToolContent(response).isError).toBe(true);
+                expect(
+                    await Project.count({ where: { name: 'Lessons' } })
+                ).toBe(0);
+            });
+        });
+
+        describe('get_project', () => {
+            it('should return a project by UID', async () => {
+                const project = await Project.create({
+                    user_id: user.id,
+                    name: 'Fetchable Project',
+                    status: 'planned',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'get_project',
+                    { uid: project.uid }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.project.name).toBe('Fetchable Project');
+                expect(content.project.uid).toBe(project.uid);
+            });
+
+            it('should error for non-existent project', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'get_project',
+                    { uid: 'non-existent-uid' }
+                );
+
+                const { isError } = getToolContent(response);
+                expect(isError).toBe(true);
+            });
+        });
+
+        describe('delete_project', () => {
+            it('should delete a project by UID', async () => {
+                const project = await Project.create({
+                    user_id: user.id,
+                    name: 'Doomed Project',
+                    status: 'not_started',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'delete_project',
+                    { uid: project.uid }
+                );
+
+                expect(response.status).toBe(200);
+                const deleted = await Project.findByPk(project.id);
+                expect(deleted).toBeNull();
             });
         });
     });
@@ -610,6 +3070,72 @@ describe('MCP Tools Integration', () => {
                 expect(response.status).toBe(200);
                 const { content } = getToolContent(response);
                 expect(content.count).toBeGreaterThanOrEqual(1);
+                expect(content.items[0].status).toBe('added');
+            });
+
+            it('should exclude deleted, trashed, and processed items by default', async () => {
+                await InboxItem.create({
+                    user_id: user.id,
+                    content: 'Active item',
+                    source: 'mcp',
+                    status: 'added',
+                });
+                await InboxItem.create({
+                    user_id: user.id,
+                    content: 'Deleted item',
+                    source: 'mcp',
+                    status: 'deleted',
+                });
+                await InboxItem.create({
+                    user_id: user.id,
+                    content: 'Trashed item',
+                    source: 'mcp',
+                    status: 'trashed',
+                });
+                await InboxItem.create({
+                    user_id: user.id,
+                    content: 'Processed item',
+                    source: 'mcp',
+                    status: 'processed',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_inbox',
+                    {}
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.count).toBe(1);
+                expect(content.items[0].content).toBe('Active item');
+            });
+
+            it('should return items matching an explicit status filter', async () => {
+                await InboxItem.create({
+                    user_id: user.id,
+                    content: 'Active item',
+                    source: 'mcp',
+                    status: 'added',
+                });
+                await InboxItem.create({
+                    user_id: user.id,
+                    content: 'Processed item',
+                    source: 'mcp',
+                    status: 'processed',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_inbox',
+                    { status: 'processed' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.count).toBe(1);
+                expect(content.items[0].content).toBe('Processed item');
+                expect(content.items[0].status).toBe('processed');
             });
         });
 
@@ -628,6 +3154,53 @@ describe('MCP Tools Integration', () => {
                 );
                 expect(content.item.content).toBe('Captured from MCP');
                 expect(content.item.source).toBe('mcp');
+                expect(content.item.title).toBe('Captured from MCP');
+            });
+
+            it('should trim surrounding whitespace from content', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_to_inbox',
+                    { content: '  Padded item  ' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.item.content).toBe('Padded item');
+            });
+
+            it('should reject empty content', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_to_inbox',
+                    { content: '' }
+                );
+
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(true);
+                expect(content._rawError).toContain('Content');
+
+                const items = await InboxItem.findAll({
+                    where: { user_id: user.id },
+                });
+                expect(items).toHaveLength(0);
+            });
+
+            it('should reject whitespace-only content', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'add_to_inbox',
+                    { content: '   \n  ' }
+                );
+
+                const { content, isError } = getToolContent(response);
+                expect(isError).toBe(true);
+                expect(content._rawError).toContain('Content cannot be empty');
+
+                const items = await InboxItem.findAll({
+                    where: { user_id: user.id },
+                });
+                expect(items).toHaveLength(0);
             });
 
             it('should allow custom source', async () => {
@@ -640,6 +3213,250 @@ describe('MCP Tools Integration', () => {
                 expect(response.status).toBe(200);
                 const { content } = getToolContent(response);
                 expect(content.item.source).toBe('custom-app');
+            });
+        });
+
+        describe('get_inbox_item', () => {
+            it('should return an inbox item by UID', async () => {
+                const item = await InboxItem.create({
+                    user_id: user.id,
+                    content: 'Fetch me',
+                    source: 'mcp',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'get_inbox_item',
+                    { uid: item.uid }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.item.content).toBe('Fetch me');
+            });
+
+            it('should error for non-existent item', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'get_inbox_item',
+                    { uid: 'non-existent-uid' }
+                );
+
+                const { isError } = getToolContent(response);
+                expect(isError).toBe(true);
+            });
+        });
+
+        describe('update_inbox_item', () => {
+            it('should update inbox item content', async () => {
+                const item = await InboxItem.create({
+                    user_id: user.id,
+                    content: 'Original',
+                    source: 'mcp',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_inbox_item',
+                    { uid: item.uid, content: 'Edited' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.item.content).toBe('Edited');
+
+                await item.reload();
+                expect(item.content).toBe('Edited');
+            });
+        });
+
+        describe('process_inbox_item', () => {
+            it('should mark an inbox item as processed', async () => {
+                const item = await InboxItem.create({
+                    user_id: user.id,
+                    content: 'To process',
+                    source: 'mcp',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'process_inbox_item',
+                    { uid: item.uid }
+                );
+
+                expect(response.status).toBe(200);
+                await item.reload();
+                expect(item.status).toBe('processed');
+            });
+        });
+
+        describe('delete_inbox_item', () => {
+            it('should delete an inbox item', async () => {
+                const item = await InboxItem.create({
+                    user_id: user.id,
+                    content: 'To delete',
+                    source: 'mcp',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'delete_inbox_item',
+                    { uid: item.uid }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.message).toBe('Inbox item deleted successfully');
+
+                // Soft-deleted: no longer active
+                await item.reload();
+                expect(item.status).toBe('deleted');
+            });
+        });
+    });
+
+    describe('Note Tools', () => {
+        describe('list_notes', () => {
+            it('should return empty list when no notes exist', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_notes',
+                    {}
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.count).toBe(0);
+            });
+
+            it('should return user notes', async () => {
+                await Note.create({
+                    user_id: user.id,
+                    title: 'My Note',
+                    content: 'Some content',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'list_notes',
+                    {}
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.count).toBeGreaterThanOrEqual(1);
+                expect(content.notes.some((n) => n.title === 'My Note')).toBe(
+                    true
+                );
+            });
+        });
+
+        describe('get_note', () => {
+            it('should return a note by UID', async () => {
+                const note = await Note.create({
+                    user_id: user.id,
+                    title: 'Fetchable Note',
+                    content: 'body',
+                });
+
+                const response = await callMcpTool(apiTokenValue, 'get_note', {
+                    uid: note.uid,
+                });
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.note.title).toBe('Fetchable Note');
+            });
+
+            it('should error for non-existent note', async () => {
+                const response = await callMcpTool(apiTokenValue, 'get_note', {
+                    uid: 'non-existent-uid',
+                });
+
+                const { isError } = getToolContent(response);
+                expect(isError).toBe(true);
+            });
+        });
+
+        describe('create_note', () => {
+            it('should create a new note', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_note',
+                    { title: 'Created Note', content: 'Hello' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.message).toBe('Note created successfully');
+                expect(content.note.title).toBe('Created Note');
+
+                const created = await Note.findOne({
+                    where: { user_id: user.id, title: 'Created Note' },
+                });
+                expect(created).not.toBeNull();
+            });
+
+            it('should create a note with tags', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_note',
+                    { title: 'Tagged Note', tags: ['ideas'] }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.note.Tags.some((t) => t.name === 'ideas')).toBe(
+                    true
+                );
+            });
+        });
+
+        describe('update_note', () => {
+            it('should update a note title and content', async () => {
+                const note = await Note.create({
+                    user_id: user.id,
+                    title: 'Old Title',
+                    content: 'old',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_note',
+                    {
+                        uid: note.uid,
+                        title: 'New Title',
+                        content: 'new',
+                    }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.note.title).toBe('New Title');
+
+                await note.reload();
+                expect(note.title).toBe('New Title');
+                expect(note.content).toBe('new');
+            });
+        });
+
+        describe('delete_note', () => {
+            it('should delete a note', async () => {
+                const note = await Note.create({
+                    user_id: user.id,
+                    title: 'To Delete',
+                    content: 'bye',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'delete_note',
+                    { uid: note.uid }
+                );
+
+                expect(response.status).toBe(200);
+                const deleted = await Note.findByPk(note.id);
+                expect(deleted).toBeNull();
             });
         });
     });
@@ -679,7 +3496,7 @@ describe('MCP Tools Integration', () => {
         });
 
         describe('list_tags', () => {
-            it('should return empty list when no tags exist', async () => {
+            it('should return only system tags when no user tags exist', async () => {
                 const response = await callMcpTool(
                     apiTokenValue,
                     'list_tags',
@@ -688,7 +3505,10 @@ describe('MCP Tools Integration', () => {
 
                 expect(response.status).toBe(200);
                 const { content } = getToolContent(response);
-                expect(content.count).toBe(0);
+                // 'someday' and 'today' system tags are auto-created for every new user
+                expect(content.count).toBe(2);
+                expect(content.tags.map((t) => t.name)).toContain('someday');
+                expect(content.tags.map((t) => t.name)).toContain('today');
             });
 
             it('should return user tags', async () => {
@@ -709,6 +3529,120 @@ describe('MCP Tools Integration', () => {
                 expect(content.tags.some((t) => t.name === 'urgent')).toBe(
                     true
                 );
+            });
+        });
+
+        describe('get_tag', () => {
+            it('should return a tag by uid', async () => {
+                const tag = await Tag.create({
+                    user_id: user.id,
+                    name: 'focus',
+                });
+
+                const response = await callMcpTool(apiTokenValue, 'get_tag', {
+                    uid: tag.uid,
+                });
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.tag.name).toBe('focus');
+            });
+
+            it('should return a tag by name', async () => {
+                await Tag.create({
+                    user_id: user.id,
+                    name: 'reading',
+                });
+
+                const response = await callMcpTool(apiTokenValue, 'get_tag', {
+                    name: 'reading',
+                });
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.tag.name).toBe('reading');
+            });
+
+            it('should error when tag does not exist', async () => {
+                const response = await callMcpTool(apiTokenValue, 'get_tag', {
+                    uid: 'nonexistent',
+                });
+
+                const { isError } = getToolContent(response);
+                expect(isError).toBe(true);
+            });
+        });
+
+        describe('create_tag', () => {
+            it('should create a new tag', async () => {
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_tag',
+                    { name: 'work' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.tag.name).toBe('work');
+
+                const created = await Tag.findOne({
+                    where: { user_id: user.id, name: 'work' },
+                });
+                expect(created).not.toBeNull();
+            });
+
+            it('should error on duplicate tag name', async () => {
+                await Tag.create({ user_id: user.id, name: 'dup' });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'create_tag',
+                    { name: 'dup' }
+                );
+
+                const { isError } = getToolContent(response);
+                expect(isError).toBe(true);
+            });
+        });
+
+        describe('update_tag', () => {
+            it('should update a tag name', async () => {
+                const tag = await Tag.create({
+                    user_id: user.id,
+                    name: 'old-name',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'update_tag',
+                    { uid: tag.uid, name: 'new-name' }
+                );
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.tag.name).toBe('new-name');
+
+                await tag.reload();
+                expect(tag.name).toBe('new-name');
+            });
+        });
+
+        describe('delete_tag', () => {
+            it('should delete a tag', async () => {
+                const tag = await Tag.create({
+                    user_id: user.id,
+                    name: 'to-delete',
+                });
+
+                const response = await callMcpTool(
+                    apiTokenValue,
+                    'delete_tag',
+                    { uid: tag.uid }
+                );
+
+                expect(response.status).toBe(200);
+                const deleted = await Tag.findByPk(tag.id);
+                expect(deleted).toBeNull();
             });
         });
 
@@ -734,6 +3668,26 @@ describe('MCP Tools Integration', () => {
                         (t) => t.name === 'Searchable Task'
                     )
                 ).toBe(true);
+            });
+
+            it('should return the real name of a recurring task', async () => {
+                await Task.create({
+                    user_id: user.id,
+                    name: 'Searchable Chore',
+                    status: 0,
+                    recurrence_type: 'daily',
+                });
+
+                const response = await callMcpTool(apiTokenValue, 'search', {
+                    query: 'Searchable',
+                    type: 'task',
+                });
+
+                expect(response.status).toBe(200);
+                const { content } = getToolContent(response);
+                expect(content.results.tasks.map((t) => t.name)).toContain(
+                    'Searchable Chore'
+                );
             });
 
             it('should search projects', async () => {
@@ -820,7 +3774,7 @@ describe('MCP Tools Integration', () => {
             expect(jsonRpc.result.tools.length).toBeGreaterThan(0);
 
             const toolNames = jsonRpc.result.tools.map((t) => t.name);
-            // Should have all 16 tools
+            // Should have all tools
             expect(toolNames).toContain('list_tasks');
             expect(toolNames).toContain('get_task');
             expect(toolNames).toContain('create_task');
@@ -828,12 +3782,27 @@ describe('MCP Tools Integration', () => {
             expect(toolNames).toContain('complete_task');
             expect(toolNames).toContain('delete_task');
             expect(toolNames).toContain('add_subtask');
+            expect(toolNames).toContain('create_task_relation');
+            expect(toolNames).toContain('list_task_relations');
+            expect(toolNames).toContain('remove_task_relation');
             expect(toolNames).toContain('get_task_metrics');
+            expect(toolNames).toContain('list_task_comments');
+            expect(toolNames).toContain('add_task_comment');
             expect(toolNames).toContain('list_projects');
+            expect(toolNames).toContain('get_project');
             expect(toolNames).toContain('create_project');
             expect(toolNames).toContain('update_project');
             expect(toolNames).toContain('list_inbox');
             expect(toolNames).toContain('add_to_inbox');
+            expect(toolNames).toContain('get_inbox_item');
+            expect(toolNames).toContain('update_inbox_item');
+            expect(toolNames).toContain('process_inbox_item');
+            expect(toolNames).toContain('delete_inbox_item');
+            expect(toolNames).toContain('list_notes');
+            expect(toolNames).toContain('get_note');
+            expect(toolNames).toContain('create_note');
+            expect(toolNames).toContain('update_note');
+            expect(toolNames).toContain('delete_note');
             expect(toolNames).toContain('list_areas');
             expect(toolNames).toContain('list_tags');
             expect(toolNames).toContain('search');

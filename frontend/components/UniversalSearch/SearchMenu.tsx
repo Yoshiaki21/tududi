@@ -49,6 +49,15 @@ const priorityOptions = [
     { value: 'low', labelKey: 'priority.low' },
 ];
 
+const statusOptions = [
+    { value: 'not_started', labelKey: 'task.status.notStarted' },
+    { value: 'planned', labelKey: 'task.status.planned' },
+    { value: 'in_progress', labelKey: 'task.status.inProgress' },
+    { value: 'waiting', labelKey: 'task.status.waiting' },
+    { value: 'done', labelKey: 'task.status.done' },
+    { value: 'cancelled', labelKey: 'task.status.cancelled' },
+];
+
 const dueOptions = [
     { value: 'today', labelKey: 'dateIndicators.today' },
     { value: 'tomorrow', labelKey: 'dateIndicators.tomorrow' },
@@ -65,15 +74,35 @@ const deferOptions = [
 
 const extrasOptions = [
     { value: 'recurring', labelKey: 'search.extrasFilter.isRecurring' },
+    { value: 'not_recurring', labelKey: 'search.extrasFilter.isNotRecurring' },
     { value: 'overdue', labelKey: 'search.extrasFilter.isOverdue' },
     { value: 'has_content', labelKey: 'search.extrasFilter.hasContent' },
+    { value: 'no_content', labelKey: 'search.extrasFilter.hasNoContent' },
     { value: 'deferred', labelKey: 'search.extrasFilter.isDeferred' },
+    { value: 'not_deferred', labelKey: 'search.extrasFilter.isNotDeferred' },
     { value: 'has_tags', labelKey: 'search.extrasFilter.hasTags' },
+    { value: 'no_tags', labelKey: 'search.extrasFilter.hasNoTags' },
+    { value: 'no_due_date', labelKey: 'search.extrasFilter.hasNoDueDate' },
     {
         value: 'assigned_to_project',
         labelKey: 'search.extrasFilter.isAssignedToProject',
     },
+    { value: 'no_project', labelKey: 'search.extrasFilter.hasNoProject' },
 ];
+
+// Each extra and its opposite can't both apply, so picking one drops the other
+const oppositeExtras: Record<string, string> = {
+    recurring: 'not_recurring',
+    not_recurring: 'recurring',
+    has_content: 'no_content',
+    no_content: 'has_content',
+    deferred: 'not_deferred',
+    not_deferred: 'deferred',
+    has_tags: 'no_tags',
+    no_tags: 'has_tags',
+    assigned_to_project: 'no_project',
+    no_project: 'assigned_to_project',
+};
 
 const SearchMenu: React.FC<SearchMenuProps> = ({
     searchQuery,
@@ -86,6 +115,7 @@ const SearchMenu: React.FC<SearchMenuProps> = ({
     const [selectedPriority, setSelectedPriority] = useState<string | null>(
         null
     );
+    const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
     const [selectedDue, setSelectedDue] = useState<string | null>(null);
     const [selectedDefer, setSelectedDefer] = useState<string | null>(null);
     const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -121,6 +151,10 @@ const SearchMenu: React.FC<SearchMenuProps> = ({
         setSelectedPriority(selectedPriority === priority ? null : priority);
     };
 
+    const handleStatusToggle = (status: string) => {
+        setSelectedStatus(selectedStatus === status ? null : status);
+    };
+
     const handleDueToggle = (due: string) => {
         setSelectedDue(selectedDue === due ? null : due);
     };
@@ -135,14 +169,20 @@ const SearchMenu: React.FC<SearchMenuProps> = ({
                 ? prev.filter((t) => t !== tagName)
                 : [...prev, tagName]
         );
+        // A tag and "no tags" contradict each other, so picking a tag drops it
+        setSelectedExtras((prev) => prev.filter((e) => e !== 'no_tags'));
     };
 
     const handleExtrasToggle = (extra: string) => {
+        const isSelecting = !selectedExtras.includes(extra);
         setSelectedExtras((prev) =>
             prev.includes(extra)
                 ? prev.filter((e) => e !== extra)
-                : [...prev, extra]
+                : [...prev.filter((e) => e !== oppositeExtras[extra]), extra]
         );
+        if (isSelecting && extra === 'no_tags') {
+            setSelectedTags([]);
+        }
     };
 
     const handleSaveView = async () => {
@@ -167,6 +207,7 @@ const SearchMenu: React.FC<SearchMenuProps> = ({
                     search_query: searchQuery || null,
                     filters: selectedFilters,
                     priority: selectedPriority || null,
+                    task_status: selectedStatus || null,
                     due: selectedDue || null,
                     defer: selectedDefer || null,
                     tags: selectedTags.length > 0 ? selectedTags : null,
@@ -284,6 +325,27 @@ const SearchMenu: React.FC<SearchMenuProps> = ({
             );
             parts.push(
                 <span key="priority-suffix">{' ' + t('search.priority')}</span>
+            );
+        }
+
+        // Add status filter
+        if (selectedStatus) {
+            const statusOption = statusOptions.find(
+                (opt) => opt.value === selectedStatus
+            );
+            const statusLabel = statusOption
+                ? t(statusOption.labelKey)
+                : selectedStatus;
+            parts.push(
+                <span key="status-label">{t('search.withStatus') + ' '}</span>
+            );
+            parts.push(
+                <span
+                    key="status"
+                    style={{ fontWeight: 800, fontStyle: 'normal' }}
+                >
+                    {statusLabel}
+                </span>
             );
         }
 
@@ -414,6 +476,7 @@ const SearchMenu: React.FC<SearchMenuProps> = ({
         selectedFilters.length > 0 ||
         searchQuery.trim() ||
         selectedPriority ||
+        selectedStatus ||
         selectedDue ||
         selectedDefer ||
         selectedTags.length > 0 ||
@@ -517,6 +580,27 @@ const SearchMenu: React.FC<SearchMenuProps> = ({
                                                 handlePriorityToggle(
                                                     option.value
                                                 )
+                                            }
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Status Filters */}
+                            <div>
+                                <div className="text-xs text-gray-500 dark:text-gray-400 mb-1.5">
+                                    {t('search.statusFilter')}
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    {statusOptions.map((option) => (
+                                        <FilterBadge
+                                            key={option.value}
+                                            name={t(option.labelKey)}
+                                            isSelected={
+                                                selectedStatus === option.value
+                                            }
+                                            onToggle={() =>
+                                                handleStatusToggle(option.value)
                                             }
                                         />
                                     ))}
@@ -704,6 +788,7 @@ const SearchMenu: React.FC<SearchMenuProps> = ({
                 searchQuery={searchQuery}
                 selectedFilters={selectedFilters}
                 selectedPriority={selectedPriority}
+                selectedStatus={selectedStatus}
                 selectedDue={selectedDue}
                 selectedDefer={selectedDefer}
                 selectedTags={selectedTags}

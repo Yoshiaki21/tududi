@@ -1,9 +1,10 @@
-/* Light mode syntax highlighting - only for code blocks */
+/* Code highlighting: a neutral grayscale palette. Structure comes from
+   weight, style and shade rather than hue. */
 .markdown-content pre code,
 .markdown-content pre code.hljs,
 .hljs {
-  background: #f6f8fa !important;
-  color: #24292e !important;
+  background: #f6f7f8 !important;
+  color: #1f2328 !important;
   display: block;
   overflow-x: auto;
   padding: 1.25rem !important;
@@ -14,150 +15,75 @@
 
 .hljs-comment,
 .hljs-quote {
-  color: #6a737d !important;
+  color: #8c959f !important;
   font-style: italic;
 }
 
 .hljs-keyword,
 .hljs-selector-tag,
-.hljs-addition {
-  color: #d73a49 !important;
-}
-
-.hljs-number,
-.hljs-string,
-.hljs-meta .hljs-string,
-.hljs-literal,
-.hljs-doctag,
-.hljs-regexp {
-  color: #032f62 !important;
-}
-
+.hljs-built_in,
+.hljs-type,
 .hljs-title,
 .hljs-section,
 .hljs-name,
-.hljs-selector-id,
-.hljs-selector-class {
-  color: #6f42c1 !important;
+.hljs-strong {
+  font-weight: 600;
 }
 
-.hljs-attribute,
-.hljs-attr,
-.hljs-variable,
-.hljs-template-variable,
-.hljs-class .hljs-title,
-.hljs-type {
-  color: #e36209 !important;
-}
-
+.hljs-string,
+.hljs-regexp,
+.hljs-number,
+.hljs-literal,
 .hljs-symbol,
 .hljs-bullet,
-.hljs-subst,
 .hljs-meta,
-.hljs-meta .hljs-keyword,
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable,
 .hljs-selector-attr,
 .hljs-selector-pseudo,
 .hljs-link {
-  color: #005cc5 !important;
-}
-
-.hljs-built_in {
-  color: #e36209;
+  color: #57606a !important;
 }
 
 .hljs-deletion {
-  color: #b31d28;
-  background-color: #ffeef0;
-}
-
-.hljs-formula {
-  background-color: #eee;
+  color: #8c959f;
+  text-decoration: line-through;
 }
 
 .hljs-emphasis {
   font-style: italic;
 }
 
-.hljs-strong {
-  font-weight: bold;
-}
-
-/* Dark mode syntax highlighting */
 .dark .hljs,
 .dark .markdown-content pre code,
 .dark .markdown-content pre code.hljs {
-  background: #0d1117 !important;
-  color: #e6edf3 !important;
+  background: #16181d !important;
+  color: #e6e8eb !important;
 }
 
 .dark .hljs-comment,
-.dark .hljs-quote {
-  color: #8b949e !important;
-  font-style: italic;
+.dark .hljs-quote,
+.dark .hljs-deletion {
+  color: #7d8590 !important;
 }
 
-.dark .hljs-keyword,
-.dark .hljs-selector-tag,
-.dark .hljs-addition {
-  color: #ff7b72 !important;
-}
-
-.dark .hljs-number,
 .dark .hljs-string,
-.dark .hljs-meta .hljs-string,
+.dark .hljs-regexp,
+.dark .hljs-number,
 .dark .hljs-literal,
-.dark .hljs-doctag,
-.dark .hljs-regexp {
-  color: #a5d6ff !important;
-}
-
-.dark .hljs-title,
-.dark .hljs-section,
-.dark .hljs-name,
-.dark .hljs-selector-id,
-.dark .hljs-selector-class {
-  color: #d2a8ff;
-}
-
-.dark .hljs-attribute,
-.dark .hljs-attr,
-.dark .hljs-variable,
-.dark .hljs-template-variable,
-.dark .hljs-class .hljs-title,
-.dark .hljs-type {
-  color: #ffa657;
-}
-
 .dark .hljs-symbol,
 .dark .hljs-bullet,
-.dark .hljs-subst,
 .dark .hljs-meta,
-.dark .hljs-meta .hljs-keyword,
+.dark .hljs-attr,
+.dark .hljs-attribute,
+.dark .hljs-variable,
+.dark .hljs-template-variable,
 .dark .hljs-selector-attr,
 .dark .hljs-selector-pseudo,
 .dark .hljs-link {
-  color: #79c0ff;
-}
-
-.dark .hljs-built_in {
-  color: #ffa657;
-}
-
-.dark .hljs-deletion {
-  color: #ffa198;
-  background-color: #490202;
-}
-
-.dark .hljs-formula {
-  background-color: #21262d;
-}
-
-.dark .hljs-emphasis {
-  font-style: italic;
-}
-
-.dark .hljs-strong {
-  font-weight: bold;
+  color: #adb5bd !important;
 }
 
 /* Custom markdown styles */
@@ -338,9 +264,81 @@
   .markdown-content table {
     font-size: 0.875rem;
   }
-  
+
   .markdown-content th,
   .markdown-content td {
     padding: 0.5rem;
   }
+}
+
+/* =====================================================
+   CodeMirror editor integration
+   ===================================================== */
+
+/* Transparent background so parent container controls bg color */
+.cm-editor-wrapper .cm-editor {
+  background-color: transparent !important;
+}
+
+/* Remove default CodeMirror focus outline (we handle focus styling via parent) */
+.cm-editor-wrapper .cm-editor.cm-focused {
+  outline: none !important;
+}
+
+/* Ensure the editor grows with content, never clips */
+.cm-editor-wrapper .cm-scroller {
+  overflow: visible !important;
+}
+
+/* Text color inherits from parent in light mode */
+.cm-editor-wrapper .cm-content {
+  color: inherit;
+}
+
+/* Dark mode: light text unless the note sets its own color */
+.dark .cm-editor-wrapper .cm-content {
+  color: #e5e7eb; /* gray-200 */
+}
+
+/* Selection highlight */
+.cm-editor-wrapper .cm-selectionBackground {
+  background-color: rgba(59, 130, 246, 0.2) !important;
+}
+.cm-editor-wrapper .cm-focused .cm-selectionBackground {
+  background-color: rgba(59, 130, 246, 0.3) !important;
+}
+
+/* Cursor */
+.cm-editor-wrapper .cm-cursor,
+.cm-editor-wrapper .cm-dropCursor {
+  border-left-color: #6b7280;
+}
+.dark .cm-editor-wrapper .cm-cursor,
+.dark .cm-editor-wrapper .cm-dropCursor {
+  border-left-color: #9ca3af;
+}
+
+/* Heading sizes in syntax-highlighted markdown editing */
+.cm-editor-wrapper .cm-line .tok-heading1 {
+  font-size: 1.5em;
+  font-weight: 700;
+}
+.cm-editor-wrapper .cm-line .tok-heading2 {
+  font-size: 1.25em;
+  font-weight: 600;
+}
+.cm-editor-wrapper .cm-line .tok-heading3 {
+  font-size: 1.1em;
+  font-weight: 600;
+}
+
+/* =====================================================
+   Callout blocks (Obsidian-style > [!TYPE])
+   ===================================================== */
+
+.callout {
+  border-radius: 0.5rem;
+  border-left-width: 4px;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
 }

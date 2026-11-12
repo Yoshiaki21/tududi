@@ -9,12 +9,26 @@ import {
     CheckCircleIcon,
 } from '@heroicons/react/24/outline';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { getApiPath } from '../../config/paths';
 import { fetchWithCsrf } from '../../utils/csrfService';
+import {
+    InvitationId,
+    acceptInvitation,
+    declineInvitation,
+} from '../../utils/sharesService';
+import { useStore } from '../../store/useStore';
+import { openTaskPanel } from '../../store/taskPanelStore';
+
+// Direct share invitations carry a numeric id; ones that came through a group
+// carry a string such as "g12".
+const isInvitationId = (value: unknown): value is InvitationId =>
+    typeof value === 'number' || (typeof value === 'string' && value !== '');
 
 interface Notification {
     id: number;
+    uid: string;
+    type?: string;
     title: string;
     message: string;
     level: 'info' | 'warning' | 'error' | 'success';
@@ -24,6 +38,9 @@ interface Notification {
     data?: {
         taskUid?: string;
         projectUid?: string;
+        invitationId?: InvitationId;
+        resourceType?: string;
+        resourceUid?: string;
         [key: string]: any;
     };
 }
@@ -37,7 +54,7 @@ const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
 }) => {
     const { t } = useTranslation();
     const navigate = useNavigate();
-    const location = useLocation();
+    const loadProjects = useStore((state) => state.projectsStore.loadProjects);
     const [isOpen, setIsOpen] = useState(false);
     const [unreadCount, setUnreadCount] = useState(0);
     const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -97,10 +114,10 @@ const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
         setIsOpen(!isOpen);
     };
 
-    const handleMarkAsRead = async (id: number) => {
+    const handleMarkAsRead = async (uid: string) => {
         try {
             const response = await fetchWithCsrf(
-                getApiPath(`notifications/${id}/read`),
+                getApiPath(`notifications/${uid}/read`),
                 {
                     method: 'POST',
                     credentials: 'include',
@@ -114,7 +131,7 @@ const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
                 if (updatedNotification) {
                     setNotifications((prev) =>
                         prev.map((n) =>
-                            n.id === id
+                            n.uid === uid
                                 ? {
                                       ...n,
                                       read_at: updatedNotification.read_at,
@@ -152,18 +169,74 @@ const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
         }
     };
 
-    const handleDelete = async (id: number) => {
+    const handleDelete = async (uid: string) => {
         try {
-            const response = await fetchWithCsrf(getApiPath(`notifications/${id}`), {
-                method: 'DELETE',
-                credentials: 'include',
-            });
+            const response = await fetchWithCsrf(
+                getApiPath(`notifications/${uid}`),
+                {
+                    method: 'DELETE',
+                    credentials: 'include',
+                }
+            );
             if (response.ok) {
-                setNotifications((prev) => prev.filter((n) => n.id !== id));
+                setNotifications((prev) => prev.filter((n) => n.uid !== uid));
                 fetchUnreadCount();
             }
         } catch (error) {
             console.error('Error deleting notification:', error);
+        }
+    };
+
+    const [answeredInvitations, setAnsweredInvitations] = useState<
+        Record<string, 'accepted' | 'declined'>
+    >({});
+
+    const isPendingInvitation = (notification: Notification) =>
+        notification.type === 'share_invitation' &&
+        isInvitationId(notification.data?.invitationId) &&
+        !answeredInvitations[notification.uid];
+
+    const handleInvitation = async (
+        notification: Notification,
+        answer: 'accept' | 'decline'
+    ) => {
+        const invitationId = notification.data?.invitationId;
+        if (!isInvitationId(invitationId)) return;
+        try {
+            if (answer === 'accept') {
+                await acceptInvitation(invitationId);
+            } else {
+                await declineInvitation(invitationId);
+            }
+            setAnsweredInvitations((prev) => ({
+                ...prev,
+                [notification.uid]:
+                    answer === 'accept' ? 'accepted' : 'declined',
+            }));
+            // May have gained (or, on decline of the last one, not) a
+            // collaborator; let the app re-read has_collaborators.
+            window.dispatchEvent(new CustomEvent('collaboratorsChanged'));
+            if (!notification.read_at) {
+                handleMarkAsRead(notification.uid);
+            }
+            if (
+                answer === 'accept' &&
+                notification.data?.resourceType &&
+                notification.data?.resourceUid
+            ) {
+                const { resourceType, resourceUid } = notification.data;
+                await loadProjects();
+                setIsOpen(false);
+                if (resourceType === 'project') {
+                    navigate(`/project/${resourceUid}`);
+                } else if (resourceType === 'area' || resourceType === 'goal') {
+                    // The area/goal container is not listed for collaborators;
+                    // its shared projects show up on the Projects page.
+                    navigate('/projects');
+                }
+            }
+        } catch (error) {
+            console.error('Error answering share invitation:', error);
         }
     };
 
@@ -215,7 +288,7 @@ const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
     const handleNotificationClick = (notification: Notification) => {
         if (notification.data?.taskUid) {
             setIsOpen(false);
-            navigate(`/task/${notification.data.taskUid}`, { state: { from: location.pathname + location.search } });
+            openTaskPanel(notification.data.taskUid);
         } else if (notification.data?.projectUid) {
             setIsOpen(false);
             navigate(`/project/${notification.data.projectUid}`);
@@ -246,7 +319,7 @@ const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
             <button
                 onClick={handleToggle}
                 className="relative flex items-center focus:outline-none"
-                aria-label="Notifications"
+                aria-label={t('profile.notifications')}
             >
                 <BellIcon className="h-6 w-6 text-gray-700 dark:text-gray-300" />
                 {unreadCount > 0 && (
@@ -303,7 +376,7 @@ const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
                         ) : (
                             notifications.map((notification) => (
                                 <div
-                                    key={notification.id}
+                                    key={notification.uid}
                                     className={`p-4 border-b ${
                                         isDarkMode
                                             ? 'border-gray-700'
@@ -350,6 +423,63 @@ const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
                                                             notification.created_at
                                                         )}
                                                     </p>
+                                                    {isPendingInvitation(
+                                                        notification
+                                                    ) && (
+                                                        <div className="flex items-center space-x-2 mt-2">
+                                                            <button
+                                                                onClick={(
+                                                                    e
+                                                                ) => {
+                                                                    e.stopPropagation();
+                                                                    handleInvitation(
+                                                                        notification,
+                                                                        'accept'
+                                                                    );
+                                                                }}
+                                                                className="px-2 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700"
+                                                            >
+                                                                {t(
+                                                                    'shares.acceptInvitation',
+                                                                    'Accept'
+                                                                )}
+                                                            </button>
+                                                            <button
+                                                                onClick={(
+                                                                    e
+                                                                ) => {
+                                                                    e.stopPropagation();
+                                                                    handleInvitation(
+                                                                        notification,
+                                                                        'decline'
+                                                                    );
+                                                                }}
+                                                                className="px-2 py-1 text-xs rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600"
+                                                            >
+                                                                {t(
+                                                                    'shares.declineInvitation',
+                                                                    'Decline'
+                                                                )}
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                    {answeredInvitations[
+                                                        notification.uid
+                                                    ] && (
+                                                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                                                            {answeredInvitations[
+                                                                notification.uid
+                                                            ] === 'accepted'
+                                                                ? t(
+                                                                      'shares.invitationAccepted',
+                                                                      'Invitation accepted'
+                                                                  )
+                                                                : t(
+                                                                      'shares.invitationDeclined',
+                                                                      'Invitation declined'
+                                                                  )}
+                                                        </p>
+                                                    )}
                                                 </div>
                                                 <div className="flex items-center space-x-1 ml-2">
                                                     {!notification.read_at && (
@@ -357,7 +487,7 @@ const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 handleMarkAsRead(
-                                                                    notification.id
+                                                                    notification.uid
                                                                 );
                                                             }}
                                                             className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded"
@@ -373,7 +503,7 @@ const NotificationsDropdown: React.FC<NotificationsDropdownProps> = ({
                                                         onClick={(e) => {
                                                             e.stopPropagation();
                                                             handleDelete(
-                                                                notification.id
+                                                                notification.uid
                                                             );
                                                         }}
                                                         className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded"

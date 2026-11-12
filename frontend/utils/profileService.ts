@@ -7,16 +7,41 @@ interface Profile {
     appearance: 'light' | 'dark';
     language: string;
     timezone: string;
-    first_day_of_week: number; // 0 = Sunday, 1 = Monday, etc.
+    first_day_of_week: number;
     avatar_image: string | null;
     telegram_bot_token: string | null;
     telegram_chat_id: string | null;
     task_summary_enabled: boolean;
     task_summary_frequency: string;
-    task_intelligence_enabled: boolean;
-    auto_suggest_next_actions_enabled: boolean;
-    productivity_assistant_enabled: boolean;
-    next_task_suggestion_enabled: boolean;
+    // 人工単価の既定値（独自機能）
+    default_unit_price?: number | null;
+    features?: {
+        pomodoro_enabled?: boolean;
+        eisenhower_enabled?: boolean;
+    };
+    ui_settings?: {
+        project?: {
+            details?: {
+                showMetrics?: boolean;
+            };
+            list?: {
+                showSomeday?: boolean;
+                showCompleted?: boolean;
+            };
+        };
+        appearance?: Record<string, unknown>;
+        inbox?: {
+            recentlyCapturedExpanded?: boolean;
+        };
+        focus?: {
+            area_uid?: string | null;
+            project_uid?: string | null;
+            tags?: string[];
+        } | null;
+        everyone?: {
+            column_order?: string[];
+        };
+    };
 }
 
 interface SchedulerStatus {
@@ -34,15 +59,45 @@ interface TelegramBotInfo {
     chat_url: string;
 }
 
+let profileCache: Profile | null = null;
+let profileCacheExpiry = 0;
+let profileInflightRequest: Promise<Profile> | null = null;
+const PROFILE_CACHE_TTL_MS = 60_000;
+
+export const invalidateProfileCache = (): void => {
+    profileCache = null;
+    profileCacheExpiry = 0;
+    profileInflightRequest = null;
+};
+
 export const fetchProfile = async (): Promise<Profile> => {
-    const response = await fetch(getApiPath('profile'), {
-        credentials: 'include',
-        headers: {
-            Accept: 'application/json',
-        },
-    });
-    await handleAuthResponse(response, 'Failed to fetch profile data.');
-    return await response.json();
+    if (profileCache && Date.now() < profileCacheExpiry) {
+        return profileCache;
+    }
+
+    if (profileInflightRequest) {
+        return profileInflightRequest;
+    }
+
+    profileInflightRequest = (async () => {
+        try {
+            const response = await fetch(getApiPath('profile'), {
+                credentials: 'include',
+                headers: {
+                    Accept: 'application/json',
+                },
+            });
+            await handleAuthResponse(response, 'Failed to fetch profile data.');
+            const profile = await response.json();
+            profileCache = profile;
+            profileCacheExpiry = Date.now() + PROFILE_CACHE_TTL_MS;
+            return profile;
+        } finally {
+            profileInflightRequest = null;
+        }
+    })();
+
+    return profileInflightRequest;
 };
 
 export const updateProfile = async (
@@ -57,11 +112,35 @@ export const updateProfile = async (
     await handleAuthResponse(response, 'Failed to update profile.');
     const updatedProfile = await response.json();
 
-    if ('task_intelligence_enabled' in profileData) {
-        localStorage.removeItem('taskIntelligenceEnabled');
-    }
+    profileCache = updatedProfile;
+    profileCacheExpiry = Date.now() + PROFILE_CACHE_TTL_MS;
 
     return updatedProfile;
+};
+
+export const updateUiSettings = async (
+    settings: NonNullable<Profile['ui_settings']>
+): Promise<{ success: boolean; ui_settings: Profile['ui_settings'] }> => {
+    const response = await fetch(getApiPath('profile/ui-settings'), {
+        method: 'PUT',
+        credentials: 'include',
+        headers: await getPostHeadersWithCsrf(),
+        body: JSON.stringify(settings),
+    });
+    await handleAuthResponse(response, 'Failed to update UI settings.');
+    const result = await response.json();
+    invalidateProfileCache();
+    return result;
+};
+
+export const getInboxRecentlyCapturedExpanded = async (): Promise<boolean> => {
+    try {
+        const profile = await fetchProfile();
+        return profile.ui_settings?.inbox?.recentlyCapturedExpanded ?? false;
+    } catch (error) {
+        console.error('Error fetching inbox recently captured setting:', error);
+        return false;
+    }
 };
 
 export const fetchSchedulerStatus = async (): Promise<SchedulerStatus> => {
@@ -175,57 +254,6 @@ export const updateTaskSummaryFrequency = async (
 
 export type { Profile };
 
-export const getTaskIntelligenceEnabled = async (): Promise<boolean> => {
-    try {
-        const profile = await fetchProfile();
-        return profile.task_intelligence_enabled !== undefined
-            ? profile.task_intelligence_enabled
-            : true;
-    } catch (error) {
-        console.error('Error fetching task intelligence setting:', error);
-        return true; // Default to enabled if we can't fetch the setting
-    }
-};
-
-export const getAutoSuggestNextActionsEnabled = async (): Promise<boolean> => {
-    try {
-        const profile = await fetchProfile();
-        return profile.auto_suggest_next_actions_enabled !== undefined
-            ? profile.auto_suggest_next_actions_enabled
-            : true;
-    } catch (error) {
-        console.error(
-            'Error fetching auto-suggest next actions setting:',
-            error
-        );
-        return true; // Default to enabled if we can't fetch the setting
-    }
-};
-
-export const getProductivityAssistantEnabled = async (): Promise<boolean> => {
-    try {
-        const profile = await fetchProfile();
-        return profile.productivity_assistant_enabled !== undefined
-            ? profile.productivity_assistant_enabled
-            : true;
-    } catch (error) {
-        console.error('Error fetching productivity assistant setting:', error);
-        return true; // Default to enabled if we can't fetch the setting
-    }
-};
-
-export const getNextTaskSuggestionEnabled = async (): Promise<boolean> => {
-    try {
-        const profile = await fetchProfile();
-        return profile.next_task_suggestion_enabled !== undefined
-            ? profile.next_task_suggestion_enabled
-            : true;
-    } catch (error) {
-        console.error('Error fetching next task suggestion setting:', error);
-        return true; // Default to enabled if we can't fetch the setting
-    }
-};
-
 /**
  * Gets the first day of the week (0 = Sunday, 1 = Monday, etc.)
  * Falls back to locale-based defaults if not set in profile
@@ -304,4 +332,27 @@ export const getLocaleFirstDayOfWeek = (locale: string): number => {
     } else {
         return 0; // Sunday (default for US, CA, JP, etc.)
     }
+};
+
+export const deleteAccount = async (payload: {
+    password?: string;
+    confirm_email?: string;
+}): Promise<void> => {
+    const response = await fetch(getApiPath('profile'), {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: await getPostHeadersWithCsrf(),
+        body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+        let message = 'Failed to delete account';
+        try {
+            const body = await response.json();
+            if (body?.error) message = body.error;
+        } catch {
+            // ignore non-JSON error bodies
+        }
+        throw new Error(message);
+    }
+    invalidateProfileCache();
 };
