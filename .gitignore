@@ -61,3 +61,6 @@ tmp/
 *.bak
 !backend/tests/fixtures/legacy/*.sqlite3
 backend/emails/preview/
+
+# Local image build script (yoshiaki21)
+/build.sh
