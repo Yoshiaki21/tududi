@@ -37,6 +37,11 @@
    - 念のため、入れ替え前に `tududi_db` をコピーしておく
 5. 本番で、管理者アカウントからバックアップを1つエクスポートし、段階2の試験データにする（本番移行用のエクスポートは段階3で取り直す）
 
+**進捗 (2026-11-24)**
+- 1〜3 済み: `merge-upstream-v1.15.1` に `d5a869a9` としてマージ。コンフリクトは出ず自動マージ。`// yoshiaki21:` の 7 か所はすべて残っている
+- 検証（Node 24）: lint エラー 0、tsc OK、backend 全スイート通過、frontend は既知の 3 件（MermaidDiagram / roleLabels / MarkdownRenderer.publicLinks）のみ失敗。試験イメージを空の DB で起動し、独自マイグレーション 9 件の適用、`Server running`、`/api/health` 200、バージョン `v1.15.1` を確認
+- 残り: 4（本番反映）と 5（エクスポート）
+
 ### 段階2: v2.1.3 を取り込む
 
 ブランチ `merge-upstream-v2.1.3` を作り、`upstream/v2.1.3` をマージする。

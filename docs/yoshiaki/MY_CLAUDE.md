@@ -44,9 +44,12 @@
 | 25 | バックアップのエクスポート/インポートに独自データを含める | ✅完了 (2026-11-12) |
 | 26 | Node 24 化 ＋ Element 版 matrix-bot-sdk へ移行 | ✅完了 (2026-11-24) |
 | 27 | Matrix リカバリーキー欄とクロス署名 | ✅完了 (2026-11-24) |
+| 28 | 本家 v2 への移行（段階1: v1.15.1 取り込み） | 🔄本番反映待ち (2026-11-24, `merge-upstream-v1.15.1`) |
 
 ## 本家との同期状況
-- 取り込み済み: **v1.14.0** (`0da352fb`)。本家は 2026-11 時点で v2.1.0
+- 取り込み済み: **v1.15.1** (`9905c3a6`, 最後の 1.x)。本家は 2026-11-24 時点で v2.1.3。v2 への移行手順は `tududi_tasks.md` のタスク28
+- 本家のタグはローカルに `upstream/v1.15.1`, `upstream/v2.*` として取り込んである（remote は未登録。`git fetch https://github.com/chrisvel/tududi.git ...` で取得）
+- ローカルには Node が無い。検証は `podman run --rm -v "$PWD":/app:Z -v /dev/null:/app/.npmrc:ro -w /app docker.io/library/node:24-trixie-slim ...` で行う（リポジトリの `.npmrc` に個人用 `prefix` があり、そのままだと npm が止まるため空ファイルで隠す）
 - **本家 v2.0.0 で SQLite 廃止・PostgreSQL 専用** (e77dc529)。v2 へ進む前に別タスクで以下が必要:
   - データ移行: 本家の JSON バックアップは独自カラム（`work_hours`, `unit_price`, `default_unit_price`, `matrix_*`）を含まない → エクスポート/インポートの拡張か独自移行スクリプトが必要
   - Matrix crypto ストアの保存先が `DB_FILE` のディレクトリ依存（`backend/modules/matrix/matrixClient.js`）→ v2 では `DB_FILE` が無くなるので専用ボリューム/環境変数に変更
