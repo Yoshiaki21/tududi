@@ -578,7 +578,7 @@
 
 ## タスク26: Node 24 化 ＋ Element 版 matrix-bot-sdk へ移行
 
-- **日付**: 2026-11-12（実機の Matrix 確認待ち）
+- **日付**: 2026-11-12（2026-11-24 実機確認済み）
 - **背景**: 本家 matrix-bot-sdk 0.8.0 は crypto-nodejs 0.4.0 固定で CVE-2026-45056 が残り、クロス署名も未対応。PR #389 も Node 24 必須かつ crypto 0.5.1 止まりのため、Element 版を採用
 - **変更**:
   - `Dockerfile`: `node:22-trixie-slim` → `node:24-trixie-slim`（builder / production）
@@ -587,10 +587,11 @@
   - `backend/modules/matrix/{matrixClient,matrixPoller,controller}.js`: require 先を変更
 - **注意点**: SDK の `RustSdkCryptoStoreType` は const enum の型だけの再エクスポートで実行時 undefined。undefined を渡すと終了時に Rust panic が起きるため、`StoreType` は crypto-nodejs から直接 require（そのために直接依存にした）
 - **検証**: Node 24 の builder で lint エラー 0、tsc OK、backend 307 スイート全通過、frontend は本家と同じ 3 件のみ失敗。試験コンテナが Node 24.22.3 で起動（Matrix はネットワーク都合で接続不可）
+- **実機確認 (2026-11-24)**: 本番の Matrix でテストサマリーの送信、pill メンションの受信 → Inbox、暗号化ルームでの E2EE 復号がいずれも正常
 
 ## タスク27: Matrix リカバリーキー欄とクロス署名
 
-- **日付**: 2026-11-12（実機の Matrix 確認待ち）
+- **日付**: 2026-11-12（2026-11-24 実機確認済み）
 - **目的**: Element の「所有者が検証していないデバイスで暗号化されています」警告を解消する（bot のデバイスを bot 自身のクロス署名鍵で署名する）
 - **バックエンド**:
   - マイグレーション `yoshiaki21-20261112000001-add-matrix-recovery-key.js`（`users.matrix_recovery_key` TEXT）、モデル追加
@@ -600,4 +601,5 @@
   - バックアップに `matrix_recovery_key`（暗号化のまま）を追加
 - **フロントエンド**: `MatrixCrossSigningSection.tsx`（Matrix タブ内）、`utils/matrixCrossSigningService.ts`
 - **テスト**: `tests/unit/modules/matrix/crossSigning.test.js`（11件）、`tests/integration/matrix-cross-signing.test.js`（6件）、`MatrixCrossSigningSection.test.tsx`（6件）、backup-roundtrip にリカバリーキー。Node 24 で lint エラー 0・tsc OK・backend 309 スイート全通過・frontend は本家と同じ 3 件のみ失敗
+- **実機確認 (2026-11-24)**: リカバリーキー保存で検証済みになり、Element の「所有者が検証していないデバイス」警告が消えた
 
