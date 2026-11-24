@@ -33,7 +33,7 @@ const {
     syncProjectSharesFromContainer,
     dropProjectSharesFromContainer,
 } = require('../../services/containerShareSync');
-const { Project, Area } = require('../../models');
+const { Project, Area, Goal } = require('../../models');
 
 const PRIORITY_VALUES = { low: 0, medium: 1, high: 2 };
 
@@ -89,6 +89,28 @@ async function prepareVisibilityChange(project, userId, visibility) {
         await dropProjectSharesFromContainer(project.id);
     }
     return visibility;
+}
+
+// A project can only be filed under an area or goal the caller owns or can
+// edit, the same rule as tasks and goals. Anything else, including a missing
+// row, gets the same error so ids cannot be probed. Returns undefined when
+// nothing was passed and null to unlink.
+async function resolveContainerId(userId, type, value) {
+    if (value === undefined) return undefined;
+    if (value === null || value === '') return null;
+    const raw = String(value).trim();
+    const where = /^\d+$/.test(raw) ? { id: raw } : { uid: raw };
+    const Model = type === 'area' ? Area : Goal;
+    const container = await Model.findOne({ where, attributes: ['id', 'uid'] });
+    const access = container
+        ? await permissionsService.getAccess(userId, type, container.uid)
+        : 'none';
+    if (access !== 'rw' && access !== 'admin') {
+        throw new ValidationError(
+            type === 'area' ? 'Invalid area.' : 'Invalid goal.'
+        );
+    }
+    return container.id;
 }
 
 // After a project is saved: leaving an area or goal takes back what that
@@ -560,13 +582,23 @@ class ProjectsService {
         const validatedName = validateName(name);
         const tagsData = tags || Tags;
         const projectUid = generateUid();
+        const areaId = await resolveContainerId(
+            userId,
+            'area',
+            area_id || null
+        );
+        const goalId = await resolveContainerId(
+            userId,
+            'goal',
+            goal_id || null
+        );
 
         const projectData = {
             uid: projectUid,
             name: validatedName,
             description: description || '',
-            area_id: area_id || null,
-            goal_id: goal_id || null,
+            area_id: areaId,
+            goal_id: goalId,
             is_maintenance: is_maintenance || false,
             pin_to_sidebar: false,
             priority: toPriorityValue(priority),
@@ -656,9 +688,13 @@ class ProjectsService {
 
         if (name !== undefined) updateData.name = name;
         if (description !== undefined) updateData.description = description;
+        // Keeping the current area or goal is always allowed, so a project
+        // whose container is no longer shared with the caller stays editable.
         if (goal_id !== undefined)
             updateData.goal_id =
-                goal_id === '' || goal_id === null ? null : goal_id;
+                goal_id == project.goal_id
+                    ? project.goal_id
+                    : await resolveContainerId(userId, 'goal', goal_id);
         if (is_maintenance !== undefined)
             updateData.is_maintenance = is_maintenance;
         if (pin_to_sidebar !== undefined)
@@ -677,7 +713,10 @@ class ProjectsService {
             updateData.unit_price = unit_price === '' ? null : unit_price;
 
         if (area_id !== undefined) {
-            const resolvedAreaId = area_id === '' ? null : area_id;
+            const resolvedAreaId =
+                isOwner && area_id == project.area_id
+                    ? project.area_id
+                    : await resolveContainerId(userId, 'area', area_id);
             if (isOwner) {
                 // Owner controls the canonical area for all users
                 updateData.area_id = resolvedAreaId;
@@ -762,3 +801,4 @@ module.exports.updateProjectTags = updateProjectTags;
 module.exports.validateVisibility = validateVisibility;
 module.exports.prepareVisibilityChange = prepareVisibilityChange;
 module.exports.syncContainerShares = syncContainerShares;
+module.exports.resolveContainerId = resolveContainerId;
